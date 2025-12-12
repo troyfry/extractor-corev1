@@ -55,14 +55,14 @@ type AiParserResponse = {
 /**
  * Extract text from a PDF Buffer.
  * Uses the same extraction method as the manual upload (from aiParser.ts).
- * This function has better error handling and fallback to pdfjs-dist.
+ * Uses pdf-parse for stable PDF text extraction.
  */
 async function extractTextFromPdfBuffer(buffer: Buffer, filename: string): Promise<string> {
   try {
     console.log(`[Gmail Process] Extracting text from PDF buffer (size: ${buffer.length} bytes, filename: ${filename})`);
     
     // Use the same extraction function as manual upload (from aiParser.ts)
-    // This function has better error handling and fallback to pdfjs-dist
+    // Uses pdf-parse for stable PDF text extraction
     const text = await extractTextFromPdfBufferAiParser(buffer);
     console.log(`[Gmail Process] PDF text extraction: ${text.length} characters extracted`);
     

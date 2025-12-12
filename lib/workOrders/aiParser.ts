@@ -1,14 +1,8 @@
 /**
  * AI-powered parser for extracting WorkOrder data from EmailMessages.
  *
- * PDF text extraction:
- * - Tries pdf-parse first (fast when it works)
- * - Falls back to pdfjs-dist LEGACY build (most reliable on Vercel/serverless)
- * - Disables worker usage (workers commonly break in serverless)
- *
- * Notes for Next.js/Vercel:
- * - Avoid dynamic require(...) expressions (causes "Critical dependency" build warnings)
- * - pdfjs-dist@5.x legacy build is ESM (.mjs), so load via import()
+ * PDF text extraction uses pdf-parse only (stable on Vercel/Next.js serverless).
+ * Scanned/image-only PDFs will fail cleanly with EMPTY_TEXT_FROM_PDF error.
  */
 
 import type { WorkOrderInput } from "./types";
@@ -20,34 +14,14 @@ import {
 } from "@/lib/config/ai";
 
 import OpenAI from "openai";
-import DOMMatrix from "dommatrix";
-(globalThis as any).DOMMatrix ??= DOMMatrix as any;
-
-type PdfJsTextContentItem = {
-  str?: string;
-  [key: string]: any;
-};
 
 /**
- * pdfjs-dist@5.x uses ESM and the legacy build is .mjs
- * Force a real runtime import() even when this file is compiled to CJS in prod.
- * This prevents bundlers from converting import() to require() which causes ERR_REQUIRE_ESM.
- */
-async function loadPdfJsLegacy() {
-  return await import("pdfjs-dist/legacy/build/pdf.mjs");
-}
-
-/**
- * Extract text from a PDF Buffer.
- * - Validates PDF header
- * - Attempts pdf-parse
- * - Falls back to pdfjs-dist legacy build (disableWorker)
+ * Extract text from a PDF Buffer using pdf-parse.
+ * pdf-parse is CommonJS and stable on Vercel serverless functions.
  */
 export async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> {
   if (!buffer || buffer.length < 10) {
-    throw new Error(
-      `PDF_BUFFER_EMPTY_OR_TOO_SMALL (size=${buffer?.length ?? 0})`
-    );
+    throw new Error(`PDF_BUFFER_EMPTY_OR_TOO_SMALL (size=${buffer?.length ?? 0})`);
   }
 
   const header = buffer.subarray(0, 5).toString("utf8");
@@ -55,103 +29,21 @@ export async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> 
     throw new Error(`NOT_A_PDF_BUFFER (header=${JSON.stringify(header)})`);
   }
 
-  // 1) Try pdf-parse (fast path) - use dynamic import to avoid ESM/CJS issues
-  try {
-    // Use Function constructor to create a runtime import() that bundlers cannot rewrite
-    const importer = new Function("p", "return import(p)") as (p: string) => Promise<any>;
-    const pdfParseMod = await importer("pdf-parse");
-    
-    // pdf-parse is CommonJS, so it might be in default or as a named export
-    const pdfParseFn: any = pdfParseMod?.default ?? pdfParseMod?.pdfParse ?? pdfParseMod;
-    
-    if (typeof pdfParseFn === "function") {
-      const data = await pdfParseFn(buffer);
-      const text = (data?.text ?? "").trim();
-      if (text) return text;
-    }
-  } catch (err) {
-    console.warn(
-      "[PDF] pdf-parse failed, falling back to pdfjs-dist legacy:",
-      err instanceof Error ? err.message : String(err)
-    );
+  // pdf-parse is CommonJS and stable on Vercel
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const pdfParse = require("pdf-parse");
+  const parseFn =
+    typeof pdfParse === "function" ? pdfParse : pdfParse.default ?? pdfParse;
+
+  const data = await parseFn(buffer);
+  const text = (data?.text ?? "").trim();
+
+  if (!text) {
+    // Scanned / image-only PDF (no text layer)
+    throw new Error("EMPTY_TEXT_FROM_PDF (likely scanned/image-only PDF)");
   }
 
-  // 2) Fallback to pdfjs-dist legacy build (Node/serverless friendly)
-  try {
-    const pdfjsMod: any = await loadPdfJsLegacy();
-    const pdfjsLib: any = pdfjsMod?.default ?? pdfjsMod;
-
-
-    // Disable worker (critical for serverless reliability)
-    if (pdfjsLib?.GlobalWorkerOptions) {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = "";
-    }
-
-    // --- Node polyfills for pdfjs (Vercel/Node runtime) ---
-if (typeof (globalThis as any).DOMMatrix === "undefined") {
-  // pdfjs uses DOMMatrix for transforms; in Node it doesn't exist.
-  // Use a tiny compatible polyfill.
-  class DOMMatrixPolyfill {
-    a = 1; b = 0; c = 0; d = 1; e = 0; f = 0;
-    constructor(init?: any) {
-      if (init && typeof init === "object") Object.assign(this, init);
-    }
-    multiplySelf() { return this; }
-    translateSelf() { return this; }
-    scaleSelf() { return this; }
-    rotateSelf() { return this; }
-    invertSelf() { return this; }
-    toFloat32Array() { return new Float32Array([this.a, this.b, this.c, this.d, this.e, this.f]); }
-    toFloat64Array() { return new Float64Array([this.a, this.b, this.c, this.d, this.e, this.f]); }
-  }
-  (globalThis as any).DOMMatrix = DOMMatrixPolyfill as any;
-}
-
-
-    const data = new Uint8Array(buffer);
-
-    const loadingTask = pdfjsLib.getDocument({
-      data,
-      disableWorker: true,
-      verbosity: 0,
-    });
-
-    const pdf = await loadingTask.promise;
-
-    let fullText = "";
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      const page = await pdf.getPage(pageNum);
-      const content = await page.getTextContent();
-
-      const pageText = (content.items as PdfJsTextContentItem[])
-        .map((item) => item?.str ?? "")
-        .filter(Boolean)
-        .join(" ");
-
-      fullText += pageText + "\n\n";
-    }
-
-    const trimmed = fullText.trim();
-    if (!trimmed) {
-      throw new Error("EMPTY_TEXT_FROM_PDF (likely scanned/image-only PDF)");
-    }
-
-    return trimmed;
-  } catch (err) {
-    const details =
-      err instanceof Error
-        ? { name: err.name, message: err.message, stack: err.stack }
-        : { message: String(err) };
-
-    console.error(
-      "[PDF] PDF parsing failed (pdf-parse + pdfjs-dist legacy):",
-      details
-    );
-
-    throw new Error(
-      `PDF parsing failed: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
+  return text;
 }
 
 /**
