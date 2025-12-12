@@ -1,0 +1,190 @@
+"use client";
+
+import React, { useState } from "react";
+import AppShell from "@/components/layout/AppShell";
+
+/**
+ * Developer Test Suite
+ * 
+ * Provides tools and test files for development and testing.
+ */
+export default function DevTestSuite() {
+  const [mockExtractResult, setMockExtractResult] = useState<any>(null);
+  const [mockLimitsResult, setMockLimitsResult] = useState<any>(null);
+  const [isLoadingExtract, setIsLoadingExtract] = useState(false);
+  const [isLoadingLimits, setIsLoadingLimits] = useState(false);
+
+  const handleMockExtract = async () => {
+    setIsLoadingExtract(true);
+    setMockExtractResult(null);
+    try {
+      const response = await fetch("/api/dev/mock-extract", {
+        method: "POST",
+      });
+      const data = await response.json();
+      setMockExtractResult(data);
+    } catch (error) {
+      setMockExtractResult({ error: error instanceof Error ? error.message : "Unknown error" });
+    } finally {
+      setIsLoadingExtract(false);
+    }
+  };
+
+  const handleMockLimits = async (state: string) => {
+    setIsLoadingLimits(true);
+    setMockLimitsResult(null);
+    try {
+      const response = await fetch(`/api/dev/mock-limits?state=${state}`);
+      const data = await response.json();
+      setMockLimitsResult({ state, status: response.status, data });
+    } catch (error) {
+      setMockLimitsResult({ 
+        state, 
+        error: error instanceof Error ? error.message : "Unknown error" 
+      });
+    } finally {
+      setIsLoadingLimits(false);
+    }
+  };
+
+  return (
+    <AppShell>
+      <main className="min-h-screen bg-gray-900 text-white p-10">
+        <div className="max-w-4xl mx-auto space-y-8">
+          <h1 className="text-3xl font-bold">Developer Test Suite</h1>
+
+          {/* Mock Extraction Section */}
+          <section className="bg-gray-800 border border-gray-700 rounded-lg p-6">
+            <h2 className="text-xl font-semibold mb-4">Mock Extraction</h2>
+            <p className="text-gray-400 mb-4">
+              Test the extraction response format without processing a PDF.
+            </p>
+            <button
+              onClick={handleMockExtract}
+              disabled={isLoadingExtract}
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+            >
+              {isLoadingExtract ? "Loading..." : "Test Mock Extract"}
+            </button>
+            {mockExtractResult && (
+              <div className="mt-4 p-4 bg-gray-700 rounded">
+                <pre className="text-xs overflow-auto">
+                  {JSON.stringify(mockExtractResult, null, 2)}
+                </pre>
+              </div>
+            )}
+          </section>
+
+          {/* Mock Rate Limits Section */}
+          <section className="bg-gray-800 border border-gray-700 rounded-lg p-6">
+            <h2 className="text-xl font-semibold mb-4">Mock Rate Limits</h2>
+            <p className="text-gray-400 mb-4">
+              Test rate limit responses. Try different states: ok, daily, monthly, global
+            </p>
+            <div className="flex gap-2 flex-wrap">
+              <button
+                onClick={() => handleMockLimits("ok")}
+                disabled={isLoadingLimits}
+                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+              >
+                Test: OK
+              </button>
+              <button
+                onClick={() => handleMockLimits("daily")}
+                disabled={isLoadingLimits}
+                className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+              >
+                Test: Daily Limit
+              </button>
+              <button
+                onClick={() => handleMockLimits("monthly")}
+                disabled={isLoadingLimits}
+                className="px-4 py-2 bg-orange-600 text-white rounded hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+              >
+                Test: Monthly Limit
+              </button>
+              <button
+                onClick={() => handleMockLimits("global")}
+                disabled={isLoadingLimits}
+                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+              >
+                Test: Global Limit
+              </button>
+            </div>
+            {mockLimitsResult && (
+              <div className="mt-4 p-4 bg-gray-700 rounded">
+                <pre className="text-xs overflow-auto">
+                  {JSON.stringify(mockLimitsResult, null, 2)}
+                </pre>
+              </div>
+            )}
+          </section>
+
+          {/* Test PDFs Section */}
+          <section className="bg-gray-800 border border-gray-700 rounded-lg p-6">
+            <h2 className="text-xl font-semibold mb-4">Test PDFs</h2>
+            <p className="text-gray-400 mb-4">
+              Download test PDF files for development and testing.
+            </p>
+            <ul className="list-disc pl-6 space-y-2">
+              <li>
+                <a 
+                  href="/dev/pdfs/clean-wo.pdf" 
+                  download
+                  className="text-blue-400 hover:text-blue-300 underline"
+                >
+                  Clean Work Order
+                </a>
+                <span className="text-gray-500 ml-2">- Well-formatted work order</span>
+              </li>
+              <li>
+                <a 
+                  href="/dev/pdfs/messy-wo.pdf" 
+                  download
+                  className="text-blue-400 hover:text-blue-300 underline"
+                >
+                  Messy Layout
+                </a>
+                <span className="text-gray-500 ml-2">- Poorly formatted work order</span>
+              </li>
+              <li>
+                <a 
+                  href="/dev/pdfs/missing-fields.pdf" 
+                  download
+                  className="text-blue-400 hover:text-blue-300 underline"
+                >
+                  Missing Fields
+                </a>
+                <span className="text-gray-500 ml-2">- Work order with incomplete data</span>
+              </li>
+              <li>
+                <a 
+                  href="/dev/pdfs/facility-format-a.pdf" 
+                  download
+                  className="text-blue-400 hover:text-blue-300 underline"
+                >
+                  Facility Format A
+                </a>
+                <span className="text-gray-500 ml-2">- Standard facility format variant</span>
+              </li>
+              <li>
+                <a 
+                  href="/dev/pdfs/facility-format-b.pdf" 
+                  download
+                  className="text-blue-400 hover:text-blue-300 underline"
+                >
+                  Facility Format B
+                </a>
+                <span className="text-gray-500 ml-2">- Alternative facility format variant</span>
+              </li>
+            </ul>
+            <p className="text-sm text-gray-500 mt-4">
+              Note: These PDF files need to be added to <code className="bg-gray-700 px-1 rounded">public/dev/pdfs/</code>
+            </p>
+          </section>
+        </div>
+      </main>
+    </AppShell>
+  );
+}
+
