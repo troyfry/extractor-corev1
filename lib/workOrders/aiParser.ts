@@ -27,7 +27,8 @@ import OpenAI from "openai";
  */
 function safeRequire(mod: string) {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const req = typeof require !== "undefined" ? require : new Function("return require")();
+  const req =
+    typeof require !== "undefined" ? require : new Function("return require")();
   return req(mod);
 }
 
@@ -35,6 +36,14 @@ type PdfJsTextContentItem = {
   str?: string;
   [key: string]: any;
 };
+
+/**
+ * pdfjs-dist@5.x uses ESM and the legacy build is .mjs
+ * (pdf.js path commonly does not exist anymore).
+ */
+async function loadPdfJsLegacy() {
+  return await import("pdfjs-dist/legacy/build/pdf.mjs");
+}
 
 /**
  * Extract text from a PDF Buffer.
@@ -45,8 +54,11 @@ type PdfJsTextContentItem = {
 export async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> {
   // Basic sanity checks help catch “upload arrived empty/corrupt” cases
   if (!buffer || buffer.length < 10) {
-    throw new Error(`PDF_BUFFER_EMPTY_OR_TOO_SMALL (size=${buffer?.length ?? 0})`);
+    throw new Error(
+      `PDF_BUFFER_EMPTY_OR_TOO_SMALL (size=${buffer?.length ?? 0})`
+    );
   }
+
   const header = buffer.subarray(0, 5).toString("utf8");
   if (header !== "%PDF-") {
     // This is the best indicator that the upload did not arrive as a real PDF.
@@ -57,7 +69,9 @@ export async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> 
   try {
     const pdfParse = safeRequire("pdf-parse");
     const pdfParseFn =
-      typeof pdfParse === "function" ? pdfParse : (pdfParse?.default ?? pdfParse);
+      typeof pdfParse === "function"
+        ? pdfParse
+        : pdfParse?.default ?? pdfParse;
 
     if (typeof pdfParseFn === "function") {
       const data = await pdfParseFn(buffer);
@@ -75,8 +89,8 @@ export async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> 
 
   // 2) Fallback to pdfjs-dist legacy build (Node/serverless friendly)
   try {
-    // Use legacy build explicitly
-    const pdfjsLib = safeRequire("pdfjs-dist/legacy/build/pdf.js");
+    const pdfjsMod: any = await loadPdfJsLegacy();
+    const pdfjsLib: any = pdfjsMod?.default ?? pdfjsMod;
 
     // Disable worker (critical for serverless reliability)
     if (pdfjsLib?.GlobalWorkerOptions) {
@@ -121,7 +135,11 @@ export async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> 
         ? { name: err.name, message: err.message, stack: err.stack }
         : { message: String(err) };
 
-    console.error("[PDF] PDF parsing failed (pdf-parse + pdfjs-dist legacy):", details);
+    console.error(
+      "[PDF] PDF parsing failed (pdf-parse + pdfjs-dist legacy):",
+      details
+    );
+
     throw new Error(
       `PDF parsing failed: ${err instanceof Error ? err.message : String(err)}`
     );
@@ -172,7 +190,12 @@ async function getPdfBufferFromAttachment(
     if (loc.startsWith("http://") || loc.startsWith("https://")) {
       const res = await fetch(loc);
       if (!res.ok) {
-        console.error("[PDF] Failed to fetch remote PDF:", loc, res.status, res.statusText);
+        console.error(
+          "[PDF] Failed to fetch remote PDF:",
+          loc,
+          res.status,
+          res.statusText
+        );
         return null;
       }
       const arrayBuffer = await res.arrayBuffer();
@@ -184,7 +207,11 @@ async function getPdfBufferFromAttachment(
       const fs = await import("node:fs/promises");
       return await fs.readFile(loc);
     } catch (fsErr) {
-      console.error("[PDF] Failed reading local PDF path (likely serverless):", loc, fsErr);
+      console.error(
+        "[PDF] Failed reading local PDF path (likely serverless):",
+        loc,
+        fsErr
+      );
       return null;
     }
   } catch (err) {
@@ -197,7 +224,9 @@ async function getPdfBufferFromAttachment(
  * Extract text content from a PDF attachment.
  * Returns a string and never throws.
  */
-async function getPdfTextFromAttachment(attachment: EmailAttachment): Promise<string> {
+async function getPdfTextFromAttachment(
+  attachment: EmailAttachment
+): Promise<string> {
   const buffer = await getPdfBufferFromAttachment(attachment);
 
   if (!buffer) {
@@ -409,7 +438,10 @@ export async function aiParseWorkOrdersFromEmail(
         continue;
       }
 
-      pdfTexts.push({ filename: attachment.filename, text: text.slice(0, MAX_CHARS_PER_PDF) });
+      pdfTexts.push({
+        filename: attachment.filename,
+        text: text.slice(0, MAX_CHARS_PER_PDF),
+      });
     }
 
     if (pdfTexts.length === 0) {
