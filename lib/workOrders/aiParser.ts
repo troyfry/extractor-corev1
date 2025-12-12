@@ -84,7 +84,7 @@ export async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> 
 
     // Disable worker (critical for serverless reliability)
     if (pdfjsLib?.GlobalWorkerOptions) {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = undefined;
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "";
     }
 
     // --- Node polyfills for pdfjs (Vercel/Node runtime) ---
@@ -113,7 +113,6 @@ if (typeof (globalThis as any).DOMMatrix === "undefined") {
     const loadingTask = pdfjsLib.getDocument({
       data,
       disableWorker: true,
-      stopAtErrors: false,
       verbosity: 0,
     });
 
