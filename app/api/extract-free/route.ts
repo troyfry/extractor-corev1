@@ -214,6 +214,7 @@ export async function POST(request: Request) {
 
     const formData = await request.formData();
     const file = formData.get("file");
+    const emailText = formData.get("emailText") as string | null;
 
     // Improved file validation - check if it's actually a File instance
     if (!file || !(file instanceof File)) {
