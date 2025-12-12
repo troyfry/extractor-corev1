@@ -6,9 +6,9 @@
  * - Falls back to pdfjs-dist LEGACY build (most reliable on Vercel/serverless)
  * - Disables worker usage (workers commonly break in serverless)
  *
- * To enable AI parsing:
- * - npm install openai
- * - set OPENAI_API_KEY
+ * Notes for Next.js/Vercel:
+ * - Avoid dynamic require(...) expressions (causes "Critical dependency" build warnings)
+ * - pdfjs-dist@5.x legacy build is ESM (.mjs), so load via import()
  */
 
 import type { WorkOrderInput } from "./types";
@@ -21,16 +21,9 @@ import {
 
 import OpenAI from "openai";
 
-/**
- * Some deployments (Vercel) can behave differently depending on bundling.
- * Use dynamic require for Node-only dependencies.
- */
-function safeRequire(mod: string) {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const req =
-    typeof require !== "undefined" ? require : new Function("return require")();
-  return req(mod);
-}
+// ✅ Static import = no webpack "critical dependency" warning
+// If you do NOT want pdf-parse at all, you can remove this import + the try block below.
+import pdfParseImport from "pdf-parse";
 
 type PdfJsTextContentItem = {
   str?: string;
@@ -39,7 +32,6 @@ type PdfJsTextContentItem = {
 
 /**
  * pdfjs-dist@5.x uses ESM and the legacy build is .mjs
- * (pdf.js path commonly does not exist anymore).
  */
 async function loadPdfJsLegacy() {
   return await import("pdfjs-dist/legacy/build/pdf.mjs");
@@ -52,7 +44,6 @@ async function loadPdfJsLegacy() {
  * - Falls back to pdfjs-dist legacy build (disableWorker)
  */
 export async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> {
-  // Basic sanity checks help catch “upload arrived empty/corrupt” cases
   if (!buffer || buffer.length < 10) {
     throw new Error(
       `PDF_BUFFER_EMPTY_OR_TOO_SMALL (size=${buffer?.length ?? 0})`
@@ -61,26 +52,22 @@ export async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> 
 
   const header = buffer.subarray(0, 5).toString("utf8");
   if (header !== "%PDF-") {
-    // This is the best indicator that the upload did not arrive as a real PDF.
     throw new Error(`NOT_A_PDF_BUFFER (header=${JSON.stringify(header)})`);
   }
 
-  // 1) Try pdf-parse (if installed). It can be great, but sometimes fails in serverless.
+  // 1) Try pdf-parse (fast path)
   try {
-    const pdfParse = safeRequire("pdf-parse");
-    const pdfParseFn =
-      typeof pdfParse === "function"
-        ? pdfParse
-        : pdfParse?.default ?? pdfParse;
+    const pdfParseFn: any =
+      typeof pdfParseImport === "function"
+        ? pdfParseImport
+        : (pdfParseImport as any)?.default ?? pdfParseImport;
 
     if (typeof pdfParseFn === "function") {
       const data = await pdfParseFn(buffer);
       const text = (data?.text ?? "").trim();
       if (text) return text;
-      // If pdf-parse returns empty, fall through to pdfjs-dist.
     }
   } catch (err) {
-    // Don’t fail yet; pdfjs fallback is usually more reliable.
     console.warn(
       "[PDF] pdf-parse failed, falling back to pdfjs-dist legacy:",
       err instanceof Error ? err.message : String(err)
@@ -97,7 +84,6 @@ export async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> 
       pdfjsLib.GlobalWorkerOptions.workerSrc = undefined;
     }
 
-    // pdfjs expects Uint8Array
     const data = new Uint8Array(buffer);
 
     const loadingTask = pdfjsLib.getDocument({
@@ -124,7 +110,6 @@ export async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> 
 
     const trimmed = fullText.trim();
     if (!trimmed) {
-      // Most commonly: scanned/image-only PDF (no embedded text)
       throw new Error("EMPTY_TEXT_FROM_PDF (likely scanned/image-only PDF)");
     }
 
@@ -156,11 +141,11 @@ type AiWorkOrder = {
   service_address: string;
   job_type: string;
   job_description: string;
-  scheduled_date: string; // ISO format
+  scheduled_date: string;
   priority: string;
-  amount: string; // numeric only, no currency symbols
-  currency: string; // e.g., "USD"
-  nte_amount: string; // Not To Exceed amount
+  amount: string;
+  currency: string;
+  nte_amount: string;
   service_category: string;
   facility_id: string;
   notes: string;
@@ -172,9 +157,6 @@ type AiParserResponse = {
 
 /**
  * Load PDF file into a Buffer from attachment storage location.
- * Supports:
- * - HTTP/HTTPS URLs
- * - Local filesystem paths (useful locally; may not exist on Vercel)
  */
 async function getPdfBufferFromAttachment(
   attachment: EmailAttachment
@@ -220,10 +202,6 @@ async function getPdfBufferFromAttachment(
   }
 }
 
-/**
- * Extract text content from a PDF attachment.
- * Returns a string and never throws.
- */
 async function getPdfTextFromAttachment(
   attachment: EmailAttachment
 ): Promise<string> {
@@ -241,16 +219,10 @@ async function getPdfTextFromAttachment(
   }
 }
 
-/**
- * Get email body text placeholder.
- */
 function getEmailBody(_email: EmailMessage): string {
   return "";
 }
 
-/**
- * Build the extraction prompt for OpenAI.
- */
 function buildExtractionPrompt(
   email: EmailMessage,
   pdfTexts: { filename: string; text: string }[]
@@ -272,49 +244,6 @@ Your task is to extract structured job data from THREE sources combined:
 2) Email BODY
 3) PDF TEXT
 
-Work orders may vary in wording, formatting, layout, and phrasing.
-You must merge information from all sources and produce a single, consistent JSON object.
-
------------------------
-RULES (follow strictly)
------------------------
-
-1. OUTPUT FORMAT
-   - Return ONLY valid JSON.
-   - No explanations, no text outside the JSON object.
-
-2. MISSING FIELDS
-   - If a field is not present, return an empty string "".
-
-3. DATES
-   - Normalize all dates into ISO format: YYYY-MM-DD whenever possible.
-   - If ambiguous, choose the most clearly stated scheduled date.
-   - Do NOT invent dates.
-   - If no date is found, use the email received date: ${email.receivedAt}
-
-4. AMOUNTS
-   - For "amount" and "nte_amount", extract ONLY numeric characters.
-     Example: "$125.00 NTE" → "125"
-     Example: "NTE $400.00" → "400"
-   - If "amount" is not found but "nte_amount" is present,
-     extract the NTE value to BOTH "amount" and "nte_amount" fields.
-   - If no numeric value is found, return "".
-
-5. DO NOT GUESS
-   - Only extract what is explicitly stated in the subject, email body, or PDF.
-
-6. MERGE ALL SOURCES
-   - Prefer canonical PDF fields when contradictions occur.
-
-7. VENDOR/FACILITY MANAGEMENT COMPANY
-   - Extract "vendor_name" as the FACILITY MANAGEMENT COMPANY/PLATFORM issuing the work order.
-   - This is NOT the contractor/service provider doing the work.
-   - If not found, return "".
-
------------------------
-INPUT DATA
------------------------
-
 EMAIL SUBJECT:
 ${email.subject}
 
@@ -324,9 +253,7 @@ ${emailBody || "(Email body not available)"}
 PDF TEXT:
 ${pdfText || "(No PDF text available)"}
 
------------------------
 RETURN JSON EXACTLY IN THIS FORMAT:
------------------------
 
 {
   "workOrders": [
@@ -349,12 +276,9 @@ RETURN JSON EXACTLY IN THIS FORMAT:
   ]
 }
 
-IMPORTANT: Return ONLY the JSON object, no markdown, no code blocks, no explanations.`;
+Return ONLY JSON.`;
 }
 
-/**
- * Parse OpenAI JSON response into WorkOrderInput[] (without userId).
- */
 function parseAiResponse(
   responseText: string,
   email: EmailMessage
@@ -412,9 +336,6 @@ function parseAiResponse(
   }
 }
 
-/**
- * Use AI to parse work orders from an email message.
- */
 export async function aiParseWorkOrdersFromEmail(
   email: EmailMessage
 ): Promise<Omit<WorkOrderInput, "userId">[] | null> {
@@ -489,9 +410,6 @@ export async function aiParseWorkOrdersFromEmail(
   }
 }
 
-/**
- * Export for debug/testing purposes.
- */
 export async function getPdfTextFromAttachmentForDebug(
   attachment: EmailAttachment
 ): Promise<string> {
