@@ -21,10 +21,6 @@ import {
 
 import OpenAI from "openai";
 
-// ✅ Static import = no webpack "critical dependency" warning
-// If you do NOT want pdf-parse at all, you can remove this import + the try block below.
-import pdfParseImport from "pdf-parse";
-
 type PdfJsTextContentItem = {
   str?: string;
   [key: string]: any;
@@ -32,9 +28,13 @@ type PdfJsTextContentItem = {
 
 /**
  * pdfjs-dist@5.x uses ESM and the legacy build is .mjs
+ * Force a real runtime import() even when this file is compiled to CJS in prod.
+ * This prevents bundlers from converting import() to require() which causes ERR_REQUIRE_ESM.
  */
 async function loadPdfJsLegacy() {
-  return await import("pdfjs-dist/legacy/build/pdf.mjs");
+  // Use Function constructor to create a runtime import() that bundlers cannot rewrite
+  const importer = new Function("p", "return import(p)") as (p: string) => Promise<any>;
+  return importer("pdfjs-dist/legacy/build/pdf.mjs");
 }
 
 /**
@@ -55,13 +55,15 @@ export async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> 
     throw new Error(`NOT_A_PDF_BUFFER (header=${JSON.stringify(header)})`);
   }
 
-  // 1) Try pdf-parse (fast path)
+  // 1) Try pdf-parse (fast path) - use dynamic import to avoid ESM/CJS issues
   try {
-    const pdfParseFn: any =
-      typeof pdfParseImport === "function"
-        ? pdfParseImport
-        : (pdfParseImport as any)?.default ?? pdfParseImport;
-
+    // Use Function constructor to create a runtime import() that bundlers cannot rewrite
+    const importer = new Function("p", "return import(p)") as (p: string) => Promise<any>;
+    const pdfParseMod = await importer("pdf-parse");
+    
+    // pdf-parse is CommonJS, so it might be in default or as a named export
+    const pdfParseFn: any = pdfParseMod?.default ?? pdfParseMod?.pdfParse ?? pdfParseMod;
+    
     if (typeof pdfParseFn === "function") {
       const data = await pdfParseFn(buffer);
       const text = (data?.text ?? "").trim();
