@@ -20,6 +20,8 @@ import {
 } from "@/lib/config/ai";
 
 import OpenAI from "openai";
+import DOMMatrix from "dommatrix";
+(globalThis as any).DOMMatrix ??= DOMMatrix as any;
 
 type PdfJsTextContentItem = {
   str?: string;
