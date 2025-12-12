@@ -27,7 +27,7 @@ importers:
         specifier: ^2.4.5
         version: 2.4.5
       pdfjs-dist:
-        specifier: ^5.4.449
+        specifier: 5.4.449
         version: 5.4.449
       pg:
         specifier: ^8.13.1
