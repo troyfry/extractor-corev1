@@ -32,9 +32,7 @@ type PdfJsTextContentItem = {
  * This prevents bundlers from converting import() to require() which causes ERR_REQUIRE_ESM.
  */
 async function loadPdfJsLegacy() {
-  // Use Function constructor to create a runtime import() that bundlers cannot rewrite
-  const importer = new Function("p", "return import(p)") as (p: string) => Promise<any>;
-  return importer("pdfjs-dist/legacy/build/pdf.mjs");
+  return await import("pdfjs-dist/legacy/build/pdf.mjs");
 }
 
 /**
@@ -80,6 +78,7 @@ export async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> 
   try {
     const pdfjsMod: any = await loadPdfJsLegacy();
     const pdfjsLib: any = pdfjsMod?.default ?? pdfjsMod;
+
 
     // Disable worker (critical for serverless reliability)
     if (pdfjsLib?.GlobalWorkerOptions) {

@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   experimental: {
+    esmExternals: "loose",
     serverComponentsExternalPackages: ["pdfjs-dist", "pdf-parse"],
   },
   webpack: (config, { isServer }) => {
