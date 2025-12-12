@@ -14,6 +14,7 @@ import {
 } from "@/lib/config/ai";
 
 import OpenAI from "openai";
+console.log("[aiParser] LOADED - VERSION: CLEAN-PARSE-ONLY");
 
 /**
  * Extract text from a PDF Buffer using pdf-parse.
@@ -42,6 +43,7 @@ export async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> 
     // Scanned / image-only PDF (no text layer)
     throw new Error("EMPTY_TEXT_FROM_PDF (likely scanned/image-only PDF)");
   }
+  console.log("[aiParser] extractTextFromPdfBuffer called - VERSION: CLEAN-PARSE-ONLY");
 
   return text;
 }
