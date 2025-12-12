@@ -32,6 +32,13 @@ import OpenAI from "openai";
 // Ensure this route runs in Node.js runtime (not Edge) for PDF parsing
 export const runtime = "nodejs";
 
+export async function GET() {
+  return NextResponse.json(
+    { ok: false, message: "Use POST with multipart/form-data (field name: file)" },
+    { status: 405 }
+  );
+}
+
 // AI response structure
 type AiWorkOrder = {
   work_order_number: string;
