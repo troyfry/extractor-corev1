@@ -104,12 +104,15 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
   // Filter nav items based on plan
   // CRITICAL: Free users should NEVER see "From Inbox" (Gmail) - it's not available on Free plan
   // Only show "From File" for Free users
+  // IMPORTANT: Only filter if plan is explicitly FREE_BYOK and Gmail is not available
   const navItems = (() => {
-    // If Free plan, ONLY show "From File" - hide all other nav items including "From Inbox"
-    if (isFreePlan && !canUseGmail) {
+    // Only filter if plan is explicitly Free AND Gmail is not available
+    // In dev mode, canUsePro is always true, so we need to check the plan directly
+    // This ensures Pro/Premium plans always show all tabs, even during navigation
+    if (plan === "FREE_BYOK" && !canUseGmail) {
       return allNavItems.filter((item) => item.id === "file");
     }
-    // For Pro/Premium users or dev override, show all items
+    // For Pro/Premium users, always show all items
     return allNavItems;
   })();
 

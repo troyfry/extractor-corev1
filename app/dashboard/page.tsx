@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/layout/AppShell";
+import MainNavigation from "@/components/layout/MainNavigation";
 import ResultsTable from "@/components/work-orders/ResultsTable";
 import type { WorkOrder } from "@/lib/workOrders/types";
 
@@ -216,6 +217,7 @@ export default function DashboardPage() {
 
   return (
     <AppShell>
+      <MainNavigation currentMode="file" />
       <div className="min-h-screen bg-gray-900 text-white pt-8">
         <div className="max-w-6xl mx-auto px-4">
           <div className="mb-6">

@@ -37,13 +37,13 @@ export default function AppShell({ children }: AppShellProps) {
                   Alpha version – local data only
                 </span>
               )}
-              {/* Always show pricing link in dev mode */}
-              {isDevMode && (
+              {/* Show Upgrade to Pro link on /free page OR in dev mode */}
+              {(isFreePage || isDevMode) && (
                 <Link
                   href="/pricing"
-                  className="px-3 py-1 bg-gray-700 text-gray-300 rounded text-xs font-medium hover:bg-gray-600 transition-colors"
+                  className="px-3 py-1 bg-blue-600 text-white rounded text-xs font-medium hover:bg-blue-700 transition-colors"
                 >
-                  Pricing
+                  {isFreePage ? "Upgrade to Pro" : "Pricing"}
                 </Link>
               )}
               {/* Only show UserMenu if not on free page (free page doesn't require auth) */}

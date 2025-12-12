@@ -201,40 +201,44 @@ export async function POST(request: Request) {
     let totalTokens = 0;
 
     const formData = await request.formData();
-    const file = formData.get("file") as File;
-    const emailText = formData.get("emailText") as string | null;
+    const file = formData.get("file");
 
-    if (!file) {
-      return NextResponse.json({ error: "No file provided" }, { status: 400 });
+    // Improved file validation - check if it's actually a File instance
+    if (!file || !(file instanceof File)) {
+      return NextResponse.json({ error: "No PDF uploaded." }, { status: 400 });
     }
+
+    const emailText = formData.get("emailText") as string | null;
 
     // Read file into buffer first (needed for validation)
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
 
-    // Validate file type - check MIME type, extension, and PDF magic bytes
-    const isValidPdfType = file.type === "application/pdf" || 
-                          file.type === "application/x-pdf" ||
-                          file.name.toLowerCase().endsWith(".pdf");
-    
-    // Check PDF magic bytes (PDF files start with %PDF)
-    // This ensures we validate by content, not just MIME type (important for serverless)
-    const isValidPdfContent = buffer.length >= 4 && 
-                             buffer[0] === 0x25 && // %
-                             buffer[1] === 0x50 && // P
-                             buffer[2] === 0x44 && // D
-                             buffer[3] === 0x46;   // F
-    
-    if (!isValidPdfType && !isValidPdfContent) {
+    // Temporary production debug logging - remove after verification
+    console.log("PDF buffer size:", buffer.length);
+    console.log("PDF header:", buffer.subarray(0, 8).toString("utf8"));
+    console.log("File name:", file.name);
+    console.log("File type:", file.type);
+    console.log("File size:", file.size);
+
+    // Quick validity check using header (helps debug prod)
+    const header = buffer.subarray(0, 5).toString("utf8");
+    if (header !== "%PDF-") {
+      console.error("Invalid PDF header detected:", header);
       return NextResponse.json(
-        { error: "File must be a valid PDF. Please ensure the file is a PDF document." },
+        { error: "Upload did not arrive as a valid PDF." },
         { status: 400 }
       );
     }
 
-    // If MIME type doesn't match but content does, log a warning but proceed
-    if (!isValidPdfType && isValidPdfContent) {
-      console.warn(`[PDF Validation] File "${file.name}" has incorrect MIME type "${file.type}" but valid PDF content`);
+    // Validate file type - check MIME type and extension (header check already passed)
+    const isValidPdfType = file.type === "application/pdf" || 
+                          file.type === "application/x-pdf" ||
+                          file.name.toLowerCase().endsWith(".pdf");
+    
+    // If MIME type doesn't match but header does, log a warning but proceed
+    if (!isValidPdfType) {
+      console.warn(`[PDF Validation] File "${file.name}" has incorrect MIME type "${file.type}" but valid PDF header`);
     }
 
     // Extract text from PDF directly from buffer (serverless-friendly - no filesystem needed)

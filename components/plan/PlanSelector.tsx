@@ -4,6 +4,7 @@ import React from "react";
 import { useCurrentPlan } from "@/lib/plan-context";
 import { Plan } from "@/lib/plan";
 import { getPlanLabel, getPlanShortLabel } from "@/lib/plan-helpers";
+import { isDevMode } from "@/lib/env";
 
 /**
  * Development-only plan selector component.
@@ -17,7 +18,7 @@ export default function PlanSelector() {
   const { plan, setPlan } = useCurrentPlan();
 
   // Only show in development
-  if (process.env.NODE_ENV === "production") {
+  if (!isDevMode) {
     return null;
   }
 

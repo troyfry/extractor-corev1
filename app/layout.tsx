@@ -18,11 +18,10 @@ export default function RootLayout({
     <html lang="en">
       <body>
         <AuthProvider>
-          <PlanProvider>{children}</PlanProvider><Footer />
-          This tool is designed for U.S. users and U.S.-based service businesses.
+          <PlanProvider>{children}</PlanProvider>
+          <Footer />
         </AuthProvider>
       </body>
     </html>
   );
 }
-

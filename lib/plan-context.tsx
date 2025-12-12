@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { Plan, getDefaultPlan } from "@/lib/plan";
 import { isValidPlan } from "@/lib/plan-helpers";
 import { clearUserApiKey } from "@/lib/byok";
+import { isDevMode } from "@/lib/env";
 
 /**
  * Plan Context for client-side plan management.
@@ -34,34 +35,58 @@ export function PlanProvider({ children }: { children: ReactNode }) {
   // In production, default to FREE_BYOK (Free plan)
   // In development, default to PRO (can be overridden by PlanSelector)
   const getInitialPlan = (): Plan => {
-    if (process.env.NODE_ENV === "production") {
+    if (!isDevMode) {
       return "FREE_BYOK";
+    }
+    // In dev mode, try to load from localStorage synchronously on initial render
+    // This ensures plan persists across navigation
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem(PLAN_STORAGE_KEY);
+      if (stored && isValidPlan(stored)) {
+        return stored;
+      }
     }
     return getDefaultPlan(); // PRO in dev
   };
 
   // Always start with initial plan to avoid hydration mismatch
-  // We'll load from localStorage in useEffect after hydration
+  // We'll load from localStorage in useEffect after hydration for updates
   const [plan, setPlanState] = useState<Plan>(getInitialPlan());
   const [isHydrated, setIsHydrated] = useState(false);
 
   // Load plan from localStorage after hydration (client-side only)
   // In production, ignore localStorage and always use FREE_BYOK
+  // This effect ensures plan persists across navigation and component re-mounts
   useEffect(() => {
     if (typeof window !== "undefined") {
-      if (process.env.NODE_ENV !== "production") {
-        // In dev, allow localStorage override
+      if (isDevMode) {
+        // In dev, always check localStorage to ensure plan persists
+        // This prevents plan from resetting during navigation
         const stored = localStorage.getItem(PLAN_STORAGE_KEY);
         if (stored && isValidPlan(stored)) {
-          setPlanState(stored);
+          // Only update if different to avoid unnecessary re-renders
+          setPlanState((currentPlan) => {
+            if (currentPlan !== stored) {
+              return stored;
+            }
+            return currentPlan;
+          });
           // Auto-clear BYOK if plan is not Free
           if (stored !== "FREE_BYOK") {
             clearUserApiKey();
           }
         } else {
+          // If no stored plan, ensure we're using the default (PRO in dev)
+          const defaultPlan = getDefaultPlan();
+          setPlanState((currentPlan) => {
+            // Only update if current plan is Free (which shouldn't be default in dev)
+            if (currentPlan === "FREE_BYOK" && defaultPlan !== "FREE_BYOK") {
+              return defaultPlan;
+            }
+            return currentPlan;
+          });
           // Auto-clear BYOK if default plan is not Free
-          const initialPlan = getInitialPlan();
-          if (initialPlan !== "FREE_BYOK") {
+          if (defaultPlan !== "FREE_BYOK") {
             clearUserApiKey();
           }
         }
@@ -75,7 +100,7 @@ export function PlanProvider({ children }: { children: ReactNode }) {
 
   const setPlan = (newPlan: Plan) => {
     // In production, prevent plan changes (plan should come from billing system)
-    if (process.env.NODE_ENV === "production") {
+    if (!isDevMode) {
       console.warn("Plan changes are not allowed in production. Plan should be set via billing system.");
       return;
     }
