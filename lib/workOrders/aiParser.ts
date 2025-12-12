@@ -85,6 +85,27 @@ export async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> 
       pdfjsLib.GlobalWorkerOptions.workerSrc = undefined;
     }
 
+    // --- Node polyfills for pdfjs (Vercel/Node runtime) ---
+if (typeof (globalThis as any).DOMMatrix === "undefined") {
+  // pdfjs uses DOMMatrix for transforms; in Node it doesn't exist.
+  // Use a tiny compatible polyfill.
+  class DOMMatrixPolyfill {
+    a = 1; b = 0; c = 0; d = 1; e = 0; f = 0;
+    constructor(init?: any) {
+      if (init && typeof init === "object") Object.assign(this, init);
+    }
+    multiplySelf() { return this; }
+    translateSelf() { return this; }
+    scaleSelf() { return this; }
+    rotateSelf() { return this; }
+    invertSelf() { return this; }
+    toFloat32Array() { return new Float32Array([this.a, this.b, this.c, this.d, this.e, this.f]); }
+    toFloat64Array() { return new Float64Array([this.a, this.b, this.c, this.d, this.e, this.f]); }
+  }
+  (globalThis as any).DOMMatrix = DOMMatrixPolyfill as any;
+}
+
+
     const data = new Uint8Array(buffer);
 
     const loadingTask = pdfjsLib.getDocument({
