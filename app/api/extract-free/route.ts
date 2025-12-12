@@ -123,6 +123,8 @@ function generateCsv(workOrders: ParsedWorkOrder[]): string {
 
 export async function POST(request: Request) {
   try {
+    console.log("[extract-free] POST hit");
+
     // ✅ Lazy import: prevents module-load 500s
     const { checkFreeLimits, incrementFreeUsage } = await import("@/lib/limits/checkFreeLimits");
 
