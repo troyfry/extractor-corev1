@@ -1,5 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  experimental: {
+    serverComponentsExternalPackages: ["pdfjs-dist", "pdf-parse"],
+  },
   webpack: (config, { isServer }) => {
     if (isServer) {
       // Externalize pdfjs-dist on server side to avoid bundling issues
