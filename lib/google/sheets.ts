@@ -15,6 +15,7 @@ export const REQUIRED_COLUMNS = [
   "jobId",
   "issuer",
   "wo_number",
+  "fmKey",
   "status",
   "original_pdf_url",
   "signed_pdf_url",
@@ -26,6 +27,7 @@ export type JobRecord = {
   jobId: string; // Deterministic: normalize(issuer) + ":" + normalize(wo_number)
   issuer: string | null;
   wo_number: string;
+  fmKey: string | null; // FM Profile key if matched, null otherwise
   status: string;
   original_pdf_url: string | null;
   signed_pdf_url: string | null;

@@ -90,6 +90,7 @@ export async function POST(req: Request) {
       priority: wo.priority || null,
       vendorName: wo.vendorName || null,
       timestampExtracted: wo.timestampExtracted || new Date().toISOString(),
+      fmKey: null, // Not matched in this flow
     }));
 
     // Write directly to Google Sheets (no PDFs in this route, so no Drive upload)

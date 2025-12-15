@@ -203,6 +203,7 @@ function parseAiResponse(
         currency: wo.currency || "USD",
         notes: notes || null,
         priority: wo.priority || null,
+        fmKey: null, // Will be matched later
       };
     });
   } catch (error) {
@@ -526,6 +527,7 @@ ${pdfText}`;
           currency: "USD",
           notes: emailText.trim() || null,
           priority: null,
+          fmKey: null, // Will be matched later
         }];
       }
 
@@ -589,6 +591,35 @@ ${pdfText}`;
         spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
         if (spreadsheetId) {
           console.log(`[Gmail Process] Using spreadsheet ID from session/DB: ${spreadsheetId.substring(0, 10)}...`);
+        }
+      }
+
+      // Load FM Profiles from Sheets
+      const { getAllFmProfiles } = await import("@/lib/templates/fmProfilesSheets");
+      let fmProfiles: Array<{ fmKey: string; fmLabel: string; senderDomains?: string; subjectKeywords?: string; page: number; xPct: number; yPct: number; wPct: number; hPct: number }> = [];
+      if (spreadsheetId) {
+        try {
+          fmProfiles = await getAllFmProfiles({
+            spreadsheetId,
+            accessToken,
+          });
+          console.log(`[Gmail Process] Loaded ${fmProfiles.length} FM profile(s) from Sheets`);
+        } catch (error) {
+          console.warn(`[Gmail Process] Failed to load FM profiles (non-fatal):`, error);
+          // Continue without FM profiles - jobs will have fmKey = null
+        }
+      }
+
+      // Match FM profiles for each work order
+      const { matchFmProfile } = await import("@/lib/templates/fmProfileMatching");
+      for (const workOrder of allParsedWorkOrders) {
+        const matchedProfile = matchFmProfile(fmProfiles, email.from, email.subject);
+        workOrder.fmKey = matchedProfile ? matchedProfile.fmKey : null;
+        
+        if (matchedProfile) {
+          console.log(`[Gmail Process] Matched FM profile "${matchedProfile.fmKey}" for work order`);
+        } else {
+          console.log(`[Gmail Process] No FM profile match for work order (sender: ${email.from}, subject: ${email.subject})`);
         }
       }
       

@@ -117,6 +117,7 @@ function parseAiResponse(
         currency: wo.currency || "USD",
         notes: notes || null,
         priority: wo.priority || null,
+        fmKey: null, // Not matched in extract-pro (only in gmail/process)
       };
     });
   } catch (error) {
@@ -417,6 +418,7 @@ CRITICAL:
         currency: "USD",
         notes: emailText ? (emailSubject ? `Subject: ${emailSubject}\n\n${emailBody}` : emailBody).trim() : null,
         priority: null,
+        fmKey: null, // Not matched in extract-pro (only in gmail/process)
       }];
     }
 

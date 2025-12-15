@@ -26,6 +26,7 @@ export async function POST() {
         notes: "Mock test work order",
         priority: "Normal",
         timestampExtracted: now,
+        fmKey: null, // Mock data
       },
       {
         workOrderNumber: "TEST-456",
@@ -40,6 +41,7 @@ export async function POST() {
         notes: "Second mock work order for testing",
         priority: "High",
         timestampExtracted: now,
+        fmKey: null, // Mock data
       },
     ],
     csv: `work_order_number,customer_name,vendor_name,service_address,job_type,job_description,scheduled_date,amount,currency,notes,priority

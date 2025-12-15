@@ -71,6 +71,7 @@ function parseAiResponse(responseText: string, filename: string): ParsedWorkOrde
         currency: wo.currency || "USD",
         notes: notes || null,
         priority: wo.priority || null,
+        fmKey: null, // Not matched in free tier
       };
     });
   } catch {
@@ -306,6 +307,7 @@ RETURN JSON EXACTLY IN THIS FORMAT:
         currency: "USD",
           notes: emailText ? emailText.trim() : null,
         priority: null,
+        fmKey: null, // Not matched in free tier
         },
       ];
     }

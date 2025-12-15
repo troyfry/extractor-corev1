@@ -94,6 +94,7 @@ export async function writeWorkOrderToSheets(
     jobId,
     issuer: issuerKey,
     wo_number: woNumber || "MISSING",
+    fmKey: parsedWorkOrder.fmKey || null,
     status: "created",
     original_pdf_url: originalPdfUrl,
     signed_pdf_url: null,

@@ -37,6 +37,7 @@ export async function syncWorkOrderToSheets(
       jobId: workOrder.jobId,
       issuer: issuer || workOrder.vendorName || "Unknown",
       wo_number: workOrder.workOrderNumber,
+      fmKey: null, // Not matched in this flow (only in Pro ingestion)
       status: "created", // Default status
       original_pdf_url: workOrder.workOrderPdfLink || null,
       signed_pdf_url: null, // Will be updated when PDF is signed

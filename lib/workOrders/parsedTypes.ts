@@ -26,6 +26,7 @@ export type ParsedWorkOrder = {
   priority: string | null;
   vendorName: string | null;
   timestampExtracted: string; // ISO timestamp when extracted
+  fmKey: string | null; // FM Profile key if matched, null otherwise
 };
 
 /**

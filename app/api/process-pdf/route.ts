@@ -177,6 +177,7 @@ function parseAiResponse(
         vendorName: wo.vendor_name || null,
         jobDescription: wo.job_description || null,
         amount: amount,
+        fmKey: null, // Not matched in manual upload
         currency: wo.currency || "USD",
         notes: notes || null,
         priority: wo.priority || null,
@@ -432,6 +433,7 @@ IMPORTANT: Return ONLY the JSON object, no markdown, no code blocks, no explanat
         currency: "USD",
         notes: emailText ? (emailSubject ? `Subject: ${emailSubject}\n\n${emailBody}` : emailBody).trim() : null, // Store full email text in notes
         priority: null,
+        fmKey: null, // Not matched in manual upload
       }];
     }
 
