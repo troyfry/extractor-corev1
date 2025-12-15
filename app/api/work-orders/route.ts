@@ -16,8 +16,8 @@
  */
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { workOrderRepo } from "@/lib/workOrders/repository";
 import type { WorkOrderInput } from "@/lib/workOrders/types";
+import type { ParsedWorkOrder } from "@/lib/workOrders/parsedTypes";
 
 /**
  * Validate that a work order input has all required fields.
@@ -48,17 +48,6 @@ export async function POST(req: Request) {
 
     const userId = user.userId;
 
-    // Check if database connection is configured
-    if (!process.env.PG_CONNECTION_STRING) {
-      console.error("PG_CONNECTION_STRING is not set");
-      return NextResponse.json(
-        { 
-          error: "Database not configured. Please set PG_CONNECTION_STRING in .env.local" 
-        },
-        { status: 500 }
-      );
-    }
-
     const body = await req.json();
 
     // Validate request body
@@ -86,16 +75,81 @@ export async function POST(req: Request) {
       }
     }
 
-    // Attach userId to all work orders (optional for free version)
-    const workOrdersWithUserId = body.workOrders.map((wo: WorkOrderInput) => ({
-      ...wo,
-      userId: wo.userId ?? userId ?? null,
+    // Convert WorkOrderInput[] to ParsedWorkOrder[] for Sheets ingestion
+    // (No DB persistence - Sheets + Drive is the system of record)
+    const parsedWorkOrders: ParsedWorkOrder[] = body.workOrders.map((wo: WorkOrderInput) => ({
+      workOrderNumber: wo.workOrderNumber,
+      scheduledDate: wo.scheduledDate || null,
+      customerName: wo.customerName || null,
+      serviceAddress: wo.serviceAddress || null,
+      jobType: wo.jobType || null,
+      jobDescription: wo.jobDescription || null,
+      amount: wo.amount || null,
+      currency: wo.currency || null,
+      notes: wo.notes || null,
+      priority: wo.priority || null,
+      vendorName: wo.vendorName || null,
+      timestampExtracted: wo.timestampExtracted || new Date().toISOString(),
     }));
 
-    // Save work orders
-    const saved = await workOrderRepo.saveMany(workOrdersWithUserId);
+    // Write directly to Google Sheets (no PDFs in this route, so no Drive upload)
+    const accessToken = user?.googleAccessToken || null;
+    if (accessToken) {
+      try {
+        const { getUserSpreadsheetId } = await import("@/lib/userSettings/repository");
+        const { auth } = await import("@/auth");
+        const { cookies } = await import("next/headers");
+        
+        // Check cookie first (session-based, no DB)
+        const cookieSpreadsheetId = (await cookies()).get("googleSheetsSpreadsheetId")?.value || null;
+        
+        // Use cookie if available, otherwise check session/JWT token, then DB
+        let spreadsheetId: string | null = null;
+        if (cookieSpreadsheetId) {
+          spreadsheetId = cookieSpreadsheetId;
+        } else {
+          // Then check session/JWT token
+          const session = await auth();
+          const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+          spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
+        }
+        if (spreadsheetId) {
+          // Extract issuerKey from user email domain (for manual uploads)
+          function extractIssuerKeyFromEmail(email: string | null | undefined): string {
+            if (!email) return "manual";
+            const emailMatch = email.match(/@([^\s>]+)/);
+            if (emailMatch && emailMatch[1]) {
+              const domain = emailMatch[1].toLowerCase().trim();
+              const parts = domain.split(".");
+              if (parts.length >= 2) {
+                return parts.slice(-2).join("."); // e.g., "example.com" from "mail.example.com"
+              }
+              return domain;
+            }
+            return "manual";
+          }
 
-    return NextResponse.json({ workOrders: saved }, { status: 200 });
+          const issuerKey = extractIssuerKeyFromEmail(user.email || null);
+          console.log(`[work-orders] Using issuerKey: ${issuerKey}`);
+
+          const { writeWorkOrdersToSheets } = await import("@/lib/workOrders/sheetsIngestion");
+          await writeWorkOrdersToSheets(
+            parsedWorkOrders,
+            accessToken,
+            spreadsheetId,
+            issuerKey
+            // No PDF buffers for this route
+          );
+          console.log("[work-orders] Successfully wrote work orders to Sheets");
+        }
+      } catch (sheetsError) {
+        // Log but don't fail the request
+        console.error("[work-orders] Error writing to Sheets:", sheetsError);
+      }
+    }
+
+    // Return parsed work orders (matching the expected response format)
+    return NextResponse.json({ workOrders: parsedWorkOrders }, { status: 200 });
   } catch (error) {
     console.error("Error saving work orders:", error);
     return NextResponse.json(
@@ -107,7 +161,11 @@ export async function POST(req: Request) {
 
 /**
  * GET /api/work-orders
- * Get all work orders for the authenticated user (or null for free version).
+ * Get all work orders for the authenticated user from Google Sheets.
+ * 
+ * Note: Since Sheets + Drive is the system of record, this endpoint
+ * would need to read from Sheets. For now, returns empty array.
+ * TODO: Implement Sheets reading if needed.
  */
 export async function GET() {
   try {
@@ -117,21 +175,10 @@ export async function GET() {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    const userId = user.userId;
-
-    // Check if database connection is configured
-    if (!process.env.PG_CONNECTION_STRING) {
-      console.error("PG_CONNECTION_STRING is not set");
-      return NextResponse.json(
-        { 
-          error: "Database not configured. Please set PG_CONNECTION_STRING in .env.local" 
-        },
-        { status: 500 }
-      );
-    }
-
-    const workOrders = await workOrderRepo.listForUser(userId);
-    return NextResponse.json({ workOrders }, { status: 200 });
+    // Sheets + Drive is the system of record - work orders are not stored in DB
+    // To read work orders, query Google Sheets directly
+    // For now, return empty array
+    return NextResponse.json({ workOrders: [] }, { status: 200 });
   } catch (error) {
     console.error("Error fetching work orders:", error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
@@ -147,7 +194,11 @@ export async function GET() {
 
 /**
  * DELETE /api/work-orders
- * Clear all work orders for the authenticated user (or null for free version).
+ * Clear all work orders for the authenticated user.
+ * 
+ * Note: Since Sheets + Drive is the system of record, this endpoint
+ * would need to delete from Sheets. For now, returns success.
+ * TODO: Implement Sheets deletion if needed.
  */
 export async function DELETE() {
   try {
@@ -157,9 +208,9 @@ export async function DELETE() {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    const userId = user.userId;
-
-    await workOrderRepo.clearForUser(userId);
+    // Sheets + Drive is the system of record - work orders are not stored in DB
+    // To delete work orders, delete rows from Google Sheets directly
+    // For now, return success
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (error) {
     console.error("Error clearing work orders:", error);

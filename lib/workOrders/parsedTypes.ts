@@ -14,7 +14,7 @@
  * This is a simplified version without database-specific fields like id, userId, createdAt.
  */
 export type ParsedWorkOrder = {
-  workOrderNumber: string;
+  workOrderNumber: string | null; // Can be null if not found - routes to "Needs Review" sheet
   scheduledDate: string | null;
   customerName: string | null;
   serviceAddress: string | null;
@@ -41,6 +41,7 @@ export type ManualProcessResponse = {
     source?: "manual" | "gmail"; // Source of the work orders
     messageId?: string; // Gmail message ID (if from Gmail)
     labelRemoved?: boolean; // Whether the Gmail label was removed (if from Gmail)
+    warning?: string; // Warning message (non-fatal, e.g., missing spreadsheet ID in dev)
     tokenUsage?: {
       promptTokens: number;
       completionTokens: number;

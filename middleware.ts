@@ -14,6 +14,7 @@
  * - /free (free tier page - no auth required)
  * - /api/extract-free (free tier API - no auth required)
  * - /pricing (pricing page - public)
+ * - /legal (legal pages - public)
  */
 
 import { auth } from "@/auth";
@@ -54,6 +55,11 @@ export default auth((req) => {
 
   // Allow access to pricing page (public)
   if (pathname === "/pricing" || pathname.startsWith("/pricing/")) {
+    return NextResponse.next();
+  }
+
+  // Allow access to legal pages (public)
+  if (pathname === "/legal" || pathname.startsWith("/legal/")) {
     return NextResponse.next();
   }
 

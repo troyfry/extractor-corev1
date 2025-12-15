@@ -14,6 +14,7 @@ import { workOrders } from "@/db/schema";
 import { desc, inArray, eq, and, isNull } from "drizzle-orm";
 import type { WorkOrder, WorkOrderInput } from "./types";
 import { dbToWorkOrder, inputToDbInsert } from "./mappers";
+import { randomUUID } from "crypto";
 
 export interface WorkOrderRepository {
   /**
@@ -46,6 +47,13 @@ export interface WorkOrderRepository {
   findByWorkOrderNumbers(userId: string | null, numbers: string[]): Promise<WorkOrder[]>;
 
   /**
+   * Find work order by jobId (stable UUID).
+   * jobId never changes once created and is the primary identifier for Google Sheets.
+   * @param jobId - Job ID (UUID) to find
+   */
+  findByJobId(jobId: string): Promise<WorkOrder | null>;
+
+  /**
    * Clear all work orders for a specific user (useful for testing/reset).
    * @param userId - User ID to filter by (null for free version)
    */
@@ -62,8 +70,14 @@ export interface WorkOrderRepository {
 class DrizzleWorkOrderRepository implements WorkOrderRepository {
   async saveMany(input: WorkOrderInput[]): Promise<WorkOrder[]> {
     // userId is optional for free version - no validation needed
+    // Generate jobId for each input if not provided (stable UUID - never changes)
+    const inputsWithJobId = input.map((wo) => ({
+      ...wo,
+      jobId: wo.jobId || randomUUID(), // Generate UUID if not provided
+    }));
+
     // Convert WorkOrderInput[] to DB insert format (dates as Date objects)
-    const dbInserts = input.map(inputToDbInsert);
+    const dbInserts = inputsWithJobId.map(inputToDbInsert);
 
     // Insert into database and return the saved rows
     const savedRows = await db
@@ -134,6 +148,21 @@ class DrizzleWorkOrderRepository implements WorkOrderRepository {
       .delete(workOrders)
       .where(userId === null ? isNull(workOrders.userId) : eq(workOrders.userId, userId));
   }
+
+  async findByJobId(jobId: string): Promise<WorkOrder | null> {
+    // Find work order by jobId (stable UUID)
+    const rows = await db
+      .select()
+      .from(workOrders)
+      .where(eq(workOrders.jobId, jobId))
+      .limit(1);
+
+    if (rows.length === 0) {
+      return null;
+    }
+
+    return dbToWorkOrder(rows[0]);
+  }
 }
 
 /**
@@ -146,7 +175,8 @@ class InMemoryWorkOrderRepository implements WorkOrderRepository {
   async saveMany(input: WorkOrderInput[]): Promise<WorkOrder[]> {
     const now = new Date().toISOString();
     const saved: WorkOrder[] = input.map((item) => ({
-      id: item.id || crypto.randomUUID(),
+      id: item.id || randomUUID(),
+      jobId: item.jobId || randomUUID(), // Generate UUID if not provided
       userId: item.userId ?? null,
       timestampExtracted: item.timestampExtracted || now,
       workOrderNumber: item.workOrderNumber,
@@ -208,6 +238,11 @@ class InMemoryWorkOrderRepository implements WorkOrderRepository {
     this.store = this.store.filter(
       (wo) => !((userId === null && wo.userId === null) || (userId !== null && wo.userId === userId))
     );
+  }
+
+  async findByJobId(jobId: string): Promise<WorkOrder | null> {
+    const workOrder = this.store.find((wo) => wo.jobId === jobId);
+    return workOrder || null;
   }
 }
 

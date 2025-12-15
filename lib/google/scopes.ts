@@ -17,18 +17,20 @@ export const GOOGLE_BASE_SCOPES = [
 ] as const;
 
 /**
- * Future expansion: Google Sheets API scopes.
- * 
- * When ready to add Sheets integration, uncomment and add to the provider:
- * - "https://www.googleapis.com/auth/spreadsheets" - Full read/write access to Sheets
- * - "https://www.googleapis.com/auth/drive.file" - Access to files created by the app
- * 
- * TODO: Add these scopes to NextAuth provider configuration when implementing Sheets integration.
+ * Google Sheets API scopes.
+ * Required for reading/writing job records to Google Sheets.
  */
-// export const GOOGLE_SHEETS_SCOPES = [
-//   "https://www.googleapis.com/auth/spreadsheets",
-//   "https://www.googleapis.com/auth/drive.file",
-// ] as const;
+export const GOOGLE_SHEETS_SCOPES = [
+  "https://www.googleapis.com/auth/spreadsheets",
+] as const;
+
+/**
+ * Google Drive API scopes.
+ * Required for storing PDF documents in Google Drive.
+ */
+export const GOOGLE_DRIVE_SCOPES = [
+  "https://www.googleapis.com/auth/drive.file", // Access to files created by the app
+] as const;
 
 /**
  * Future expansion: Gmail API scopes.
@@ -50,13 +52,10 @@ export const GOOGLE_BASE_SCOPES = [
  * When Sheets/Gmail are added, combine all relevant scopes here.
  */
 export function getGoogleScopes(): string {
-  return GOOGLE_BASE_SCOPES.join(" ");
-  
-  // Future: combine scopes when Sheets/Gmail are added
-  // return [
-  //   ...GOOGLE_BASE_SCOPES,
-  //   ...GOOGLE_SHEETS_SCOPES,
-  //   ...GOOGLE_GMAIL_SCOPES,
-  // ].join(" ");
+  return [
+    ...GOOGLE_BASE_SCOPES,
+    ...GOOGLE_SHEETS_SCOPES,
+    ...GOOGLE_DRIVE_SCOPES,
+  ].join(" ");
 }
 

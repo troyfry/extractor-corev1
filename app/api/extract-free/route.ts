@@ -128,8 +128,24 @@ export async function POST(request: Request) {
     // ✅ Lazy import: prevents module-load 500s
     const { checkFreeLimits, incrementFreeUsage } = await import("@/lib/limits/checkFreeLimits");
 
+    // Extract IP with fallbacks for various proxy/CDN setups
     const forwardedFor = request.headers.get("x-forwarded-for");
-    const ip = forwardedFor ? forwardedFor.split(",")[0].trim() : undefined;
+    const realIp =
+      (forwardedFor ? forwardedFor.split(",")[0].trim() : null) ||
+      request.headers.get("x-real-ip") ||
+      request.headers.get("cf-connecting-ip") ||
+      request.headers.get("true-client-ip");
+
+    // Strip port if present (e.g., "192.168.1.1:8080" -> "192.168.1.1")
+    // Normalize localhost variants (::1 and 127.0.0.1 are treated consistently)
+    let ip = realIp
+      ? realIp.replace(/:\d+$/, "").trim() // strip :port if present
+      : "unknown";
+    
+    // Normalize localhost variants for consistency
+    if (ip === "::1" || ip === "127.0.0.1" || ip === "localhost") {
+      ip = "127.0.0.1";
+    }
 
     const limitCheck = await checkFreeLimits({ ip });
     if (!limitCheck.allowed) {
@@ -138,9 +154,9 @@ export async function POST(request: Request) {
         monthly: "You've reached the monthly limit (20 documents per month). Create a Pro account to continue.",
         global: "Free tier is temporarily paused due to high demand. Please try again next month or create a Pro account.",
       };
-
+      
       return NextResponse.json(
-        {
+        { 
           error: "Free limit reached",
           reason: limitCheck.reason,
           message: reasonMessages[limitCheck.reason || "daily"],
@@ -193,7 +209,7 @@ export async function POST(request: Request) {
       try {
         const profile = getIndustryProfile();
         const model = getAiModelName();
-
+        
         let prompt = `You are a highly accurate Work Order Extraction Engine for ${profile.label}.
 
 PDF Filename: ${file.name}
@@ -205,7 +221,7 @@ ${pdfText.slice(0, 8000)}`;
           prompt += `\n\nEmail Text (additional context):
 ${emailText.trim().slice(0, 2000)}`;
         }
-
+        
         prompt += `
 
 RETURN JSON EXACTLY IN THIS FORMAT:
@@ -240,13 +256,13 @@ RETURN JSON EXACTLY IN THIS FORMAT:
           response_format: { type: "json_object" },
           temperature: 0.1,
         });
-
+        
         if (response.usage) {
           totalPromptTokens += response.usage.prompt_tokens || 0;
           totalCompletionTokens += response.usage.completion_tokens || 0;
           totalTokens += response.usage.total_tokens || 0;
         }
-
+        
         const responseText = response.choices[0]?.message?.content;
         if (responseText) {
           const aiResult = parseAiResponse(responseText, file.name);
@@ -267,29 +283,29 @@ RETURN JSON EXACTLY IN THIS FORMAT:
 
       if (!workOrderNumber) {
         return NextResponse.json(
-          {
+          { 
             error:
               "Could not extract work order number from PDF filename or email text.",
           },
           { status: 400 }
         );
       }
-
+      
       const now = new Date().toISOString();
       parsedWorkOrders = [
         {
-          workOrderNumber,
-          timestampExtracted: now,
-          scheduledDate: now,
-          serviceAddress: null,
-          jobType: null,
-          customerName: null,
-          vendorName: null,
+        workOrderNumber,
+        timestampExtracted: now,
+        scheduledDate: now,
+        serviceAddress: null,
+        jobType: null,
+        customerName: null,
+        vendorName: null,
           jobDescription: emailText ? emailText.trim().slice(0, 500) : null,
-          amount: null,
-          currency: "USD",
+        amount: null,
+        currency: "USD",
           notes: emailText ? emailText.trim() : null,
-          priority: null,
+        priority: null,
         },
       ];
     }
@@ -298,9 +314,19 @@ RETURN JSON EXACTLY IN THIS FORMAT:
 
     // increment usage AFTER success
     try {
+      console.log(`[extract-free] Attempting to increment usage for IP: ${ip || "unknown"}`);
       await incrementFreeUsage({ ip });
+      console.log(`[extract-free] Successfully incremented usage counters`);
     } catch (e) {
       console.error("[extract-free] incrementFreeUsage failed:", e);
+      if (e instanceof Error) {
+      console.error("[extract-free] Error details:", {
+          message: e.message,
+          stack: e.stack,
+          name: e.name,
+      });
+      }
+      // Don't fail the request - usage tracking is best-effort
     }
 
     const response: ManualProcessResponse = {
@@ -313,11 +339,11 @@ RETURN JSON EXACTLY IN THIS FORMAT:
         ...(aiModelUsed ? { aiModel: aiModelUsed } : {}),
         ...(totalTokens > 0
           ? {
-              tokenUsage: {
-                promptTokens: totalPromptTokens,
-                completionTokens: totalCompletionTokens,
+          tokenUsage: {
+            promptTokens: totalPromptTokens,
+            completionTokens: totalCompletionTokens,
                 totalTokens,
-              },
+          },
             }
           : {}),
       },

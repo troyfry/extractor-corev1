@@ -19,6 +19,7 @@ import type { InferSelectModel, InferInsertModel } from "drizzle-orm";
 
 export const workOrders = pgTable("work_orders", {
   id: uuid("id").defaultRandom().primaryKey(),
+  jobId: uuid("job_id").defaultRandom().notNull().unique(), // Stable UUID for Google Sheets - never changes once created
   userId: varchar("user_id", { length: 255 }), // User ID from Google OAuth 'sub' claim (optional for free version)
   timestampExtracted: timestamp("timestamp_extracted", { withTimezone: false }).defaultNow().notNull(),
   workOrderNumber: varchar("work_order_number", { length: 255 }).notNull(),
@@ -102,4 +103,18 @@ export const freeUsageGlobal = pgTable("free_usage_global", {
   count: integer("count").notNull().default(0),
   updatedAt: timestamp("updated_at", { withTimezone: false }).defaultNow().notNull(),
 });
+
+/**
+ * User Settings table.
+ * Stores per-user configuration settings, including Google Sheets spreadsheet ID.
+ */
+export const userSettings = pgTable("user_settings", {
+  userId: varchar("user_id", { length: 255 }).notNull().primaryKey(), // User ID from Google OAuth 'sub' claim
+  googleSheetsSpreadsheetId: varchar("google_sheets_spreadsheet_id", { length: 255 }), // Google Sheets spreadsheet ID (nullable)
+  createdAt: timestamp("created_at", { withTimezone: false }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: false }).defaultNow().notNull(),
+});
+
+export type DBUserSettings = InferSelectModel<typeof userSettings>;
+export type DBUserSettingsInsert = InferInsertModel<typeof userSettings>;
 

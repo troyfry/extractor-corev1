@@ -94,8 +94,12 @@ function escapeCsvValue(value: string | null | undefined): string {
 /**
  * Generate CSV string from parsed work orders.
  */
-function generateCsv(workOrders: ParsedWorkOrder[]): string {
+function generateCsv(workOrders: ParsedWorkOrder[], issuerKey: string): string {
+  const { generateJobId } = require("@/lib/workOrders/sheetsIngestion");
+  
   const headers = [
+    "Job ID",
+    "Issuer",
     "Work Order Number",
     "Scheduled Date",
     "Customer Name",
@@ -110,8 +114,12 @@ function generateCsv(workOrders: ParsedWorkOrder[]): string {
     "Timestamp Extracted",
   ];
 
-  const rows = workOrders.map((wo) => [
-    escapeCsvValue(wo.workOrderNumber),
+  const rows = workOrders.map((wo) => {
+    const jobId = generateJobId(issuerKey, wo.workOrderNumber);
+    return [
+      escapeCsvValue(jobId),
+      escapeCsvValue(issuerKey), // Use issuerKey from email sender domain (stable)
+      escapeCsvValue(wo.workOrderNumber || ""),
     escapeCsvValue(wo.scheduledDate),
     escapeCsvValue(wo.customerName),
     escapeCsvValue(wo.serviceAddress),
@@ -123,7 +131,8 @@ function generateCsv(workOrders: ParsedWorkOrder[]): string {
     escapeCsvValue(wo.notes),
     escapeCsvValue(wo.vendorName),
     escapeCsvValue(wo.timestampExtracted),
-  ]);
+    ];
+  });
 
   const csvLines = [
     headers.map(escapeCsvValue).join(","),
@@ -182,7 +191,7 @@ function parseAiResponse(
         .join(" | ");
 
       return {
-        workOrderNumber: wo.work_order_number || `UNKNOWN-${Date.now()}`,
+        workOrderNumber: wo.work_order_number || null, // null if missing - routes to "Needs Review"
         timestampExtracted: now,
         scheduledDate: wo.scheduled_date || now,
         serviceAddress: wo.service_address || null,
@@ -495,13 +504,9 @@ ${pdfText}`;
           workOrderNumber = extractWorkOrderNumberFromText(pdfAttachment.filename);
         }
         
-        // If still not found, generate a fallback work order number
+        // If still not found, set to null (will route to "Needs Review" sheet)
         if (!workOrderNumber) {
-          // Use message ID and timestamp as fallback
-          const fallbackId = messageId.slice(0, 8);
-          const timestamp = Date.now().toString().slice(-6);
-          workOrderNumber = `UNKNOWN-${fallbackId}-${timestamp}`;
-          console.warn(`[Gmail Process] Could not extract work order number from email subject ("${email.subject}") or PDF filename ("${pdfAttachment.filename}"). Using fallback: ${workOrderNumber}`);
+          console.warn(`[Gmail Process] Could not extract work order number from email subject ("${email.subject}") or PDF filename ("${pdfAttachment.filename}"). Will route to "Needs Review" sheet.`);
         } else {
           console.log(`[Gmail Process] Rule-based parser extracted work order number: ${workOrderNumber}`);
         }
@@ -509,7 +514,7 @@ ${pdfText}`;
         const now = new Date().toISOString();
         
         parsedWorkOrders = [{
-          workOrderNumber,
+          workOrderNumber, // Can be null - will route to "Needs Review"
           timestampExtracted: now,
           scheduledDate: now,
           serviceAddress: null,
@@ -530,21 +535,138 @@ ${pdfText}`;
 
     console.log(`[Gmail Process] Finished processing all PDFs. Total work orders extracted: ${allParsedWorkOrders.length}`);
 
-    // Generate CSV from all parsed work orders
-    const csv = generateCsv(allParsedWorkOrders);
+    // Guard: Do not process if no work orders were extracted
+    if (allParsedWorkOrders.length === 0) {
+      throw new Error("No work orders extracted from attachments; leaving label for retry.");
+    }
 
-    // Remove label if requested and processing succeeded
+    // Extract issuerKey from email sender domain
+    // Parse domain from email.from (e.g., "sender@example.com" -> "example.com")
+    function extractIssuerKey(fromAddress: string): string {
+      const emailMatch = fromAddress.match(/@([^\s>]+)/);
+      if (emailMatch && emailMatch[1]) {
+        const domain = emailMatch[1].toLowerCase().trim();
+        // Extract root domain (good enough for now - handles subdomains)
+        const parts = domain.split(".");
+        if (parts.length >= 2) {
+          return parts.slice(-2).join("."); // e.g., "example.com" from "mail.example.com"
+        }
+        return domain;
+      }
+      return "unknown";
+    }
+
+    const issuerKey = extractIssuerKey(email.from);
+    console.log(`[Gmail Process] Extracted issuerKey from sender: ${email.from} -> ${issuerKey}`);
+
+    // Wrap entire processing block - label removal only happens if ALL steps succeed
     let labelRemoved = false;
-    if (autoRemoveLabel && allParsedWorkOrders.length > 0) {
+    let processingError: Error | null = null;
+    let skipSheets = false; // Track if Sheets writes were skipped (for warning message)
+
+    try {
+      // Validate required configuration
+      if (!accessToken) {
+        throw new Error("No Google access token available. Cannot process email.");
+      }
+
+      const { getUserSpreadsheetId } = await import("@/lib/userSettings/repository");
+      const { auth } = await import("@/auth");
+      const { cookies } = await import("next/headers");
+      
+      // Check cookie first (session-based, no DB)
+      const cookieSpreadsheetId = (await cookies()).get("googleSheetsSpreadsheetId")?.value || null;
+      
+      // Use cookie if available, otherwise check session/JWT token, then DB
+      let spreadsheetId: string | null = null;
+      if (cookieSpreadsheetId) {
+        spreadsheetId = cookieSpreadsheetId;
+        console.log(`[Gmail Process] Using spreadsheet ID from cookie: ${spreadsheetId.substring(0, 10)}...`);
+      } else {
+        // Then check session/JWT token
+        const session = await auth();
+        const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+        spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
+        if (spreadsheetId) {
+          console.log(`[Gmail Process] Using spreadsheet ID from session/DB: ${spreadsheetId.substring(0, 10)}...`);
+        }
+      }
+      
+      // In dev mode, allow processing without Sheets (for testing parsing logic)
+      const isDevMode = process.env.NODE_ENV !== "production";
+      skipSheets = !spreadsheetId && isDevMode;
+      
+      if (!spreadsheetId && !skipSheets) {
+        throw new Error("No Google Sheets spreadsheet ID configured. Please configure in Settings.");
+      }
+
+      if (skipSheets) {
+        console.warn("[Gmail Process] ⚠️  No spreadsheet ID configured. Skipping Sheets/Drive writes (dev mode).");
+        console.warn("[Gmail Process] Parsed work orders will be returned but not persisted.");
+      } else {
+        console.log("[Gmail Process] Writing work orders to Sheets + Drive:", {
+          spreadsheetId: `${spreadsheetId!.substring(0, 10)}...`,
+          workOrdersCount: allParsedWorkOrders.length,
+          pdfCount: pdfsToProcess.length,
+          messageId,
+        });
+
+        // Collect PDF buffers for upload
+        const pdfBuffers: Buffer[] = [];
+        const pdfFilenames: string[] = [];
+        
+        for (const pdfAttachment of pdfsToProcess) {
+          pdfBuffers.push(pdfAttachment.data);
+          pdfFilenames.push(pdfAttachment.filename);
+        }
+
+        // Write to Sheets with PDF upload to Drive
+        // This will throw if ANY step fails (Drive upload OR Sheets write)
+        const { writeWorkOrdersToSheets } = await import("@/lib/workOrders/sheetsIngestion");
+        await writeWorkOrdersToSheets(
+          allParsedWorkOrders,
+          accessToken,
+          spreadsheetId!,
+          issuerKey, // Use issuerKey from email sender domain (stable)
+          pdfBuffers.length > 0 ? pdfBuffers : undefined,
+          pdfFilenames.length > 0 ? pdfFilenames : undefined
+        );
+        
+        console.log("[Gmail Process] Successfully wrote work orders to Sheets + Drive");
+      }
+
+      // ALL steps succeeded - now remove label (if requested)
+      // Note: In dev mode without Sheets, we still remove the label since parsing succeeded
+      if (autoRemoveLabel) {
       try {
         labelRemoved = await removeWorkOrderLabel(accessToken, messageId);
+          console.log(`[Gmail Process] Label removed successfully for message ${messageId}`);
       } catch (labelError) {
-        // Log error but don't fail the request - parsing succeeded
-        console.error("Failed to remove label (non-fatal):", labelError);
+          // Label removal failed - log but don't fail the request since processing succeeded
+          console.error(`[Gmail Process] Failed to remove label for message ${messageId}:`, labelError);
+          // Note: labelRemoved remains false, but processing succeeded
       }
     }
 
-    // Return parsed work orders and CSV (no database writes)
+    } catch (error) {
+      // Processing failed - DO NOT remove label
+      processingError = error instanceof Error ? error : new Error(String(error));
+      console.error(`[Gmail Process] Processing failed for message ${messageId}:`, {
+        message: processingError.message,
+        stack: processingError.stack,
+        emailId: messageId,
+        pdfCount: pdfsToProcess.length,
+        pdfFilenames: pdfsToProcess.map(p => p.filename),
+      });
+
+      // Re-throw to return error response (label will remain intact)
+      throw processingError;
+    }
+
+    // Generate CSV from all parsed work orders (only if we got here = success)
+    const csv = generateCsv(allParsedWorkOrders, issuerKey);
+
+    // Return parsed work orders and CSV
     const response: ManualProcessResponse = {
       workOrders: allParsedWorkOrders,
       csv,
@@ -554,6 +676,9 @@ ${pdfText}`;
         source: "gmail",
         messageId,
         labelRemoved,
+        ...(skipSheets ? { 
+          warning: "No Google Sheets spreadsheet ID configured. Work orders were parsed but not saved to Sheets/Drive. Please configure in Settings." 
+        } : {}),
         ...(aiModelUsed ? { aiModel: aiModelUsed } : {}),
         ...(totalTokens > 0 ? {
           tokenUsage: {

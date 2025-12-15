@@ -27,6 +27,7 @@ export default function GmailPage() {
   const [gmailLabel, setGmailLabel] = useState<string>(""); // Optional Gmail label filter
   const [selectedEmails, setSelectedEmails] = useState<Set<string>>(new Set()); // Selected emails for batch processing
   const [expandedEmails, setExpandedEmails] = useState<Set<string>>(new Set()); // Expanded emails to show details
+  const [hasSpreadsheetId, setHasSpreadsheetId] = useState<boolean | null>(null);
   
   const { plan } = useCurrentPlan();
   const { key: openaiKey } = useUserOpenAIKey();
@@ -53,6 +54,27 @@ export default function GmailPage() {
   useEffect(() => {
     if (isFreePlan && !canUseGmail) {
       router.replace("/free");
+      return;
+    }
+    
+    // Check if spreadsheet ID is configured (only for Pro/Premium users with Gmail access)
+    // Free plan users don't need Google Sheets integration
+    if (canUseGmail && !isFreePlan) {
+      const checkSpreadsheetId = async () => {
+        try {
+          const response = await fetch("/api/user-settings/spreadsheet-id");
+          if (response.ok) {
+            const data = await response.json();
+            setHasSpreadsheetId(!!data.googleSheetsSpreadsheetId);
+          } else {
+            setHasSpreadsheetId(false);
+          }
+        } catch (error) {
+          console.error("Error checking spreadsheet ID:", error);
+          setHasSpreadsheetId(false);
+        }
+      };
+      checkSpreadsheetId();
     }
   }, [isFreePlan, canUseGmail, router]);
   
@@ -435,18 +457,71 @@ export default function GmailPage() {
     <AppShell>
       <MainNavigation currentMode="gmail" />
       <div className="min-h-screen bg-gray-900 text-white pt-8">
-        {/* Page Title */}
-      
+        <div className="max-w-6xl mx-auto px-4">
+          {/* Page Title */}
+          <div className="mb-6">
+            <h1 className="text-2xl font-semibold text-white mb-2">
+              From Inbox
+            </h1>
+            <p className="text-sm text-gray-400">
+              Shows emails with the "{WORK_ORDER_LABEL_NAME}" label. Process to extract work orders.
+            </p>
+          </div>
+
+          {/* Spreadsheet ID Warning - Only show for Pro/Premium users */}
+          {canUseGmail && hasSpreadsheetId === false && (
+            <div className="mb-6 bg-yellow-900/30 border border-yellow-700 rounded-lg p-4">
+              <div className="flex items-start gap-3">
+                <svg
+                  className="w-5 h-5 mt-0.5 flex-shrink-0 text-yellow-400"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                  />
+                </svg>
+                <div className="flex-1">
+                  <h3 className="text-yellow-300 font-medium mb-1">
+                    Google Sheets Not Configured
+                  </h3>
+                  <p className="text-yellow-200 text-sm mb-2">
+                    To save work orders to Google Sheets, please configure your spreadsheet ID in Settings.
+                  </p>
+                  <a
+                    href="/settings"
+                    className="inline-flex items-center gap-1 text-yellow-300 hover:text-yellow-200 text-sm font-medium underline"
+                  >
+                    Go to Settings
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M9 5l7 7-7 7"
+                      />
+                    </svg>
+                  </a>
+                </div>
+              </div>
+            </div>
+          )}
 
         <div className="space-y-6">
           {/* Header and Controls */}
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
-               
-                <p className="text-sm text-gray-400">
-                  Shows emails with the "{WORK_ORDER_LABEL_NAME}" label. Process to extract work orders.
-                </p>
+                {/* Title moved to top */}
               </div>
               <button
                 onClick={handleFindEmails}
@@ -711,6 +786,7 @@ export default function GmailPage() {
               </p>
             </div>
           )}
+        </div>
         </div>
       </div>
     </AppShell>

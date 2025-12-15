@@ -13,6 +13,7 @@ declare module "next-auth" {
     userId?: string; // Stable user ID from Google's 'sub' claim
     googleAccessToken?: string; // Google OAuth access token for Gmail API
     googleRefreshToken?: string; // Google OAuth refresh token
+    googleSheetsSpreadsheetId?: string | null; // Google Sheets spreadsheet ID (stored in session, not DB)
     user: {
       id: string;
       email: string;
@@ -39,6 +40,7 @@ declare module "next-auth/jwt" {
     googleAccessToken?: string; // Google OAuth access token for Gmail API
     googleRefreshToken?: string; // Google OAuth refresh token
     googleExpiresAt?: number; // Token expiration timestamp
+    googleSheetsSpreadsheetId?: string | null; // Google Sheets spreadsheet ID (stored in JWT, not DB)
   }
 }
 

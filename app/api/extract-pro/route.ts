@@ -420,13 +420,92 @@ CRITICAL:
       }];
     }
 
-    // Convert ParsedWorkOrder[] to WorkOrderInput[] and save to database
-    const workOrderInputs = parsedToWorkOrderInput(parsedWorkOrders, userId);
-    const savedWorkOrders = await workOrderRepo.saveMany(workOrderInputs);
+    // Write directly to Google Sheets + Drive (no DB persistence)
+    // Sheets + Drive is the system of record
+    const accessToken = user?.googleAccessToken || null;
+    
+    if (accessToken) {
+      try {
+        const { getUserSpreadsheetId } = await import("@/lib/userSettings/repository");
+        const { auth } = await import("@/auth");
+        const { cookies } = await import("next/headers");
+        
+        // Check cookie first (session-based, no DB)
+        const cookieSpreadsheetId = (await cookies()).get("googleSheetsSpreadsheetId")?.value || null;
+        
+        // Use cookie if available, otherwise check session/JWT token, then DB
+        let spreadsheetId: string | null = null;
+        if (cookieSpreadsheetId) {
+          spreadsheetId = cookieSpreadsheetId;
+        } else {
+          // Then check session/JWT token
+          const session = await auth();
+          const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+          spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
+        }
+        
+        if (spreadsheetId) {
+          console.log("[extract-pro] Writing work orders to Sheets + Drive:", {
+            spreadsheetId: `${spreadsheetId.substring(0, 10)}...`,
+            workOrdersCount: parsedWorkOrders.length,
+          });
 
-    // Return saved WorkOrder[] (with id, createdAt, etc.)
+          // Use the PDF buffer that was already read for validation
+          const pdfBuffer = buffer;
+          const pdfFilename = file.name;
+
+          // Extract issuerKey from user email domain (for manual uploads)
+          // Parse domain from user email (e.g., "user@example.com" -> "example.com")
+          function extractIssuerKeyFromEmail(email: string | null | undefined): string {
+            if (!email) return "manual";
+            const emailMatch = email.match(/@([^\s>]+)/);
+            if (emailMatch && emailMatch[1]) {
+              const domain = emailMatch[1].toLowerCase().trim();
+              const parts = domain.split(".");
+              if (parts.length >= 2) {
+                return parts.slice(-2).join("."); // e.g., "example.com" from "mail.example.com"
+              }
+              return domain;
+            }
+            return "manual";
+          }
+
+          // Derive issuerKey from user email (or use "manual" as fallback)
+          const issuerKey = extractIssuerKeyFromEmail(user.email || null);
+          console.log(`[extract-pro] Using issuerKey: ${issuerKey}`);
+
+          // Write to Sheets with PDF upload to Drive
+          const { writeWorkOrdersToSheets } = await import("@/lib/workOrders/sheetsIngestion");
+          await writeWorkOrdersToSheets(
+            parsedWorkOrders,
+            accessToken,
+            spreadsheetId,
+            issuerKey,
+            pdfBuffer ? [pdfBuffer] : undefined,
+            pdfFilename ? [pdfFilename] : undefined
+          );
+          
+          console.log("[extract-pro] Successfully wrote work orders to Sheets + Drive");
+        } else {
+          console.log("[extract-pro] No spreadsheet ID configured, skipping Sheets/Drive write");
+        }
+      } catch (sheetsError) {
+        // Log but don't fail the request
+        console.error("[extract-pro] Error writing to Sheets/Drive:", sheetsError);
+        if (sheetsError instanceof Error) {
+          console.error("[extract-pro] Error details:", {
+            message: sheetsError.message,
+            stack: sheetsError.stack,
+          });
+        }
+      }
+    } else {
+      console.log("[extract-pro] No access token available, skipping Sheets/Drive write");
+    }
+
+    // Return parsed work orders (no DB persistence - Sheets + Drive is the system of record)
     return NextResponse.json(
-      { workOrders: savedWorkOrders },
+      { workOrders: parsedWorkOrders },
       { status: 200 }
     );
   } catch (error) {

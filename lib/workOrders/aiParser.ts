@@ -1,3 +1,11 @@
+
+/**
+ * IMPORTANT:
+ * - This app intentionally uses pdf-parse ONLY
+ * - pdfjs-dist is NOT supported in serverless (Vercel) for this project
+ * - Do NOT reintroduce pdfjs unless moving to a dedicated Node worker
+ */
+
 /**
  * AI-powered parser for extracting WorkOrder data from EmailMessages.
  *

@@ -6,6 +6,8 @@ import AppShell from "@/components/layout/AppShell";
 import MainNavigation from "@/components/layout/MainNavigation";
 import ResultsTable from "@/components/work-orders/ResultsTable";
 import type { WorkOrder } from "@/lib/workOrders/types";
+import { useCurrentPlan } from "@/lib/plan-context";
+import { isFreePlan } from "@/lib/plan-helpers";
 
 /**
  * Pro tier dashboard page for work order extraction.
@@ -24,29 +26,46 @@ export default function DashboardPage() {
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const [hasSpreadsheetId, setHasSpreadsheetId] = useState<boolean | null>(null);
   const router = useRouter();
+  const { plan } = useCurrentPlan();
+  const isFree = isFreePlan(plan);
 
-  // Check authentication status
+  // Check authentication status (non-blocking - render immediately)
   useEffect(() => {
     const checkAuth = async () => {
       try {
         const response = await fetch("/api/auth/session");
         const session = await response.json();
-        if (session && session.user) {
-          setIsAuthenticated(true);
-        } else {
-          setIsAuthenticated(false);
+        if (!session || !session.user) {
           router.push("/auth/signin");
+          return;
+        }
+        
+        // Check if spreadsheet ID is configured (only for Pro/Premium users)
+        // Free plan users don't need Google Sheets integration
+        if (!isFree) {
+          try {
+            const settingsResponse = await fetch("/api/user-settings/spreadsheet-id");
+            if (settingsResponse.ok) {
+              const settingsData = await settingsResponse.json();
+              setHasSpreadsheetId(!!settingsData.googleSheetsSpreadsheetId);
+            } else {
+              setHasSpreadsheetId(false);
+            }
+          } catch (error) {
+            console.error("Error checking spreadsheet ID:", error);
+            setHasSpreadsheetId(false);
+          }
         }
       } catch (error) {
         console.error("Error checking auth:", error);
-        setIsAuthenticated(false);
         router.push("/auth/signin");
       }
     };
+    // Check auth in background - don't block rendering
     checkAuth();
-  }, [router]);
+  }, [router, isFree]);
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -199,22 +218,6 @@ export default function DashboardPage() {
     }
   };
 
-  // Show loading state while checking auth
-  if (isAuthenticated === null) {
-    return (
-      <AppShell>
-        <div className="min-h-screen bg-gray-900 text-white pt-8 flex items-center justify-center">
-          <div className="text-gray-400">Loading...</div>
-        </div>
-      </AppShell>
-    );
-  }
-
-  // Don't render if not authenticated (will redirect)
-  if (!isAuthenticated) {
-    return null;
-  }
-
   return (
     <AppShell>
       <MainNavigation currentMode="file" />
@@ -228,6 +231,54 @@ export default function DashboardPage() {
               Upload a PDF work order to extract structured data. Your work orders are saved to your account.
             </p>
           </div>
+
+          {/* Spreadsheet ID Warning - Only show for Pro/Premium users */}
+          {!isFree && hasSpreadsheetId === false && (
+            <div className="mb-6 bg-yellow-900/30 border border-yellow-700 rounded-lg p-4">
+              <div className="flex items-start gap-3">
+                <svg
+                  className="w-5 h-5 mt-0.5 flex-shrink-0 text-yellow-400"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                  />
+                </svg>
+                <div className="flex-1">
+                  <h3 className="text-yellow-300 font-medium mb-1">
+                    Google Sheets Not Configured
+                  </h3>
+                  <p className="text-yellow-200 text-sm mb-2">
+                    To save work orders to Google Sheets, please configure your spreadsheet ID in Settings.
+                  </p>
+                  <a
+                    href="/settings"
+                    className="inline-flex items-center gap-1 text-yellow-300 hover:text-yellow-200 text-sm font-medium underline"
+                  >
+                    Go to Settings
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M9 5l7 7-7 7"
+                      />
+                    </svg>
+                  </a>
+                </div>
+              </div>
+            </div>
+          )}
 
           <form onSubmit={handleSubmit} className="space-y-6">
             {/* Upload PDF Section */}

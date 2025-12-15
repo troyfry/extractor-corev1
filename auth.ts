@@ -85,7 +85,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
      * 
      * These tokens will be needed to make API calls to Google Sheets/Gmail APIs.
      */
-    async jwt({ token, account, user, profile }) {
+    async jwt({ token, account, user, profile, trigger, session }) {
       // Initial sign in: store user info
       if (account && user) {
         // Use Google's 'sub' (subject) as the stable userId
@@ -107,6 +107,16 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           (token as any).googleExpiresAt = account.expires_at;
         }
       }
+      
+      // Update token when session is updated (for spreadsheet ID updates)
+      if (trigger === "update" && session) {
+        if ((session as any).googleSheetsSpreadsheetId !== undefined) {
+          (token as any).googleSheetsSpreadsheetId = (session as any).googleSheetsSpreadsheetId;
+        }
+      }
+      
+      // Note: Spreadsheet ID can also be read from cookies in API routes
+      // This JWT token approach is for when cookies aren't available
       
       return token;
     },
@@ -139,6 +149,11 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       }
       if ((token as any).googleRefreshToken) {
         (session as any).googleRefreshToken = (token as any).googleRefreshToken;
+      }
+      
+      // Expose spreadsheet ID from session/JWT token
+      if ((token as any).googleSheetsSpreadsheetId) {
+        (session as any).googleSheetsSpreadsheetId = (token as any).googleSheetsSpreadsheetId;
       }
       
       return session;

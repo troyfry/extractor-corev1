@@ -117,21 +117,26 @@ export async function listWorkOrderEmails(
   // Build search query
   // Gmail search syntax:
   // - has:attachment - finds emails with any attachment
-  // - filename:pdf - finds attachments with PDF in filename (may not catch all)
-  // We'll search broadly and filter PDFs in code for better accuracy
+  // - in:INBOX - search in inbox only (default)
+  // - -in:SENT - exclude sent mailbox
+  // - label:"name" - search by label name
   let query = "has:attachment";
   let labelIds: string[] | undefined = undefined;
+  
+  // Always exclude SENT mailbox
+  query += " -in:SENT";
   
   // Add label filter if provided
   // Labels can be specified as:
   // - Label name (e.g., "Work Orders") - use Gmail search syntax: label:"Work Orders"
-  // - Special labels like "INBOX", "SENT", "DRAFT", etc. - use: in:INBOX
+  // - Special labels like "INBOX", "DRAFT", etc. - use: in:INBOX
   // - Label ID (e.g., "Label_1234567890") - use labelIds parameter
+  // If no label provided, default to INBOX
   if (label && label.trim()) {
     const trimmedLabel = label.trim();
     
-    // Special Gmail labels (INBOX, SENT, DRAFT, etc.)
-    const specialLabels = ["INBOX", "SENT", "DRAFT", "SPAM", "TRASH", "UNREAD", "STARRED"];
+    // Special Gmail labels (INBOX, DRAFT, etc.) - SENT is excluded above
+    const specialLabels = ["INBOX", "DRAFT", "SPAM", "TRASH", "UNREAD", "STARRED"];
     const upperLabel = trimmedLabel.toUpperCase();
     
     if (specialLabels.includes(upperLabel)) {
@@ -143,6 +148,9 @@ export async function listWorkOrderEmails(
       // Regular label name - use label:"name" syntax
       query += ` label:"${trimmedLabel}"`;
     }
+  } else {
+    // Default to INBOX if no label provided
+    query += " in:INBOX";
   }
 
   const res = await gmail.users.messages.list({

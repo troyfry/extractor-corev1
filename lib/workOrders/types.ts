@@ -10,6 +10,7 @@
  */
 export type WorkOrder = {
   id: string;
+  jobId: string; // Stable UUID for Google Sheets - never changes once created
   userId: string | null; // User ID from Google OAuth 'sub' claim (optional for free version)
   timestampExtracted: string; // ISO string
   workOrderNumber: string;
@@ -35,6 +36,7 @@ export type WorkOrder = {
  */
 export type WorkOrderInput = {
   id?: string;
+  jobId?: string; // Optional: Stable UUID for Google Sheets (generated if not provided)
   userId?: string | null; // Optional: User ID from authenticated session (not needed for free version)
   timestampExtracted?: string; // ISO string
   workOrderNumber: string;
