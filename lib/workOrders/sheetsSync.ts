@@ -41,6 +41,8 @@ export async function syncWorkOrderToSheets(
       status: "created", // Default status
       original_pdf_url: workOrder.workOrderPdfLink || null,
       signed_pdf_url: null, // Will be updated when PDF is signed
+      signed_preview_image_url: null,
+      signature_confidence: null,
       created_at: workOrder.createdAt,
       signed_at: null, // Will be updated when PDF is signed
     };

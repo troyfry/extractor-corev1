@@ -19,6 +19,8 @@ export const REQUIRED_COLUMNS = [
   "status",
   "original_pdf_url",
   "signed_pdf_url",
+  "signed_preview_image_url",
+  "signature_confidence",
   "created_at",
   "signed_at",
 ] as const;
@@ -31,6 +33,8 @@ export type JobRecord = {
   status: string;
   original_pdf_url: string | null;
   signed_pdf_url: string | null;
+  signed_preview_image_url: string | null;
+  signature_confidence: string | null; // "high" | "medium" | "low" as text
   created_at: string; // ISO string
   signed_at: string | null; // ISO string or null
 };
@@ -56,7 +60,7 @@ export function createSheetsClient(accessToken: string) {
  * Format sheet name for Google Sheets API range.
  * Sheet names with spaces or special characters must be quoted.
  */
-function formatSheetRange(sheetName: string, range: string = "1:1"): string {
+export function formatSheetRange(sheetName: string, range: string = "1:1"): string {
   // If sheet name contains spaces, quotes, or special characters, wrap it in single quotes
   if (/[\s'"]/.test(sheetName)) {
     return `'${sheetName.replace(/'/g, "''")}'!${range}`;
@@ -374,5 +378,127 @@ export async function findJobRecordByJobId(
     console.error("[Sheets] Error finding job record:", error);
     throw error;
   }
+}
+
+/**
+ * Update an existing job row by wo_number with signed work order info.
+ * Returns true if a matching row was found and updated, false otherwise.
+ */
+export async function updateJobWithSignedInfoByWorkOrderNumber(
+  accessToken: string,
+  spreadsheetId: string,
+  sheetName: string,
+  woNumber: string,
+  signedData: {
+    signedPdfUrl: string;
+    signedPreviewImageUrl: string | null;
+    confidence: "high" | "medium" | "low";
+    signedAt?: string;
+    statusOverride?: string;
+    fmKey?: string | null;
+  }
+): Promise<boolean> {
+  const sheets = createSheetsClient(accessToken);
+
+  // Ensure all required columns (including new signed columns) exist
+  await ensureColumnsExist(accessToken, spreadsheetId, sheetName);
+
+  const allDataResponse = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, "A:Z"),
+  });
+
+  const rows = allDataResponse.data.values || [];
+  if (rows.length === 0) {
+    console.warn("[Sheets] No rows found when trying to update signed info.");
+    return false;
+  }
+
+  const headers = rows[0] as string[];
+  const headersLower = headers.map((h) => h.toLowerCase().trim());
+
+  const woColIndex = headersLower.indexOf("wo_number");
+  if (woColIndex === -1) {
+    console.warn(
+      `[Sheets] wo_number column not found in sheet ${sheetName} when updating signed info.`
+    );
+    return false;
+  }
+
+  const normalizedTarget = (woNumber || "").trim();
+  let rowIndex = -1;
+
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const cellValue = (row?.[woColIndex] || "").trim();
+    if (cellValue && cellValue === normalizedTarget) {
+      rowIndex = i + 1; // Sheets rows are 1-based
+      break;
+    }
+  }
+
+  if (rowIndex === -1) {
+    console.warn(
+      `[Sheets] No row found with wo_number="${normalizedTarget}" in sheet ${sheetName}.`
+    );
+    return false;
+  }
+
+  const getIndex = (name: string) =>
+    headersLower.indexOf(name.toLowerCase());
+
+  const signedPdfCol = getIndex("signed_pdf_url");
+  const signedPreviewCol = getIndex("signed_preview_image_url");
+  const confidenceCol = getIndex("signature_confidence");
+  const signedAtCol = getIndex("signed_at");
+  const statusCol = getIndex("status");
+  const fmKeyCol = getIndex("fmkey");
+  const issuerCol = getIndex("issuer");
+
+  const existingRow = rows[rowIndex - 1] || [];
+  const rowData = [...existingRow];
+
+  const setCell = (colIndex: number, value: string | null) => {
+    if (colIndex < 0) return;
+    while (rowData.length <= colIndex) {
+      rowData.push("");
+    }
+    rowData[colIndex] = value ?? "";
+  };
+
+  const signedAt =
+    signedData.signedAt && signedData.signedAt.trim().length > 0
+      ? signedData.signedAt
+      : new Date().toISOString();
+
+  setCell(signedPdfCol, signedData.signedPdfUrl);
+  setCell(signedPreviewCol, signedData.signedPreviewImageUrl);
+  setCell(confidenceCol, signedData.confidence);
+  setCell(signedAtCol, signedAt);
+  setCell(statusCol, signedData.statusOverride || "SIGNED");
+  
+  // Update fmKey/issuer if provided (ensures correct fmKey is set for signed work orders)
+  if (signedData.fmKey !== undefined) {
+    setCell(fmKeyCol, signedData.fmKey);
+    // Also update issuer if fmKey is provided (issuer often matches fmKey)
+    if (issuerCol >= 0 && signedData.fmKey) {
+      setCell(issuerCol, signedData.fmKey);
+    }
+  }
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, `${rowIndex}:${rowIndex}`),
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [rowData],
+    },
+  });
+
+  console.log(
+    `[Sheets] Updated signed info for wo_number="${normalizedTarget}" in sheet ${sheetName}`
+  );
+
+  return true;
 }
 

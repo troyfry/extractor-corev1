@@ -98,6 +98,8 @@ export async function writeWorkOrderToSheets(
     status: "created",
     original_pdf_url: originalPdfUrl,
     signed_pdf_url: null,
+    signed_preview_image_url: null,
+    signature_confidence: null,
     created_at: parsedWorkOrder.timestampExtracted || new Date().toISOString(),
     signed_at: null,
   };
