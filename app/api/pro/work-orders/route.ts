@@ -1,0 +1,165 @@
+import { NextResponse } from "next/server";
+import { getPlanFromRequest } from "@/lib/api/getPlanFromRequest";
+import { hasFeature } from "@/lib/plan";
+import { getCurrentUser } from "@/lib/auth/currentUser";
+import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
+import { createSheetsClient, formatSheetRange } from "@/lib/google/sheets";
+
+export const runtime = "nodejs";
+
+const WORK_ORDERS_SHEET_NAME =
+  process.env.GOOGLE_SHEETS_WORK_ORDERS_SHEET_NAME || "Work_Orders";
+
+export type WorkOrderRow = {
+  jobId: string;
+  fmKey: string | null;
+  wo_number: string;
+  status: string | null;
+  created_at: string | null;
+  scheduled_date: string | null;
+  timestamp_extracted: string | null;
+  signed_at: string | null;
+  work_order_pdf_link: string | null;
+  signed_pdf_url: string | null;
+  signed_preview_image_url: string | null;
+};
+
+export async function GET(request: Request) {
+  try {
+    // Plan gating: Pro/Premium only
+    const plan = getPlanFromRequest(request);
+    if (!hasFeature(plan, "canUseServerKey")) {
+      return NextResponse.json(
+        { error: "This feature requires Pro or Premium plan" },
+        { status: 403 }
+      );
+    }
+
+    // Get authenticated user
+    const user = await getCurrentUser();
+    if (!user || !user.userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    // Get Google access token
+    if (!user.googleAccessToken) {
+      return NextResponse.json(
+        { error: "Google authentication required. Please sign in with Google." },
+        { status: 401 }
+      );
+    }
+
+    // Get spreadsheet ID - check cookie first (session-based, no DB)
+    const { cookies } = await import("next/headers");
+    const cookieSpreadsheetId = (await cookies()).get("googleSheetsSpreadsheetId")?.value || null;
+
+    // Use cookie if available, otherwise check session/JWT token, then DB
+    let spreadsheetId: string | null = null;
+    if (cookieSpreadsheetId) {
+      spreadsheetId = cookieSpreadsheetId;
+    } else {
+      // Then check session/JWT token
+      const { auth } = await import("@/auth");
+      const session = await auth();
+      const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+      spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
+    }
+
+    if (!spreadsheetId) {
+      return NextResponse.json(
+        { error: "Google Sheets spreadsheet ID not configured. Please set it in Settings." },
+        { status: 400 }
+      );
+    }
+
+    // Read Work_Orders sheet
+    const sheets = createSheetsClient(user.googleAccessToken);
+
+    // Get all data from Work_Orders sheet
+    const allDataResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: formatSheetRange(WORK_ORDERS_SHEET_NAME, "A:Z"),
+    });
+
+    const rows = allDataResponse.data.values || [];
+    if (rows.length === 0) {
+      return NextResponse.json({ rows: [] });
+    }
+
+    // First row is headers
+    const headers = rows[0] as string[];
+    const headersLower = headers.map((h) => h.toLowerCase().trim());
+
+    // Helper to get column index by name (case-insensitive)
+    const getIndex = (colName: string): number => {
+      return headersLower.indexOf(colName.toLowerCase());
+    };
+
+    // Map data rows to WorkOrderRow
+    const workOrderRows: WorkOrderRow[] = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.length === 0) continue;
+
+      const jobIdCol = getIndex("jobid");
+      const woNumberCol = getIndex("wo_number");
+      
+      // Skip rows without jobId or wo_number
+      if (jobIdCol === -1 || woNumberCol === -1) continue;
+      if (!row[jobIdCol] || !row[woNumberCol]) continue;
+
+      const rowData: WorkOrderRow = {
+        jobId: String(row[jobIdCol] || ""),
+        fmKey: (() => {
+          const idx = getIndex("fmkey");
+          return idx !== -1 && row[idx] ? String(row[idx]) : null;
+        })(),
+        wo_number: String(row[woNumberCol] || ""),
+        status: (() => {
+          const idx = getIndex("status");
+          return idx !== -1 && row[idx] ? String(row[idx]) : null;
+        })(),
+        created_at: (() => {
+          const idx = getIndex("created_at");
+          return idx !== -1 && row[idx] ? String(row[idx]) : null;
+        })(),
+        scheduled_date: (() => {
+          const idx = getIndex("scheduled_date");
+          return idx !== -1 && row[idx] ? String(row[idx]) : null;
+        })(),
+        timestamp_extracted: (() => {
+          const idx = getIndex("timestamp_extracted");
+          return idx !== -1 && row[idx] ? String(row[idx]) : null;
+        })(),
+        signed_at: (() => {
+          const idx = getIndex("signed_at");
+          return idx !== -1 && row[idx] ? String(row[idx]) : null;
+        })(),
+        work_order_pdf_link: (() => {
+          const idx = getIndex("work_order_pdf_link");
+          return idx !== -1 && row[idx] ? String(row[idx]) : null;
+        })(),
+        signed_pdf_url: (() => {
+          const idx = getIndex("signed_pdf_url");
+          return idx !== -1 && row[idx] ? String(row[idx]) : null;
+        })(),
+        signed_preview_image_url: (() => {
+          const idx = getIndex("signed_preview_image_url");
+          return idx !== -1 && row[idx] ? String(row[idx]) : null;
+        })(),
+      };
+
+      workOrderRows.push(rowData);
+    }
+
+    console.log(`[Work Orders GET] Returning ${workOrderRows.length} work order(s)`);
+    return NextResponse.json({ rows: workOrderRows });
+  } catch (error: any) {
+    console.error("[Work Orders GET] Error:", error);
+    return NextResponse.json(
+      { error: error?.message || "Failed to fetch work orders" },
+      { status: 500 }
+    );
+  }
+}
+

@@ -5,6 +5,9 @@ import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
 import {
   updateJobWithSignedInfoByWorkOrderNumber,
+  writeWorkOrderRecord,
+  findWorkOrderRecordByJobId,
+  type WorkOrderRecord,
 } from "@/lib/google/sheets";
 import {
   appendSignedNeedsReviewRow,
@@ -20,11 +23,15 @@ import {
   getOrCreateFolder,
 } from "@/lib/google/drive";
 import { uploadSnippetImageToDrive } from "@/lib/drive-snippets";
+import { generateJobId } from "@/lib/workOrders/sheetsIngestion";
 
 export const runtime = "nodejs";
 
 const MAIN_SHEET_NAME =
   process.env.GOOGLE_SHEETS_MAIN_SHEET_NAME || "Sheet1";
+
+const WORK_ORDERS_SHEET_NAME =
+  process.env.GOOGLE_SHEETS_WORK_ORDERS_SHEET_NAME || "Work_Orders";
 
 const SIGNED_DRIVE_FOLDER_NAME =
   process.env.GOOGLE_DRIVE_SIGNED_FOLDER_NAME || "Signed Work Orders";
@@ -104,6 +111,8 @@ export async function POST(req: Request) {
     const woNumberOverride =
       (formData.get("woNumber") as string | null) || null;
     const manualReason = (formData.get("reason") as string | null) || null;
+    const pageOverride = formData.get("page");
+    const pageNumber = pageOverride ? parseInt(String(pageOverride), 10) : null;
 
     const arrayBuffer = await file.arrayBuffer();
     const pdfBuffer = Buffer.from(arrayBuffer);
@@ -128,9 +137,17 @@ export async function POST(req: Request) {
     let templateConfig;
     try {
       templateConfig = await getTemplateConfigForFmKey(fmKey);
+      // Override page number if provided in form data
+      if (pageNumber !== null && !isNaN(pageNumber) && pageNumber > 0) {
+        templateConfig = {
+          ...templateConfig,
+          page: pageNumber,
+        };
+      }
       console.log("[Signed Process] Template config found:", {
         templateId: templateConfig.templateId,
         page: templateConfig.page,
+        pageOverride: pageNumber,
       });
     } catch (error) {
       console.error("[Signed Process] Template config error:", error);
@@ -220,7 +237,7 @@ export async function POST(req: Request) {
     const isMediumOrHighConfidence = confidenceLabel === "high" || confidenceLabel === "medium";
     let jobUpdated = false;
 
-    // Update main sheet if: valid woNumber, medium/high confidence (>= 0.3), and successful update
+    // Update main sheet if: valid woNumber, medium/high confidence (>= 0.6), and successful update
     if (effectiveWoNumber && isMediumOrHighConfidence) {
       jobUpdated = await updateJobWithSignedInfoByWorkOrderNumber(
         accessToken,
@@ -238,8 +255,12 @@ export async function POST(req: Request) {
       );
     }
 
-    // Fallback: append to Needs_Review_Signed if job wasn't updated
-    if (!jobUpdated) {
+    // Determine mode: UPDATED if high confidence (>= 0.9) with valid WO number, even if job not found in main sheet
+    // This trusts the OCR result when confidence is very high
+    const mode = (effectiveWoNumber && isHighConfidence) ? "UPDATED" : (jobUpdated ? "UPDATED" : "NEEDS_REVIEW");
+
+    // Fallback: append to Needs_Review_Signed if job wasn't updated AND mode is NEEDS_REVIEW
+    if (mode === "NEEDS_REVIEW") {
       const reason =
         manualReason ||
         (!effectiveWoNumber
@@ -261,8 +282,143 @@ export async function POST(req: Request) {
       });
     }
 
-    // Set mode based on jobUpdated
-    const mode = jobUpdated ? "UPDATED" : "NEEDS_REVIEW";
+    // Update Work_Orders sheet with signed info if we have a WO number
+    if (effectiveWoNumber) {
+      try {
+        // Find existing record by searching main sheet for the issuer
+        // The jobId format is: normalize(issuer) + ":" + normalize(wo_number)
+        // We need the issuer from the main sheet to compute the correct jobId
+        const { createSheetsClient, formatSheetRange } = await import("@/lib/google/sheets");
+        const sheets = createSheetsClient(accessToken);
+        
+        // Search main sheet by wo_number to find the issuer
+        const mainSheetResponse = await sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: formatSheetRange(MAIN_SHEET_NAME, "A:Z"),
+        });
+        
+        const mainRows = mainSheetResponse.data.values || [];
+        let existingIssuer: string | null = null;
+        
+        if (mainRows.length > 0) {
+          const headers = mainRows[0] as string[];
+          const headersLower = headers.map((h) => h.toLowerCase().trim());
+          const woColIndex = headersLower.indexOf("wo_number");
+          const issuerColIndex = headersLower.indexOf("issuer");
+          
+          if (woColIndex >= 0) {
+            for (let i = 1; i < mainRows.length; i++) {
+              const row = mainRows[i];
+              const cellValue = (row?.[woColIndex] || "").trim();
+              if (cellValue === effectiveWoNumber && issuerColIndex >= 0) {
+                existingIssuer = (row[issuerColIndex] || "").trim() || null;
+                console.log(`[Signed Process] Found existing issuer "${existingIssuer}" for wo_number "${effectiveWoNumber}"`);
+                break;
+              }
+            }
+          }
+        }
+        
+        // Use found issuer, or fallback to fmKey if not found (for new records)
+        const issuerKey = existingIssuer || fmKey || "unknown";
+        const jobId = generateJobId(issuerKey, effectiveWoNumber);
+        
+        console.log(`[Signed Process] Computed jobId: ${jobId} (issuer: ${issuerKey}, wo_number: ${effectiveWoNumber})`);
+
+        // Look up existing Work_Orders row to merge with
+        const existingWorkOrder = await findWorkOrderRecordByJobId(
+          accessToken,
+          spreadsheetId,
+          WORK_ORDERS_SHEET_NAME,
+          jobId
+        );
+
+        // Build merged WorkOrderRecord that preserves existing data we don't know
+        // Always use fmKey from request (not from existing record) to ensure correctness
+        const mergedWorkOrder: WorkOrderRecord = {
+          jobId,
+          fmKey: fmKey, // Always use the correct fmKey from request, not from existing record
+          wo_number: effectiveWoNumber,
+          status: mode === "UPDATED" ? "SIGNED" : (existingWorkOrder?.status ?? "OPEN"),
+          scheduled_date: existingWorkOrder?.scheduled_date ?? null,
+          created_at: existingWorkOrder?.created_at ?? nowIso,
+          timestamp_extracted: nowIso,
+          customer_name: existingWorkOrder?.customer_name ?? null,
+          vendor_name: existingWorkOrder?.vendor_name ?? null,
+          service_address: existingWorkOrder?.service_address ?? null,
+          job_type: existingWorkOrder?.job_type ?? null,
+          job_description: existingWorkOrder?.job_description ?? null,
+          amount: existingWorkOrder?.amount ?? null,
+          currency: existingWorkOrder?.currency ?? null,
+          notes: existingWorkOrder?.notes ?? null,
+          priority: existingWorkOrder?.priority ?? null,
+          calendar_event_link: existingWorkOrder?.calendar_event_link ?? null,
+          work_order_pdf_link: existingWorkOrder?.work_order_pdf_link ?? null,
+          signed_pdf_url:
+            signedPdfUrl ??
+            existingWorkOrder?.signed_pdf_url ??
+            null,
+          signed_preview_image_url:
+            snippetDriveUrl ??
+            existingWorkOrder?.signed_preview_image_url ??
+            null,
+          source: existingWorkOrder?.source ?? "signed_upload",
+          last_updated_at: nowIso,
+        };
+
+        console.log(`[Signed Process] Writing to Work_Orders sheet:`, {
+          jobId,
+          fmKey,
+          woNumber: effectiveWoNumber,
+          hadExisting: !!existingWorkOrder,
+          spreadsheetId: `${spreadsheetId.substring(0, 10)}...`,
+          sheetName: WORK_ORDERS_SHEET_NAME,
+          envSheetName: process.env.GOOGLE_SHEETS_WORK_ORDERS_SHEET_NAME,
+          mergedWorkOrderFmKey: mergedWorkOrder.fmKey,
+        });
+
+        await writeWorkOrderRecord(
+          accessToken,
+          spreadsheetId,
+          WORK_ORDERS_SHEET_NAME,
+          mergedWorkOrder
+        );
+        
+        // Verify the write by reading back the record
+        const verifyRecord = await findWorkOrderRecordByJobId(
+          accessToken,
+          spreadsheetId,
+          WORK_ORDERS_SHEET_NAME,
+          jobId
+        );
+        
+        console.log(`[Signed Process] ✅ Work_Orders sheet updated and verified:`, {
+          jobId,
+          fmKey: mergedWorkOrder.fmKey,
+          woNumber: mergedWorkOrder.wo_number,
+          status: mergedWorkOrder.status,
+          hadExisting: !!existingWorkOrder,
+          verified: !!verifyRecord,
+          verifiedFmKey: verifyRecord?.fmKey,
+          verifiedWoNumber: verifyRecord?.wo_number,
+          verifiedStatus: verifyRecord?.status,
+        });
+        
+        if (verifyRecord && verifyRecord.fmKey !== mergedWorkOrder.fmKey) {
+          console.warn(`[Signed Process] ⚠️ WARNING: fmKey mismatch! Expected "${mergedWorkOrder.fmKey}", but sheet has "${verifyRecord.fmKey}"`);
+        }
+      } catch (woError) {
+        // Log but don't fail the request - but log detailed error info
+        console.error(`[Signed Process] Error writing to Work_Orders sheet:`, {
+          error: woError,
+          message: woError instanceof Error ? woError.message : String(woError),
+          stack: woError instanceof Error ? woError.stack : undefined,
+          jobId: effectiveWoNumber ? generateJobId(fmKey || "unknown", effectiveWoNumber) : "unknown",
+          spreadsheetId: `${spreadsheetId.substring(0, 10)}...`,
+          sheetName: WORK_ORDERS_SHEET_NAME,
+        });
+      }
+    }
 
     return NextResponse.json(
       {

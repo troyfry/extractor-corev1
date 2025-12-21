@@ -25,9 +25,17 @@ import { workOrderRepo } from "@/lib/workOrders/repository";
 import type { WorkOrder, WorkOrderInput } from "@/lib/workOrders/types";
 import type { ParsedWorkOrder } from "@/lib/workOrders/parsedTypes";
 import OpenAI from "openai";
+import {
+  writeWorkOrderRecord,
+  type WorkOrderRecord,
+} from "@/lib/google/sheets";
+import { generateJobId } from "@/lib/workOrders/sheetsIngestion";
 
 // Ensure this route runs in Node.js runtime (not Edge) for PDF parsing
 export const runtime = "nodejs";
+
+const WORK_ORDERS_SHEET_NAME =
+  process.env.GOOGLE_SHEETS_WORK_ORDERS_SHEET_NAME || "Work_Orders";
 
 // AI response structure
 type AiWorkOrder = {
@@ -488,6 +496,110 @@ CRITICAL:
           );
           
           console.log("[extract-pro] Successfully wrote work orders to Sheets + Drive");
+
+          // Also write to Work_Orders sheet (master ledger, no duplicates)
+          const nowIso = new Date().toISOString();
+          
+          // Upload PDF to Drive if provided (reuse the same upload logic)
+          let workOrderPdfUrl: string | null = null;
+          if (pdfBuffer && pdfFilename) {
+            try {
+              const { getOrCreateFolder, uploadPdfToDrive } = await import("@/lib/google/drive");
+              const folderId = await getOrCreateFolder(accessToken, "Work Orders");
+              const driveResult = await uploadPdfToDrive(
+                accessToken,
+                pdfBuffer,
+                pdfFilename,
+                folderId
+              );
+              workOrderPdfUrl = driveResult.webViewLink || driveResult.webContentLink;
+            } catch (pdfError) {
+              console.error("[extract-pro] Error uploading PDF for Work_Orders:", pdfError);
+              // Continue without PDF URL
+            }
+          }
+
+          for (const parsedWO of parsedWorkOrders) {
+            const jobId = generateJobId(issuerKey, parsedWO.workOrderNumber);
+            
+            const workOrderRecord: WorkOrderRecord = {
+              jobId,
+              fmKey: parsedWO.fmKey ?? null,
+              wo_number: parsedWO.workOrderNumber || "MISSING",
+              status: "OPEN",
+              scheduled_date: parsedWO.scheduledDate ?? null,
+              created_at: parsedWO.timestampExtracted || nowIso,
+              timestamp_extracted: nowIso,
+              customer_name: parsedWO.customerName ?? null,
+              vendor_name: parsedWO.vendorName ?? null,
+              service_address: parsedWO.serviceAddress ?? null,
+              job_type: parsedWO.jobType ?? null,
+              job_description: parsedWO.jobDescription ?? null,
+              amount: parsedWO.amount != null ? String(parsedWO.amount) : null,
+              currency: parsedWO.currency ?? null,
+              notes: parsedWO.notes ?? null,
+              priority: parsedWO.priority ?? null,
+              calendar_event_link: null,
+              work_order_pdf_link: workOrderPdfUrl,
+              signed_pdf_url: null,
+              signed_preview_image_url: null,
+              source: "manual_upload",
+              last_updated_at: nowIso,
+            };
+
+            try {
+              console.log(`[extract-pro] Writing to Work_Orders sheet:`, {
+                jobId,
+                fmKey: parsedWO.fmKey,
+                woNumber: parsedWO.workOrderNumber,
+                spreadsheetId: `${spreadsheetId.substring(0, 10)}...`,
+                sheetName: WORK_ORDERS_SHEET_NAME,
+                envSheetName: process.env.GOOGLE_SHEETS_WORK_ORDERS_SHEET_NAME,
+                workOrderRecordFmKey: workOrderRecord.fmKey,
+              });
+              
+              await writeWorkOrderRecord(
+                accessToken,
+                spreadsheetId,
+                WORK_ORDERS_SHEET_NAME,
+                workOrderRecord
+              );
+              
+              // Verify the write by reading back the record
+              const { findWorkOrderRecordByJobId } = await import("@/lib/google/sheets");
+              const verifyRecord = await findWorkOrderRecordByJobId(
+                accessToken,
+                spreadsheetId,
+                WORK_ORDERS_SHEET_NAME,
+                jobId
+              );
+              
+              console.log(`[extract-pro] ✅ Work_Orders sheet updated and verified:`, {
+                jobId,
+                fmKey: workOrderRecord.fmKey,
+                woNumber: workOrderRecord.wo_number,
+                status: workOrderRecord.status,
+                verified: !!verifyRecord,
+                verifiedFmKey: verifyRecord?.fmKey,
+                verifiedWoNumber: verifyRecord?.wo_number,
+                verifiedStatus: verifyRecord?.status,
+              });
+              
+              if (verifyRecord && verifyRecord.fmKey !== workOrderRecord.fmKey) {
+                console.warn(`[extract-pro] ⚠️ WARNING: fmKey mismatch! Expected "${workOrderRecord.fmKey}", but sheet has "${verifyRecord.fmKey}"`);
+              }
+            } catch (woError) {
+              // Log but don't fail the request - but log detailed error info
+              console.error(`[extract-pro] Error writing to Work_Orders sheet for ${jobId}:`, {
+                error: woError,
+                message: woError instanceof Error ? woError.message : String(woError),
+                stack: woError instanceof Error ? woError.stack : undefined,
+                jobId,
+                spreadsheetId: `${spreadsheetId.substring(0, 10)}...`,
+                sheetName: WORK_ORDERS_SHEET_NAME,
+              });
+            }
+          }
         } else {
           console.log("[extract-pro] No spreadsheet ID configured, skipping Sheets/Drive write");
         }

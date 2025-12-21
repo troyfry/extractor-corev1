@@ -19,6 +19,7 @@ import { Plan } from "@/lib/plan";
 import { extractTextFromPdfBuffer as extractTextFromPdfBufferAiParser } from "@/lib/workOrders/aiParser";
 import OpenAI from "openai";
 import type { ParsedWorkOrder, ManualProcessResponse } from "@/lib/workOrders/parsedTypes";
+import type { WorkOrderRecord } from "@/lib/google/sheets";
 
 /**
  * Request body type for Gmail process endpoint.
@@ -612,16 +613,41 @@ ${pdfText}`;
 
       // Match FM profiles for each work order
       const { matchFmProfile } = await import("@/lib/templates/fmProfileMatching");
+      console.log(`[Gmail Process] Starting FM profile matching for ${allParsedWorkOrders.length} work order(s)`);
+      console.log(`[Gmail Process] Email sender: "${email.from}", subject: "${email.subject}"`);
+      console.log(`[Gmail Process] Available FM profiles: ${fmProfiles.length} profile(s)`);
+      
       for (const workOrder of allParsedWorkOrders) {
         const matchedProfile = matchFmProfile(fmProfiles, email.from, email.subject);
+        const fmKeyBefore = workOrder.fmKey;
         workOrder.fmKey = matchedProfile ? matchedProfile.fmKey : null;
+        const fmKeyAfter = workOrder.fmKey;
+        
+        console.log(`[Gmail Process] Work order "${workOrder.workOrderNumber}":`, {
+          fmKeyBefore,
+          matchedProfileFmKey: matchedProfile?.fmKey,
+          fmKeyAfter,
+          matched: !!matchedProfile,
+        });
         
         if (matchedProfile) {
-          console.log(`[Gmail Process] Matched FM profile "${matchedProfile.fmKey}" for work order`);
+          console.log(`[Gmail Process] ✅ Matched FM profile "${matchedProfile.fmKey}" for work order "${workOrder.workOrderNumber}"`);
+          console.log(`[Gmail Process] Setting fmKey="${workOrder.fmKey}" on work order`);
         } else {
-          console.log(`[Gmail Process] No FM profile match for work order (sender: ${email.from}, subject: ${email.subject})`);
+          console.log(`[Gmail Process] ⚠️ No FM profile match for work order "${workOrder.workOrderNumber}" (sender: ${email.from}, subject: ${email.subject})`);
+          console.log(`[Gmail Process] Available profiles: ${fmProfiles.map(p => `${p.fmKey} (senderDomains: "${p.senderDomains || ""}")`).join(", ")}`);
         }
       }
+      
+      // Log all work orders with their fmKeys before writing
+      console.log(`[Gmail Process] 📋 Work orders with fmKeys before writing to Sheet1:`, 
+        allParsedWorkOrders.map(wo => ({ 
+          woNumber: wo.workOrderNumber, 
+          fmKey: wo.fmKey,
+          fmKeyType: typeof wo.fmKey,
+          hasFmKey: wo.fmKey !== null && wo.fmKey !== undefined,
+        }))
+      );
       
       // In dev mode, allow processing without Sheets (for testing parsing logic)
       const isDevMode = process.env.NODE_ENV !== "production";
@@ -664,6 +690,103 @@ ${pdfText}`;
         );
         
         console.log("[Gmail Process] Successfully wrote work orders to Sheets + Drive");
+
+        // Also write to Work_Orders sheet (master ledger, no duplicates)
+        const { writeWorkOrderRecord, findWorkOrderRecordByJobId } = await import("@/lib/google/sheets");
+        const { generateJobId } = await import("@/lib/workOrders/sheetsIngestion");
+        const WORK_ORDERS_SHEET_NAME = process.env.GOOGLE_SHEETS_WORK_ORDERS_SHEET_NAME || "Work_Orders";
+        const nowIso = new Date().toISOString();
+
+        // Get PDF URLs from the writeWorkOrdersToSheets result
+        // Note: writeWorkOrdersToSheets uploads PDFs but doesn't return URLs
+        // We'll need to get them from the main sheet or upload separately
+        // For now, we'll set work_order_pdf_link to null and it can be updated later
+        
+        for (const parsedWO of allParsedWorkOrders) {
+          const jobId = generateJobId(issuerKey, parsedWO.workOrderNumber);
+          
+          console.log(`[Gmail Process] Writing to Work_Orders for work order "${parsedWO.workOrderNumber}":`, {
+            jobId,
+            parsedWOFmKey: parsedWO.fmKey,
+            parsedWOFmKeyType: typeof parsedWO.fmKey,
+            workOrderNumber: parsedWO.workOrderNumber,
+          });
+          
+          const workOrderRecord: WorkOrderRecord = {
+            jobId,
+            fmKey: parsedWO.fmKey ?? null,
+            wo_number: parsedWO.workOrderNumber || "MISSING",
+            status: "OPEN",
+            scheduled_date: parsedWO.scheduledDate ?? null,
+            created_at: parsedWO.timestampExtracted || nowIso,
+            timestamp_extracted: nowIso,
+            customer_name: parsedWO.customerName ?? null,
+            vendor_name: parsedWO.vendorName ?? null,
+            service_address: parsedWO.serviceAddress ?? null,
+            job_type: parsedWO.jobType ?? null,
+            job_description: parsedWO.jobDescription ?? null,
+            amount: parsedWO.amount != null ? String(parsedWO.amount) : null,
+            currency: parsedWO.currency ?? null,
+            notes: parsedWO.notes ?? null,
+            priority: parsedWO.priority ?? null,
+            calendar_event_link: null,
+            work_order_pdf_link: null, // Will be updated from main sheet if needed
+            signed_pdf_url: null,
+            signed_preview_image_url: null,
+            source: "email",
+            last_updated_at: nowIso,
+          };
+
+          try {
+            console.log(`[Gmail Process] Writing to Work_Orders sheet:`, {
+              jobId,
+              fmKey: parsedWO.fmKey,
+              woNumber: parsedWO.workOrderNumber,
+              spreadsheetId: `${spreadsheetId!.substring(0, 10)}...`,
+              sheetName: WORK_ORDERS_SHEET_NAME,
+              envSheetName: process.env.GOOGLE_SHEETS_WORK_ORDERS_SHEET_NAME,
+            });
+            
+            await writeWorkOrderRecord(
+              accessToken,
+              spreadsheetId!,
+              WORK_ORDERS_SHEET_NAME,
+              workOrderRecord
+            );
+            
+            // Verify the write by reading back the record
+            const verifyRecord = await findWorkOrderRecordByJobId(
+              accessToken,
+              spreadsheetId!,
+              WORK_ORDERS_SHEET_NAME,
+              jobId
+            );
+            
+            console.log(`[Gmail Process] ✅ Work_Orders sheet updated and verified:`, {
+              jobId,
+              fmKey: workOrderRecord.fmKey,
+              woNumber: workOrderRecord.wo_number,
+              status: workOrderRecord.status,
+              verified: !!verifyRecord,
+              verifiedFmKey: verifyRecord?.fmKey,
+              verifiedWoNumber: verifyRecord?.wo_number,
+            });
+            
+            if (verifyRecord && verifyRecord.fmKey !== workOrderRecord.fmKey) {
+              console.warn(`[Gmail Process] ⚠️ WARNING: fmKey mismatch! Expected "${workOrderRecord.fmKey}", but sheet has "${verifyRecord.fmKey}"`);
+            }
+          } catch (woError) {
+            // Log but don't fail the request
+            console.error(`[Gmail Process] Error writing to Work_Orders sheet for ${jobId}:`, {
+              error: woError,
+              message: woError instanceof Error ? woError.message : String(woError),
+              stack: woError instanceof Error ? woError.stack : undefined,
+              jobId,
+              spreadsheetId: `${spreadsheetId!.substring(0, 10)}...`,
+              sheetName: WORK_ORDERS_SHEET_NAME,
+            });
+          }
+        }
       }
 
       // ALL steps succeeded - now remove label (if requested)

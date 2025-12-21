@@ -90,6 +90,14 @@ export async function writeWorkOrderToSheets(
   }
 
   // Build job record
+  console.log(`[Sheets Ingestion] Building job record for work order "${woNumber}":`, {
+    parsedWorkOrderFmKey: parsedWorkOrder.fmKey,
+    parsedWorkOrderFmKeyType: typeof parsedWorkOrder.fmKey,
+    parsedWorkOrderFmKeyIsNull: parsedWorkOrder.fmKey === null,
+    parsedWorkOrderFmKeyIsUndefined: parsedWorkOrder.fmKey === undefined,
+    parsedWorkOrderFmKeyIsEmpty: parsedWorkOrder.fmKey === "",
+  });
+  
   const record: JobRecord = {
     jobId,
     issuer: issuerKey,
@@ -104,9 +112,17 @@ export async function writeWorkOrderToSheets(
     signed_at: null,
   };
 
+  console.log(`[Sheets Ingestion] Writing job record to ${targetSheetName}:`, {
+    jobId,
+    recordFmKey: record.fmKey,
+    recordFmKeyType: typeof record.fmKey,
+    wo_number: record.wo_number,
+    parsedWorkOrderFmKey: parsedWorkOrder.fmKey,
+  });
+
   // Write to Sheets
   await writeJobRecord(accessToken, spreadsheetId, targetSheetName, record);
-  console.log(`[Sheets Ingestion] Wrote work order to ${targetSheetName}: ${jobId}`);
+  console.log(`[Sheets Ingestion] ✅ Wrote work order to ${targetSheetName}: ${jobId} (fmKey: ${record.fmKey})`);
 }
 
 /**

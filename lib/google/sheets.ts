@@ -3,12 +3,22 @@
  * 
  * Google Sheets is the source of truth for job records.
  * Each row represents a job with a stable jobId (UUID) that never changes.
+ * 
+ * Sheet Structure:
+ * - Sheet1: Job process tracking (status, PDFs, signatures, workflow state)
+ * - Work_Orders: Detailed work order information (dates, addresses, costs, job details)
+ * - Needs Review: Failed email PDF extractions
+ * - Needs_Review_Signed: Signed work orders that couldn't be auto-matched
  */
 
 import { google } from "googleapis";
 
 /**
- * Required columns for job records in Google Sheets.
+ * Required columns for job records in Sheet1.
+ * 
+ * Purpose: Track job processes, workflow status, and document links.
+ * Focus: Process tracking (status, PDFs, signatures, confidence).
+ * 
  * These columns will be created if missing.
  */
 export const REQUIRED_COLUMNS = [
@@ -25,6 +35,49 @@ export const REQUIRED_COLUMNS = [
   "signed_at",
 ] as const;
 
+/**
+ * Required columns for work order records in the Work_Orders sheet.
+ * 
+ * Purpose: Store detailed work order information for business operations.
+ * Focus: Work order details (scheduled dates, job sites, costs, customer info).
+ * 
+ * This is separate from Sheet1 (job process tracking) to maintain a clean
+ * separation between workflow status and work order data.
+ * 
+ * These columns will be created if missing.
+ */
+export const WORK_ORDER_REQUIRED_COLUMNS = [
+  "jobId",
+  "fmKey",
+  "wo_number",
+  "status",
+  "scheduled_date",
+  "created_at",
+  "timestamp_extracted",
+  "customer_name",
+  "vendor_name",
+  "service_address",
+  "job_type",
+  "job_description",
+  "amount",
+  "currency",
+  "notes",
+  "priority",
+  "calendar_event_link",
+  "work_order_pdf_link",
+  "signed_pdf_url",
+  "signed_preview_image_url",
+  "source",
+  "last_updated_at",
+] as const;
+
+/**
+ * Job record for Sheet1 - tracks job processes and workflow status.
+ * 
+ * Purpose: Process tracking, document management, signature workflow.
+ * Contains: Status, PDF links, signature info, timestamps.
+ * Does NOT contain: Detailed work order data (dates, addresses, costs).
+ */
 export type JobRecord = {
   jobId: string; // Deterministic: normalize(issuer) + ":" + normalize(wo_number)
   issuer: string | null;
@@ -37,6 +90,41 @@ export type JobRecord = {
   signature_confidence: string | null; // "high" | "medium" | "low" as text
   created_at: string; // ISO string
   signed_at: string | null; // ISO string or null
+};
+
+/**
+ * Work order record for Work_Orders sheet - detailed work order information.
+ * 
+ * Purpose: Business operations data (scheduling, billing, job details).
+ * Contains: Scheduled dates, job sites (service_address), costs (amount/currency),
+ *           customer info, job descriptions, priorities, notes.
+ * 
+ * This is separate from Sheet1 (job process tracking) to maintain clean separation
+ * between workflow status and operational work order data.
+ */
+export type WorkOrderRecord = {
+  jobId: string;
+  fmKey: string | null;
+  wo_number: string;
+  status: string;
+  scheduled_date: string | null; // Job site visit date
+  created_at: string; // when WO first entered the system
+  timestamp_extracted: string; // timestamp of the latest extraction run
+  customer_name: string | null;
+  vendor_name: string | null;
+  service_address: string | null; // Job site address
+  job_type: string | null;
+  job_description: string | null;
+  amount: string | null; // Cost/price
+  currency: string | null;
+  notes: string | null;
+  priority: string | null;
+  calendar_event_link: string | null;
+  work_order_pdf_link: string | null;
+  signed_pdf_url: string | null;
+  signed_preview_image_url: string | null;
+  source: string | null; // email, manual_upload, api, etc.
+  last_updated_at: string; // ISO string
 };
 
 /**
@@ -68,14 +156,18 @@ export function formatSheetRange(sheetName: string, range: string = "1:1"): stri
   return `${sheetName}!${range}`;
 }
 
-export async function ensureColumnsExist(
+/**
+ * Generic helper to ensure required columns exist in a Google Sheet.
+ * Creates them in the first row if missing.
+ */
+async function ensureColumnsExistWithColumns(
   accessToken: string,
   spreadsheetId: string,
-  sheetName: string = "Sheet1"
+  sheetName: string,
+  requiredColumns: readonly string[]
 ): Promise<void> {
   const sheets = createSheetsClient(accessToken);
 
-  try {
     // Get the current header row
     const headerResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
@@ -85,23 +177,19 @@ export async function ensureColumnsExist(
     const existingHeaders = (headerResponse.data.values?.[0] || []) as string[];
     const existingHeadersLower = existingHeaders.map((h) => h.toLowerCase().trim());
 
-    // Find missing columns
     const missingColumns: string[] = [];
-    for (const col of REQUIRED_COLUMNS) {
+  for (const col of requiredColumns) {
       if (!existingHeadersLower.includes(col.toLowerCase())) {
         missingColumns.push(col);
       }
     }
 
     if (missingColumns.length === 0) {
-      // All columns exist
       return;
     }
 
-    // Add missing columns to the header row
     const updatedHeaders = [...existingHeaders, ...missingColumns];
 
-    // Update the header row
     await sheets.spreadsheets.values.update({
       spreadsheetId,
       range: formatSheetRange(sheetName, "1:1"),
@@ -111,11 +199,121 @@ export async function ensureColumnsExist(
       },
     });
 
-    console.log(`[Sheets] Added missing columns: ${missingColumns.join(", ")}`);
+  console.log(
+    `[Sheets] Added missing columns to '${sheetName}': ${missingColumns.join(", ")}`
+  );
+}
+
+/**
+ * Ensure required columns exist in the Google Sheet.
+ * Creates them in the first row if missing.
+ * 
+ * @param accessToken Google OAuth access token
+ * @param spreadsheetId Google Sheets spreadsheet ID
+ * @param sheetName Name of the sheet (default: "Sheet1")
+ */
+export async function ensureColumnsExist(
+  accessToken: string,
+  spreadsheetId: string,
+  sheetName: string = "Sheet1"
+): Promise<void> {
+  await ensureColumnsExistWithColumns(
+    accessToken,
+    spreadsheetId,
+    sheetName,
+    REQUIRED_COLUMNS
+  );
+}
+
+/**
+ * Ensure the Work_Orders sheet exists. Creates it if it doesn't exist.
+ * 
+ * @param accessToken Google OAuth access token
+ * @param spreadsheetId Google Sheets spreadsheet ID
+ * @param sheetName Name of the sheet
+ */
+async function ensureWorkOrderSheetExists(
+  accessToken: string,
+  spreadsheetId: string,
+  sheetName: string
+): Promise<void> {
+  const sheets = createSheetsClient(accessToken);
+
+  console.log(`[ensureWorkOrderSheetExists] Checking if sheet "${sheetName}" exists`);
+
+  try {
+    // Get spreadsheet metadata to check if sheet exists
+    const spreadsheetResponse = await sheets.spreadsheets.get({
+      spreadsheetId,
+    });
+
+    const allSheetNames = spreadsheetResponse.data.sheets?.map(s => s.properties?.title).filter(Boolean) || [];
+    console.log(`[ensureWorkOrderSheetExists] Existing sheets: ${allSheetNames.join(", ")}`);
+
+    const sheetExists = spreadsheetResponse.data.sheets?.some(
+      (sheet) => sheet.properties?.title === sheetName
+    );
+
+    console.log(`[ensureWorkOrderSheetExists] Sheet "${sheetName}" exists: ${sheetExists}`);
+
+    // Create sheet if it doesn't exist
+    if (!sheetExists) {
+      console.log(`[ensureWorkOrderSheetExists] Creating "${sheetName}" sheet`);
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [
+            {
+              addSheet: {
+                properties: {
+                  title: sheetName,
+                },
+              },
+            },
+          ],
+        },
+      });
+      console.log(`[ensureWorkOrderSheetExists] ✅ Successfully created "${sheetName}" sheet`);
+    } else {
+      console.log(`[ensureWorkOrderSheetExists] Sheet "${sheetName}" already exists`);
+    }
   } catch (error) {
-    console.error("[Sheets] Error ensuring columns exist:", error);
-    throw error;
+    // If we can't check/create the sheet, log but continue
+    // The column ensure will fail with a clearer error if the sheet truly doesn't exist
+    console.error(`[ensureWorkOrderSheetExists] ❌ ERROR: Could not ensure "${sheetName}" sheet exists:`, {
+      error,
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+      sheetName,
+      spreadsheetId: `${spreadsheetId.substring(0, 10)}...`,
+    });
+    throw error; // Re-throw so we know if sheet creation fails
   }
+}
+
+/**
+ * Ensure required work order columns exist in the Google Sheet.
+ * Creates the sheet if it doesn't exist, and creates columns in the first row if missing.
+ * 
+ * @param accessToken Google OAuth access token
+ * @param spreadsheetId Google Sheets spreadsheet ID
+ * @param sheetName Name of the sheet
+ */
+export async function ensureWorkOrderColumnsExist(
+  accessToken: string,
+  spreadsheetId: string,
+  sheetName: string
+): Promise<void> {
+  // First ensure the sheet exists
+  await ensureWorkOrderSheetExists(accessToken, spreadsheetId, sheetName);
+  
+  // Then ensure columns exist
+  await ensureColumnsExistWithColumns(
+    accessToken,
+    spreadsheetId,
+    sheetName,
+    WORK_ORDER_REQUIRED_COLUMNS
+  );
 }
 
 /**
@@ -245,17 +443,29 @@ async function appendJobRecord(
 
   // Build row data in the correct column order - pad to match header length
   const rowData: string[] = new Array(headers.length).fill("");
+  const valueMap: Record<string, string> = {};
   
   for (const col of REQUIRED_COLUMNS) {
     const index = headersLower.indexOf(col.toLowerCase());
     if (index !== -1) {
       // Column exists, get value from record
       const value = record[col as keyof JobRecord];
-      rowData[index] = value === null || value === undefined ? "" : String(value);
+      const stringValue = value === null || value === undefined ? "" : String(value);
+      rowData[index] = stringValue;
+      valueMap[col] = stringValue;
+    } else {
+      console.warn(`[appendJobRecord] Column "${col}" not found in headers`);
     }
   }
 
-  console.log(`[Sheets] Appending row with ${rowData.length} columns, headers: ${headers.length}`);
+  console.log(`[appendJobRecord] Appending row to ${sheetName}:`, {
+    jobId: record.jobId,
+    fmKey: valueMap.fmKey,
+    wo_number: valueMap.wo_number,
+    issuer: valueMap.issuer,
+    rowDataLength: rowData.length,
+    headersLength: headers.length,
+  });
 
   // Append row
   await sheets.spreadsheets.values.append({
@@ -268,7 +478,7 @@ async function appendJobRecord(
     },
   });
 
-  console.log(`[Sheets] Appended job record: ${record.jobId}`);
+  console.log(`[appendJobRecord] ✅ Appended job record: ${record.jobId} (fmKey: ${valueMap.fmKey})`);
 }
 
 /**
@@ -294,17 +504,28 @@ async function updateJobRecord(
 
   // Build row data in the correct column order - pad to match header length
   const rowData: string[] = new Array(headers.length).fill("");
+  const valueMap: Record<string, string> = {};
   
   for (const col of REQUIRED_COLUMNS) {
     const index = headersLower.indexOf(col.toLowerCase());
     if (index !== -1) {
       // Column exists, get value from record
       const value = record[col as keyof JobRecord];
-      rowData[index] = value === null || value === undefined ? "" : String(value);
+      const stringValue = value === null || value === undefined ? "" : String(value);
+      rowData[index] = stringValue;
+      valueMap[col] = stringValue;
+    } else {
+      console.warn(`[updateJobRecord] Column "${col}" not found in headers`);
     }
   }
 
-  console.log(`[Sheets] Updating row ${rowIndex} with ${rowData.length} columns`);
+  console.log(`[updateJobRecord] Updating row ${rowIndex} in ${sheetName}:`, {
+    jobId: record.jobId,
+    fmKey: valueMap.fmKey,
+    wo_number: valueMap.wo_number,
+    issuer: valueMap.issuer,
+    rowDataLength: rowData.length,
+  });
 
   // Update row
   await sheets.spreadsheets.values.update({
@@ -316,7 +537,7 @@ async function updateJobRecord(
     },
   });
 
-  console.log(`[Sheets] Updated job record: ${record.jobId}`);
+  console.log(`[updateJobRecord] ✅ Updated job record: ${record.jobId} (fmKey: ${valueMap.fmKey})`);
 }
 
 /**
@@ -376,6 +597,66 @@ export async function findJobRecordByJobId(
     return null;
   } catch (error) {
     console.error("[Sheets] Error finding job record:", error);
+    throw error;
+  }
+}
+
+/**
+ * Find a work order record by jobId.
+ * 
+ * @param accessToken Google OAuth access token
+ * @param spreadsheetId Google Sheets spreadsheet ID
+ * @param sheetName Name of the sheet
+ * @param jobId Job ID to find
+ * @returns Work order record if found, null otherwise
+ */
+export async function findWorkOrderRecordByJobId(
+  accessToken: string,
+  spreadsheetId: string,
+  sheetName: string,
+  jobId: string
+): Promise<WorkOrderRecord | null> {
+  const sheets = createSheetsClient(accessToken);
+
+  try {
+    const allDataResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: formatSheetRange(sheetName, "A:Z"),
+    });
+
+    const rows = allDataResponse.data.values || [];
+    if (rows.length === 0) {
+      return null;
+    }
+
+    const headers = rows[0] as string[];
+    const headersLower = headers.map((h) => h.toLowerCase().trim());
+
+    const jobIdColIndex = headersLower.indexOf("jobid");
+    if (jobIdColIndex === -1) {
+      return null;
+    }
+
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (row && row[jobIdColIndex] === jobId) {
+        const record: Partial<WorkOrderRecord> = {};
+
+        for (const col of WORK_ORDER_REQUIRED_COLUMNS) {
+          const colIndex = headersLower.indexOf(col.toLowerCase());
+          if (colIndex !== -1 && row[colIndex] !== undefined) {
+            const value = row[colIndex];
+            (record as any)[col] = value === "" ? null : value;
+          }
+        }
+
+        return record as WorkOrderRecord;
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.error("[Sheets] Error finding work order record:", error);
     throw error;
   }
 }
@@ -477,13 +758,10 @@ export async function updateJobWithSignedInfoByWorkOrderNumber(
   setCell(signedAtCol, signedAt);
   setCell(statusCol, signedData.statusOverride || "SIGNED");
   
-  // Update fmKey/issuer if provided (ensures correct fmKey is set for signed work orders)
+  // Update fmKey if provided (ensures correct fmKey is set for signed work orders)
+  // DO NOT update issuer - issuer should remain as the original domain (e.g., "23rdgroup.com")
   if (signedData.fmKey !== undefined) {
     setCell(fmKeyCol, signedData.fmKey);
-    // Also update issuer if fmKey is provided (issuer often matches fmKey)
-    if (issuerCol >= 0 && signedData.fmKey) {
-      setCell(issuerCol, signedData.fmKey);
-    }
   }
 
   await sheets.spreadsheets.values.update({
@@ -500,5 +778,219 @@ export async function updateJobWithSignedInfoByWorkOrderNumber(
   );
 
   return true;
+}
+
+/**
+ * Append a new work order record to Google Sheets.
+ */
+async function appendWorkOrderRecord(
+  accessToken: string,
+  spreadsheetId: string,
+  sheetName: string,
+  record: WorkOrderRecord
+): Promise<void> {
+  const sheets = createSheetsClient(accessToken);
+
+  console.log(`[appendWorkOrderRecord] Appending new record to ${sheetName}`, {
+    jobId: record.jobId,
+    fmKey: record.fmKey,
+    wo_number: record.wo_number,
+  });
+
+  const headerResponse = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, "1:1"),
+  });
+
+  const headers = (headerResponse.data.values?.[0] || []) as string[];
+  const headersLower = headers.map((h) => h.toLowerCase().trim());
+  console.log(`[appendWorkOrderRecord] Headers: ${headers.join(", ")}`);
+
+  const rowData: string[] = new Array(headers.length).fill("");
+  const valueMap: Record<string, string> = {};
+  
+  for (const col of WORK_ORDER_REQUIRED_COLUMNS) {
+    const index = headersLower.indexOf(col.toLowerCase());
+    if (index !== -1) {
+      const value = record[col as keyof WorkOrderRecord];
+      const stringValue = value === null || value === undefined ? "" : String(value);
+      rowData[index] = stringValue;
+      valueMap[col] = stringValue;
+    } else {
+      console.warn(`[appendWorkOrderRecord] Column "${col}" not found in headers`);
+    }
+  }
+
+  console.log(`[appendWorkOrderRecord] Row data to append:`, {
+    fmKey: valueMap.fmKey,
+    wo_number: valueMap.wo_number,
+    status: valueMap.status,
+    rowDataLength: rowData.length,
+  });
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, "A:Z"),
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: {
+      values: [rowData],
+    },
+  });
+
+  console.log(`[appendWorkOrderRecord] ✅ Successfully appended record: ${record.jobId}`, {
+    fmKey: valueMap.fmKey,
+    wo_number: valueMap.wo_number,
+  });
+}
+
+/**
+ * Update an existing work order record in Google Sheets.
+ */
+async function updateWorkOrderRecord(
+  accessToken: string,
+  spreadsheetId: string,
+  sheetName: string,
+  rowIndex: number,
+  record: WorkOrderRecord
+): Promise<void> {
+  const sheets = createSheetsClient(accessToken);
+
+  const headerResponse = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, "1:1"),
+  });
+
+  const headers = (headerResponse.data.values?.[0] || []) as string[];
+  const headersLower = headers.map((h) => h.toLowerCase().trim());
+
+  const rowData: string[] = new Array(headers.length).fill("");
+  for (const col of WORK_ORDER_REQUIRED_COLUMNS) {
+    const index = headersLower.indexOf(col.toLowerCase());
+    if (index !== -1) {
+      const value = record[col as keyof WorkOrderRecord];
+      rowData[index] = value === null || value === undefined ? "" : String(value);
+    }
+  }
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, `${rowIndex}:${rowIndex}`),
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [rowData],
+    },
+  });
+
+  console.log(`[Sheets] Updated work order record: ${record.jobId}`);
+}
+
+/**
+ * Write a work order record to Google Sheets.
+ * Creates the row if it doesn't exist, or updates it if it does (by jobId).
+ * 
+ * @param accessToken Google OAuth access token
+ * @param spreadsheetId Google Sheets spreadsheet ID
+ * @param sheetName Name of the sheet
+ * @param record Work order record to write
+ */
+export async function writeWorkOrderRecord(
+  accessToken: string,
+  spreadsheetId: string,
+  sheetName: string,
+  record: WorkOrderRecord
+): Promise<void> {
+  console.log(`[writeWorkOrderRecord] START - Writing to ${sheetName}:`, {
+    jobId: record.jobId,
+    fmKey: record.fmKey,
+    wo_number: record.wo_number,
+    status: record.status,
+    spreadsheetId: `${spreadsheetId.substring(0, 10)}...`,
+  });
+
+  const sheets = createSheetsClient(accessToken);
+
+  try {
+    // Ensure the Work_Orders sheet has all required columns
+    console.log(`[writeWorkOrderRecord] Ensuring columns exist for sheet: ${sheetName}`);
+    await ensureWorkOrderColumnsExist(accessToken, spreadsheetId, sheetName);
+    console.log(`[writeWorkOrderRecord] Columns ensured for sheet: ${sheetName}`);
+
+    // Fetch all data to locate an existing row by jobId
+    console.log(`[writeWorkOrderRecord] Fetching existing data from sheet: ${sheetName}`);
+    const allDataResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: formatSheetRange(sheetName, "A:Z"),
+    });
+
+    const rows = allDataResponse.data.values || [];
+    console.log(`[writeWorkOrderRecord] Found ${rows.length} rows in sheet (including header)`);
+    
+    if (rows.length === 0) {
+      // No headers yet – ensure they exist and append
+      console.log(`[writeWorkOrderRecord] No rows found, appending new record`);
+      await appendWorkOrderRecord(accessToken, spreadsheetId, sheetName, record);
+      console.log(`[writeWorkOrderRecord] ✅ Appended new record: ${record.jobId}`);
+      return;
+    }
+
+    const headers = rows[0] as string[];
+    const headersLower = headers.map((h) => h.toLowerCase().trim());
+    console.log(`[writeWorkOrderRecord] Headers found: ${headers.join(", ")}`);
+    
+    const jobIdColIndex = headersLower.indexOf("jobid");
+    console.log(`[writeWorkOrderRecord] jobId column index: ${jobIdColIndex}`);
+
+    if (jobIdColIndex === -1) {
+      // Fallback: no jobId column, just append
+      console.log(`[writeWorkOrderRecord] No jobId column found, appending new record`);
+      await appendWorkOrderRecord(accessToken, spreadsheetId, sheetName, record);
+      console.log(`[writeWorkOrderRecord] ✅ Appended new record (no jobId col): ${record.jobId}`);
+      return;
+    }
+
+    let existingRowIndex = -1;
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const rowJobId = row?.[jobIdColIndex] || "";
+      if (row && rowJobId === record.jobId) {
+        existingRowIndex = i + 1; // 1-based
+        console.log(`[writeWorkOrderRecord] Found existing row at index ${existingRowIndex} with jobId: ${record.jobId}`);
+        break;
+      }
+    }
+
+    if (existingRowIndex === -1) {
+      console.log(`[writeWorkOrderRecord] No existing row found, appending new record`);
+      await appendWorkOrderRecord(accessToken, spreadsheetId, sheetName, record);
+      console.log(`[writeWorkOrderRecord] ✅ Appended new record: ${record.jobId}`);
+    } else {
+      console.log(`[writeWorkOrderRecord] Updating existing row ${existingRowIndex} with data:`, {
+        jobId: record.jobId,
+        fmKey: record.fmKey,
+        wo_number: record.wo_number,
+        status: record.status,
+      });
+      await updateWorkOrderRecord(
+        accessToken,
+        spreadsheetId,
+        sheetName,
+        existingRowIndex,
+        record
+      );
+      console.log(`[writeWorkOrderRecord] ✅ Updated existing record: ${record.jobId}`);
+    }
+  } catch (error) {
+    console.error(`[writeWorkOrderRecord] ❌ ERROR writing work order record:`, {
+      error,
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+      jobId: record.jobId,
+      fmKey: record.fmKey,
+      sheetName,
+      spreadsheetId: `${spreadsheetId.substring(0, 10)}...`,
+    });
+    throw error;
+  }
 }
 

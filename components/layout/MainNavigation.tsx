@@ -7,7 +7,7 @@ import { useCurrentPlan } from "@/lib/plan-context";
 import { hasFeature } from "@/lib/plan";
 import { canUseProFeatures, canUsePremiumFeatures } from "@/lib/planVisibility";
 
-type NavMode = "gmail" | "file" | "invoices" | "portal" | "integrations";
+type NavMode = "gmail" | "file" | "signed" | "work-orders" | "invoices" | "portal" | "integrations";
 
 interface NavItem {
   id: NavMode;
@@ -59,6 +59,28 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
         </svg>
       ),
+    },
+    {
+      id: "signed",
+      label: "Signed Documents",
+      href: "/pro/signed-test",
+      icon: (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+      ),
+      disabled: !canUsePro,
+    },
+    {
+      id: "work-orders",
+      label: "Work Orders",
+      href: "/pro/work-orders",
+      icon: (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+        </svg>
+      ),
+      disabled: !canUsePro,
     },
     {
       id: "invoices",
@@ -148,6 +170,14 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
     // For "From File", match both /dashboard and /manual (legacy redirect)
     if (item.id === "file") {
       return pathname === "/dashboard" || pathname === "/manual" || pathname?.startsWith("/dashboard");
+    }
+    // For "Signed Documents", match /pro/signed-test
+    if (item.id === "signed") {
+      return pathname === "/pro/signed-test" || pathname?.startsWith("/pro/signed");
+    }
+    // For "Work Orders", match /pro/work-orders
+    if (item.id === "work-orders") {
+      return pathname === "/pro/work-orders" || pathname?.startsWith("/pro/work-orders");
     }
     return pathname === item.href || (item.href !== "/" && pathname?.startsWith(item.href));
   };
