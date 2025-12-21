@@ -19,6 +19,8 @@ import { WORK_ORDER_LABEL_NAME } from "@/lib/google/gmailConfig";
 export default function GmailPage() {
   const [emails, setEmails] = useState<GmailFoundEmail[]>([]);
   const [isLoadingEmails, setIsLoadingEmails] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState<string | null>(null); // messageId being processed
   const [isBatchProcessing, setIsBatchProcessing] = useState(false); // Batch processing state
   const [accumulatedWorkOrders, setAccumulatedWorkOrders] = useState<ParsedWorkOrder[]>([]);
@@ -145,6 +147,7 @@ export default function GmailPage() {
   const handleFindEmails = async () => {
     setIsLoadingEmails(true);
     setError(null);
+    setNextPageToken(null);
     
     try {
       // Build URL with optional label parameter
@@ -162,11 +165,45 @@ export default function GmailPage() {
       
       const data = await response.json();
       setEmails(data.emails || []);
+      setNextPageToken(data.nextPageToken || null);
     } catch (error) {
       console.error("Error fetching Gmail emails:", error);
       setError(error instanceof Error ? error.message : "Failed to fetch emails");
     } finally {
       setIsLoadingEmails(false);
+    }
+  };
+
+  const handleLoadMore = async () => {
+    if (!nextPageToken || isLoadingMore) return;
+    
+    setIsLoadingMore(true);
+    setError(null);
+    
+    try {
+      // Build URL with optional label parameter and page token
+      const url = new URL("/api/gmail/list", window.location.origin);
+      if (gmailLabel.trim()) {
+        url.searchParams.set("label", gmailLabel.trim());
+      }
+      url.searchParams.set("pageToken", nextPageToken);
+      
+      const response = await fetch(url.toString());
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Failed to fetch more emails" }));
+        throw new Error(errorData.error || "Failed to fetch more emails");
+      }
+      
+      const data = await response.json();
+      // Append new emails to existing list
+      setEmails((prev) => [...prev, ...(data.emails || [])]);
+      setNextPageToken(data.nextPageToken || null);
+    } catch (error) {
+      console.error("Error fetching more Gmail emails:", error);
+      setError(error instanceof Error ? error.message : "Failed to fetch more emails");
+    } finally {
+      setIsLoadingMore(false);
     }
   };
 
@@ -607,9 +644,15 @@ export default function GmailPage() {
                       </button>
                     )}
                   </div>
-                  <span className="text-sm text-gray-400">
-                    {selectedEmails.size} selected
-                  </span>
+                  <div className="flex items-center gap-4">
+                    <span className="text-sm text-gray-400">
+                      {selectedEmails.size} selected
+                    </span>
+                    <span className="text-sm text-gray-400">
+                      {emails.length} email{emails.length !== 1 ? "s" : ""} loaded
+                      {nextPageToken && " (more available)"}
+                    </span>
+                  </div>
                 </div>
 
                 {/* Email Table */}
@@ -752,6 +795,19 @@ export default function GmailPage() {
                     })}
                   </tbody>
                 </table>
+                
+                {/* Load More Button */}
+                {nextPageToken && (
+                  <div className="mt-4 flex justify-center">
+                    <button
+                      onClick={handleLoadMore}
+                      disabled={isLoadingMore}
+                      className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium text-sm"
+                    >
+                      {isLoadingMore ? "Loading..." : "Load More Emails"}
+                    </button>
+                  </div>
+                )}
               </div>
               </div>
             )}

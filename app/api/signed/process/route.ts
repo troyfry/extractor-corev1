@@ -236,9 +236,47 @@ export async function POST(req: Request) {
     const isHighConfidence = confidenceLabel === "high";
     const isMediumOrHighConfidence = confidenceLabel === "high" || confidenceLabel === "medium";
     let jobUpdated = false;
+    let jobExistsInSheet1 = false;
 
-    // Update main sheet if: valid woNumber, medium/high confidence (>= 0.6), and successful update
-    if (effectiveWoNumber && isMediumOrHighConfidence) {
+    // Check if job exists in Sheet1 BEFORE attempting to update
+    // Work orders can only be signed if they exist in the original job sheet
+    if (effectiveWoNumber) {
+      const { createSheetsClient, formatSheetRange } = await import("@/lib/google/sheets");
+      const sheets = createSheetsClient(accessToken);
+      
+      const mainSheetResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: formatSheetRange(MAIN_SHEET_NAME, "A:Z"),
+      });
+      
+      const mainRows = mainSheetResponse.data.values || [];
+      
+      if (mainRows.length > 0) {
+        const headers = mainRows[0] as string[];
+        const headersLower = headers.map((h) => h.toLowerCase().trim());
+        const woColIndex = headersLower.indexOf("wo_number");
+        
+        if (woColIndex >= 0) {
+          for (let i = 1; i < mainRows.length; i++) {
+            const row = mainRows[i];
+            const cellValue = (row?.[woColIndex] || "").trim();
+            if (cellValue === effectiveWoNumber.trim()) {
+              jobExistsInSheet1 = true;
+              console.log(`[Signed Process] Found matching job in Sheet1 for wo_number "${effectiveWoNumber}"`);
+              break;
+            }
+          }
+        }
+      }
+
+      if (!jobExistsInSheet1) {
+        console.log(`[Signed Process] ⚠️ No matching job found in Sheet1 for wo_number "${effectiveWoNumber}" - cannot sign without existing job`);
+      }
+    }
+
+    // Update main sheet if: valid woNumber, medium/high confidence (>= 0.6), job exists in Sheet1, and successful update
+    // IMPORTANT: Only allow signing if job exists in Sheet1 (work is complete if there's a signature, ready for invoice)
+    if (effectiveWoNumber && isMediumOrHighConfidence && jobExistsInSheet1) {
       jobUpdated = await updateJobWithSignedInfoByWorkOrderNumber(
         accessToken,
         spreadsheetId,
@@ -253,11 +291,14 @@ export async function POST(req: Request) {
           fmKey: fmKey, // Ensure fmKey is set correctly (e.g., "23rd_group" not "superclean")
         }
       );
+    } else if (effectiveWoNumber && isMediumOrHighConfidence && !jobExistsInSheet1) {
+      console.log(`[Signed Process] ⚠️ Cannot auto-update: job not found in Sheet1 for wo_number "${effectiveWoNumber}"`);
     }
 
-    // Determine mode: UPDATED if high confidence (>= 0.9) with valid WO number, even if job not found in main sheet
-    // This trusts the OCR result when confidence is very high
-    const mode = (effectiveWoNumber && isHighConfidence) ? "UPDATED" : (jobUpdated ? "UPDATED" : "NEEDS_REVIEW");
+    // Determine mode: UPDATED only if job was successfully updated in Sheet1
+    // IMPORTANT: Cannot sign/update if job doesn't exist in Sheet1 (work must exist before it can be signed)
+    // Even high confidence requires a match in Sheet1 - signature means work is complete and ready for invoice
+    const mode = jobUpdated ? "UPDATED" : "NEEDS_REVIEW";
 
     // Fallback: append to Needs_Review_Signed if job wasn't updated AND mode is NEEDS_REVIEW
     if (mode === "NEEDS_REVIEW") {
@@ -265,8 +306,10 @@ export async function POST(req: Request) {
         manualReason ||
         (!effectiveWoNumber
           ? "no_work_order_number"
-          : isMediumOrHighConfidence
+          : !jobExistsInSheet1
           ? "no_matching_job_row"
+          : isMediumOrHighConfidence
+          ? "update_failed"
           : "low_confidence");
 
       await appendSignedNeedsReviewRow(accessToken, spreadsheetId, {
@@ -282,8 +325,11 @@ export async function POST(req: Request) {
       });
     }
 
-    // Update Work_Orders sheet with signed info if we have a WO number
-    if (effectiveWoNumber) {
+    // Update Work_Orders sheet with signed info ONLY if:
+    // 1. We have a WO number
+    // 2. The job exists in Sheet1 (jobExistsInSheet1)
+    // If no match in Sheet1, the signed work order should ONLY go to Needs_Review_Signed sheet
+    if (effectiveWoNumber && jobExistsInSheet1) {
       try {
         // Find existing record by searching main sheet for the issuer
         // The jobId format is: normalize(issuer) + ":" + normalize(wo_number)
@@ -418,6 +464,8 @@ export async function POST(req: Request) {
           sheetName: WORK_ORDERS_SHEET_NAME,
         });
       }
+    } else if (effectiveWoNumber && !jobExistsInSheet1) {
+      console.log(`[Signed Process] Skipping Work_Orders sheet - no matching job in Sheet1 for wo_number "${effectiveWoNumber}". Record goes to Needs_Review_Signed sheet only.`);
     }
 
     return NextResponse.json(
@@ -429,8 +477,11 @@ export async function POST(req: Request) {
           confidenceLabel,
           confidenceRaw,
           signedPdfUrl,
-          snippetImageUrl: snippetImageUrl,
-          snippetDriveUrl: snippetDriveUrl ?? null,
+          // Always include the original base64 snippet URL as fallback
+          snippetImageUrl: snippetImageUrl ?? null,
+          // Use Drive URL if available, otherwise fall back to base64
+          snippetDriveUrl: snippetDriveUrl ?? snippetImageUrl ?? null,
+          jobExistsInSheet1: jobExistsInSheet1,
         },
       },
       { status: 200 }

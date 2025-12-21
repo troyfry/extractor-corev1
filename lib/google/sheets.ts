@@ -33,6 +33,8 @@ export const REQUIRED_COLUMNS = [
   "signature_confidence",
   "created_at",
   "signed_at",
+  "manually_overridden", // Add this to track manual overrides
+  "override_at", // Add this to track when override happened
 ] as const;
 
 /**
@@ -677,6 +679,7 @@ export async function updateJobWithSignedInfoByWorkOrderNumber(
     signedAt?: string;
     statusOverride?: string;
     fmKey?: string | null;
+    manuallyOverridden?: boolean; // Add this parameter
   }
 ): Promise<boolean> {
   const sheets = createSheetsClient(accessToken);
@@ -735,6 +738,8 @@ export async function updateJobWithSignedInfoByWorkOrderNumber(
   const statusCol = getIndex("status");
   const fmKeyCol = getIndex("fmkey");
   const issuerCol = getIndex("issuer");
+  const manuallyOverriddenCol = getIndex("manually_overridden"); // Add this
+  const overrideAtCol = getIndex("override_at"); // Add this
 
   const existingRow = rows[rowIndex - 1] || [];
   const rowData = [...existingRow];
@@ -764,6 +769,11 @@ export async function updateJobWithSignedInfoByWorkOrderNumber(
     setCell(fmKeyCol, signedData.fmKey);
   }
 
+  if (signedData.manuallyOverridden) {
+    setCell(manuallyOverriddenCol, "TRUE");
+    setCell(overrideAtCol, signedData.signedAt || new Date().toISOString());
+  }
+
   await sheets.spreadsheets.values.update({
     spreadsheetId,
     range: formatSheetRange(sheetName, `${rowIndex}:${rowIndex}`),
@@ -781,7 +791,33 @@ export async function updateJobWithSignedInfoByWorkOrderNumber(
 }
 
 /**
+ * Check if a work order record has meaningful operational data.
+ * Returns true if the record has at least one meaningful field beyond basic identifiers.
+ */
+function hasMeaningfulWorkOrderData(record: WorkOrderRecord): boolean {
+  // Basic identifiers don't count as "meaningful operational data"
+  // Meaningful fields are: customer_name, vendor_name, service_address, job_type, 
+  // job_description, amount, currency, notes, priority, scheduled_date
+  const meaningfulFields = [
+    record.customer_name,
+    record.vendor_name,
+    record.service_address,
+    record.job_type,
+    record.job_description,
+    record.amount,
+    record.currency,
+    record.notes,
+    record.priority,
+    record.scheduled_date,
+    record.work_order_pdf_link,
+  ];
+  
+  return meaningfulFields.some(field => field != null && String(field).trim() !== "");
+}
+
+/**
  * Append a new work order record to Google Sheets.
+ * Only appends if the record has meaningful operational data to prevent empty rows.
  */
 async function appendWorkOrderRecord(
   accessToken: string,
@@ -789,6 +825,16 @@ async function appendWorkOrderRecord(
   sheetName: string,
   record: WorkOrderRecord
 ): Promise<void> {
+  // Don't append records with mostly empty fields - only write if we have meaningful operational data
+  if (!hasMeaningfulWorkOrderData(record)) {
+    console.log(`[appendWorkOrderRecord] Skipping append - record has no meaningful operational data:`, {
+      jobId: record.jobId,
+      fmKey: record.fmKey,
+      wo_number: record.wo_number,
+      status: record.status,
+    });
+    return;
+  }
   const sheets = createSheetsClient(accessToken);
 
   console.log(`[appendWorkOrderRecord] Appending new record to ${sheetName}`, {
@@ -927,10 +973,14 @@ export async function writeWorkOrderRecord(
     console.log(`[writeWorkOrderRecord] Found ${rows.length} rows in sheet (including header)`);
     
     if (rows.length === 0) {
-      // No headers yet – ensure they exist and append
-      console.log(`[writeWorkOrderRecord] No rows found, appending new record`);
-      await appendWorkOrderRecord(accessToken, spreadsheetId, sheetName, record);
-      console.log(`[writeWorkOrderRecord] ✅ Appended new record: ${record.jobId}`);
+      // No headers yet – ensure they exist and append (only if meaningful data)
+      if (hasMeaningfulWorkOrderData(record)) {
+        console.log(`[writeWorkOrderRecord] No rows found, appending new record with meaningful data`);
+        await appendWorkOrderRecord(accessToken, spreadsheetId, sheetName, record);
+        console.log(`[writeWorkOrderRecord] ✅ Appended new record: ${record.jobId}`);
+      } else {
+        console.log(`[writeWorkOrderRecord] Skipping append - no rows exist and record has no meaningful operational data`);
+      }
       return;
     }
 
@@ -942,10 +992,14 @@ export async function writeWorkOrderRecord(
     console.log(`[writeWorkOrderRecord] jobId column index: ${jobIdColIndex}`);
 
     if (jobIdColIndex === -1) {
-      // Fallback: no jobId column, just append
-      console.log(`[writeWorkOrderRecord] No jobId column found, appending new record`);
-      await appendWorkOrderRecord(accessToken, spreadsheetId, sheetName, record);
-      console.log(`[writeWorkOrderRecord] ✅ Appended new record (no jobId col): ${record.jobId}`);
+      // Fallback: no jobId column, just append (only if meaningful data)
+      if (hasMeaningfulWorkOrderData(record)) {
+        console.log(`[writeWorkOrderRecord] No jobId column found, appending new record with meaningful data`);
+        await appendWorkOrderRecord(accessToken, spreadsheetId, sheetName, record);
+        console.log(`[writeWorkOrderRecord] ✅ Appended new record (no jobId col): ${record.jobId}`);
+      } else {
+        console.log(`[writeWorkOrderRecord] Skipping append - no jobId column and record has no meaningful operational data`);
+      }
       return;
     }
 
@@ -961,9 +1015,20 @@ export async function writeWorkOrderRecord(
     }
 
     if (existingRowIndex === -1) {
-      console.log(`[writeWorkOrderRecord] No existing row found, appending new record`);
-      await appendWorkOrderRecord(accessToken, spreadsheetId, sheetName, record);
-      console.log(`[writeWorkOrderRecord] ✅ Appended new record: ${record.jobId}`);
+      // Only append new records if they have meaningful operational data
+      // This prevents creating rows with mostly empty fields
+      if (hasMeaningfulWorkOrderData(record)) {
+        console.log(`[writeWorkOrderRecord] No existing row found, appending new record with meaningful data`);
+        await appendWorkOrderRecord(accessToken, spreadsheetId, sheetName, record);
+        console.log(`[writeWorkOrderRecord] ✅ Appended new record: ${record.jobId}`);
+      } else {
+        console.log(`[writeWorkOrderRecord] Skipping append - record has no meaningful operational data (only identifiers):`, {
+          jobId: record.jobId,
+          fmKey: record.fmKey,
+          wo_number: record.wo_number,
+          status: record.status,
+        });
+      }
     } else {
       console.log(`[writeWorkOrderRecord] Updating existing row ${existingRowIndex} with data:`, {
         jobId: record.jobId,

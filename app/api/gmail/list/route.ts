@@ -33,19 +33,29 @@ export async function GET(request: Request) {
       );
     }
 
-    // Get optional label query parameter
+    // Get optional query parameters
     const { searchParams } = new URL(request.url);
     const label = searchParams.get("label") || undefined;
+    const pageToken = searchParams.get("pageToken") || undefined;
+    const maxResults = searchParams.get("maxResults") 
+      ? parseInt(searchParams.get("maxResults")!, 10) 
+      : 20;
 
-    const emails = await listWorkOrderEmails(accessToken, label);
+    const result = await listWorkOrderEmails(accessToken, label, pageToken, maxResults);
 
     // Log for debugging
-    console.log(`Found ${emails.length} emails with attachments`);
-    const emailsWithPdfs = emails.filter(e => e.attachmentCount > 0);
+    console.log(`Found ${result.emails.length} emails with attachments`);
+    const emailsWithPdfs = result.emails.filter(e => e.attachmentCount > 0);
     console.log(`Found ${emailsWithPdfs.length} emails with PDF attachments`);
+    if (result.nextPageToken) {
+      console.log(`More emails available (nextPageToken present)`);
+    }
 
     return NextResponse.json(
-      { emails },
+      { 
+        emails: result.emails,
+        nextPageToken: result.nextPageToken,
+      },
       { status: 200 }
     );
   } catch (error) {

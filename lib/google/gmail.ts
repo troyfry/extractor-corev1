@@ -102,16 +102,28 @@ export type GmailFoundEmail = {
 };
 
 /**
+ * Result type for paginated email listing.
+ */
+export type ListWorkOrderEmailsResult = {
+  emails: GmailFoundEmail[];
+  nextPageToken: string | null;
+};
+
+/**
  * List recent emails with PDF attachments (likely work orders).
  * 
  * @param accessToken Google OAuth access token
  * @param label Optional Gmail label to filter by (e.g., "Work Orders", "INBOX", or label ID)
- * @returns Array of email metadata with PDF attachment counts
+ * @param pageToken Optional page token for pagination
+ * @param maxResults Maximum number of results per page (default: 20)
+ * @returns Array of email metadata with PDF attachment counts and next page token
  */
 export async function listWorkOrderEmails(
   accessToken: string,
-  label?: string
-): Promise<GmailFoundEmail[]> {
+  label?: string,
+  pageToken?: string,
+  maxResults: number = 20
+): Promise<ListWorkOrderEmailsResult> {
   const gmail = createGmailClient(accessToken);
 
   // Build search query
@@ -155,9 +167,10 @@ export async function listWorkOrderEmails(
 
   const res = await gmail.users.messages.list({
     userId: "me",
-    maxResults: 20,
+    maxResults,
     q: query,
     ...(labelIds ? { labelIds } : {}),
+    ...(pageToken ? { pageToken } : {}),
   });
 
   const messages = res.data.messages ?? [];
@@ -267,7 +280,10 @@ export async function listWorkOrderEmails(
   // Filter out emails with 0 PDF attachments (but still return the list for debugging)
   // Return all emails, let the UI show which ones have PDFs
 
-  return detailed;
+  return {
+    emails: detailed,
+    nextPageToken: res.data.nextPageToken || null,
+  };
 }
 
 /**

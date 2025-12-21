@@ -168,19 +168,69 @@ export default function WorkOrdersPage() {
                         )}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">
-                        {row.signed_preview_image_url ? (
-                          <a
-                            href={row.signed_preview_image_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            <img
-                              src={row.signed_preview_image_url}
-                              alt={`WO ${row.wo_number} preview`}
-                              className="h-10 w-auto border border-gray-600 rounded"
-                            />
-                          </a>
-                        ) : (
+                        {row.signed_preview_image_url ? (() => {
+                          // Convert Google Drive view link to direct image link
+                          const imageUrl = row.signed_preview_image_url;
+                          let directImageUrl = imageUrl;
+                          
+                          // Handle Google Drive URLs - convert to direct image link
+                          if (imageUrl.includes("drive.google.com")) {
+                            // Try to extract file ID from various Google Drive URL formats
+                            const fileIdMatch = imageUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || 
+                                              imageUrl.match(/id=([a-zA-Z0-9_-]+)/) ||
+                                              imageUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+                            
+                            if (fileIdMatch) {
+                              const fileId = fileIdMatch[1];
+                              // Use the thumbnail format which is more reliable for public images
+                              directImageUrl = `https://drive.google.com/thumbnail?id=${fileId}&sz=w400`;
+                            }
+                          }
+                          
+                          // Handle base64 data URLs
+                          if (imageUrl.startsWith("data:image")) {
+                            directImageUrl = imageUrl;
+                          }
+                          
+                          return (
+                            <a
+                              href={row.signed_preview_image_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-block"
+                            >
+                              <img
+                                src={directImageUrl}
+                                alt={`WO ${row.wo_number} preview`}
+                                className="h-10 w-auto border border-gray-600 rounded max-w-[100px] object-contain"
+                                onError={(e) => {
+                                  console.error("Failed to load snippet image:", {
+                                    original: imageUrl,
+                                    converted: directImageUrl,
+                                    woNumber: row.wo_number,
+                                  });
+                                  // Try fallback: use original URL
+                                  if (e.currentTarget.src !== imageUrl) {
+                                    e.currentTarget.src = imageUrl;
+                                  } else {
+                                    // Hide broken image if both fail
+                                    e.currentTarget.style.display = "none";
+                                    const parent = e.currentTarget.parentElement;
+                                    if (parent) {
+                                      parent.innerHTML = '<span class="text-gray-500 text-xs">Image unavailable</span>';
+                                    }
+                                  }
+                                }}
+                                onLoad={() => {
+                                  console.log("Successfully loaded snippet image:", {
+                                    woNumber: row.wo_number,
+                                    url: directImageUrl,
+                                  });
+                                }}
+                              />
+                            </a>
+                          );
+                        })() : (
                           <span className="text-gray-500">-</span>
                         )}
                       </td>
