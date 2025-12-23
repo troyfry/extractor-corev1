@@ -12,6 +12,7 @@ import type { FmProfile } from "./fmProfiles";
  * Required columns for FM Profile storage in Google Sheets.
  */
 const FM_PROFILE_COLUMNS = [
+  "userId",
   "fmKey",
   "fmLabel",
   "page",
@@ -124,8 +125,9 @@ export async function upsertFmProfile(params: {
   spreadsheetId: string;
   accessToken: string;
   profile: FmProfile;
+  userId?: string; // Optional for backward compatibility, but recommended for user-scoped profiles
 }): Promise<void> {
-  const { spreadsheetId, accessToken, profile } = params;
+  const { spreadsheetId, accessToken, profile, userId } = params;
   const sheets = createSheetsClient(accessToken);
   const sheetName = "FM_Profiles";
 
@@ -142,7 +144,7 @@ export async function upsertFmProfile(params: {
     const rows = allDataResponse.data.values || [];
     if (rows.length === 0) {
       // No data, just append
-      await appendFmProfileRow(sheets, spreadsheetId, sheetName, profile);
+      await appendFmProfileRow(sheets, spreadsheetId, sheetName, profile, userId);
       return;
     }
 
@@ -154,7 +156,7 @@ export async function upsertFmProfile(params: {
 
     if (fmKeyColIndex === -1) {
       // fmKey column not found, just append
-      await appendFmProfileRow(sheets, spreadsheetId, sheetName, profile);
+      await appendFmProfileRow(sheets, spreadsheetId, sheetName, profile, userId);
       return;
     }
 
@@ -170,10 +172,10 @@ export async function upsertFmProfile(params: {
 
     if (existingRowIndex === -1) {
       // Row doesn't exist, append it
-      await appendFmProfileRow(sheets, spreadsheetId, sheetName, profile);
+      await appendFmProfileRow(sheets, spreadsheetId, sheetName, profile, userId);
     } else {
       // Row exists, update it
-      await updateFmProfileRow(sheets, spreadsheetId, sheetName, existingRowIndex, profile);
+      await updateFmProfileRow(sheets, spreadsheetId, sheetName, existingRowIndex, profile, userId);
     }
   } catch (error) {
     console.error(`[FM Profiles] Error upserting profile:`, error);
@@ -322,7 +324,8 @@ async function appendFmProfileRow(
   sheets: ReturnType<typeof createSheetsClient>,
   spreadsheetId: string,
   sheetName: string,
-  profile: FmProfile
+  profile: FmProfile,
+  userId?: string
 ): Promise<void> {
   // Get headers to determine column order
   const headerResponse = await sheets.spreadsheets.values.get({
@@ -381,7 +384,8 @@ async function updateFmProfileRow(
   spreadsheetId: string,
   sheetName: string,
   rowIndex: number,
-  profile: FmProfile
+  profile: FmProfile,
+  userId?: string
 ): Promise<void> {
   // Get headers to determine column order
   const headerResponse = await sheets.spreadsheets.values.get({
@@ -392,22 +396,33 @@ async function updateFmProfileRow(
   const headers = (headerResponse.data.values?.[0] || []) as string[];
   const headersLower = headers.map((h) => h.toLowerCase().trim());
 
-  // Build row data in the correct column order
-  const rowData: string[] = new Array(headers.length).fill("");
+  // Get existing row to preserve values
+  const existingRowResponse = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, `${rowIndex}:${rowIndex}`),
+  });
 
-  // Map profile fields to columns
-  const profileData: Record<string, string> = {
-    fmKey: profile.fmKey,
-    fmLabel: profile.fmLabel,
-    page: String(profile.page),
-    xPct: String(profile.xPct),
-    yPct: String(profile.yPct),
-    wPct: String(profile.wPct),
-    hPct: String(profile.hPct),
-    senderDomains: profile.senderDomains || "",
-    subjectKeywords: profile.subjectKeywords || "",
-    updated_at: new Date().toISOString(),
-  };
+  const existingRow = (existingRowResponse.data.values?.[0] || []) as string[];
+  const rowData: string[] = [...existingRow];
+
+  // Extend rowData if needed
+  while (rowData.length < headers.length) {
+    rowData.push("");
+  }
+
+  // Map profile fields to columns (only update provided fields)
+  const profileData: Record<string, string> = {};
+  if (userId !== undefined) profileData.userId = userId;
+  profileData.fmKey = profile.fmKey;
+  profileData.fmLabel = profile.fmLabel;
+  profileData.page = String(profile.page);
+  profileData.xPct = String(profile.xPct);
+  profileData.yPct = String(profile.yPct);
+  profileData.wPct = String(profile.wPct);
+  profileData.hPct = String(profile.hPct);
+  profileData.senderDomains = profile.senderDomains || "";
+  profileData.subjectKeywords = profile.subjectKeywords || "";
+  profileData.updated_at = new Date().toISOString();
 
   for (const col of FM_PROFILE_COLUMNS) {
     const index = headersLower.indexOf(col.toLowerCase());

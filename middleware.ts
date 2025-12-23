@@ -15,18 +15,21 @@
  * - /api/extract-free (free tier API - no auth required)
  * - /pricing (pricing page - public)
  * - /legal (legal pages - public)
+ * - /onboarding/* (onboarding pages - handled separately)
  */
 
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 
-export default auth((req) => {
+export default auth(async (req) => {
   const { pathname } = req.nextUrl;
   
   // Handle auth errors gracefully
   let isAuthenticated = false;
+  let userId: string | undefined;
   try {
     isAuthenticated = !!req.auth;
+    userId = req.auth?.userId;
   } catch (error) {
     console.error("[Middleware] Auth error:", error);
     // If auth fails, treat as unauthenticated
@@ -63,13 +66,30 @@ export default auth((req) => {
     return NextResponse.next();
   }
 
+  // Handle onboarding routes
+  if (pathname.startsWith("/onboarding")) {
+    // If not authenticated, redirect to sign-in
+    if (!isAuthenticated || !userId) {
+      const signInUrl = new URL("/auth/signin", req.url);
+      signInUrl.searchParams.set("callbackUrl", pathname);
+      return NextResponse.redirect(signInUrl);
+    }
+
+    // Allow access to onboarding pages - they will check status themselves
+    // (Middleware runs in Edge runtime and can't use Google Sheets APIs)
+    return NextResponse.next();
+  }
+
   // Protect all other routes (require authentication)
-  if (!isAuthenticated) {
+  if (!isAuthenticated || !userId) {
     // Redirect to sign-in page
     const signInUrl = new URL("/auth/signin", req.url);
     signInUrl.searchParams.set("callbackUrl", pathname);
     return NextResponse.redirect(signInUrl);
   }
+
+  // Note: Onboarding status check is done in page components (server components)
+  // because middleware runs in Edge runtime and can't use Google Sheets APIs
 
   return NextResponse.next();
 });

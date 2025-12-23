@@ -115,6 +115,22 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         }
       }
       
+      // Always check cookies for spreadsheet ID (for onboarding flow and persistence)
+      // This ensures the spreadsheet ID is available even if not in token yet
+      // Check cookies on every request to keep token in sync
+      try {
+        const { cookies } = await import("next/headers");
+        const cookieStore = await cookies();
+        const cookieSpreadsheetId = cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
+        if (cookieSpreadsheetId) {
+          // Always update token with cookie value if cookie exists (keeps it in sync)
+          (token as any).googleSheetsSpreadsheetId = cookieSpreadsheetId;
+        }
+      } catch (error) {
+        // Cookies not available in this context (e.g., Edge runtime), continue
+        // Token will keep existing value if cookie can't be read
+      }
+      
       // Note: Spreadsheet ID can also be read from cookies in API routes
       // This JWT token approach is for when cookies aren't available
       

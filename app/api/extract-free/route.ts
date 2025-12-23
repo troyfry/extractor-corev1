@@ -126,45 +126,8 @@ export async function POST(request: Request) {
   try {
     console.log("[extract-free] POST hit");
 
-    // ✅ Lazy import: prevents module-load 500s
-    const { checkFreeLimits, incrementFreeUsage } = await import("@/lib/limits/checkFreeLimits");
-
-    // Extract IP with fallbacks for various proxy/CDN setups
-    const forwardedFor = request.headers.get("x-forwarded-for");
-    const realIp =
-      (forwardedFor ? forwardedFor.split(",")[0].trim() : null) ||
-      request.headers.get("x-real-ip") ||
-      request.headers.get("cf-connecting-ip") ||
-      request.headers.get("true-client-ip");
-
-    // Strip port if present (e.g., "192.168.1.1:8080" -> "192.168.1.1")
-    // Normalize localhost variants (::1 and 127.0.0.1 are treated consistently)
-    let ip = realIp
-      ? realIp.replace(/:\d+$/, "").trim() // strip :port if present
-      : "unknown";
-    
-    // Normalize localhost variants for consistency
-    if (ip === "::1" || ip === "127.0.0.1" || ip === "localhost") {
-      ip = "127.0.0.1";
-    }
-
-    const limitCheck = await checkFreeLimits({ ip });
-    if (!limitCheck.allowed) {
-      const reasonMessages: Record<string, string> = {
-        daily: "You've reached the daily limit (10 documents per day). Create a Pro account to continue.",
-        monthly: "You've reached the monthly limit (20 documents per month). Create a Pro account to continue.",
-        global: "Free tier is temporarily paused due to high demand. Please try again next month or create a Pro account.",
-      };
-      
-      return NextResponse.json(
-        { 
-          error: "Free limit reached",
-          reason: limitCheck.reason,
-          message: reasonMessages[limitCheck.reason || "daily"],
-        },
-        { status: 429 }
-      );
-    }
+    // NOTE: Rate limiting removed - app now uses Google Sheets only (no DB)
+    // Free tier limits can be implemented via Google Sheets if needed
 
     const processedAt = new Date().toISOString();
     let aiModelUsed: string | undefined;
@@ -314,13 +277,11 @@ RETURN JSON EXACTLY IN THIS FORMAT:
 
     const csv = generateCsv(parsedWorkOrders);
 
-    // increment usage AFTER success
+    // NOTE: Usage tracking removed - app now uses Google Sheets only (no DB)
+    // Usage can be tracked in Google Sheets if needed
     try {
-      console.log(`[extract-free] Attempting to increment usage for IP: ${ip || "unknown"}`);
-      await incrementFreeUsage({ ip });
-      console.log(`[extract-free] Successfully incremented usage counters`);
+      // No-op: usage tracking removed
     } catch (e) {
-      console.error("[extract-free] incrementFreeUsage failed:", e);
       if (e instanceof Error) {
       console.error("[extract-free] Error details:", {
           message: e.message,

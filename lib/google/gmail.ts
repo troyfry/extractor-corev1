@@ -175,7 +175,12 @@ export async function listWorkOrderEmails(
 
   const messages = res.data.messages ?? [];
 
-  if (messages.length === 0) return [];
+  if (messages.length === 0) {
+    return {
+      emails: [],
+      nextPageToken: res.data.nextPageToken || null,
+    };
+  }
 
   // Fetch detailed metadata for each message
   // Use "full" format to get complete message structure for PDF detection

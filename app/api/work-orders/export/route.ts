@@ -42,7 +42,9 @@ export async function GET() {
     }
     const userId = user.userId;
 
-    // Fetch work orders for this user
+    // NOTE: Work orders are stored in Google Sheets, not DB
+    // This endpoint should read from Google Sheets instead
+    // For now, returning empty array as work orders are managed in Sheets
     const workOrders = await workOrderRepo.listForUser(userId);
 
     // Build CSV headers
