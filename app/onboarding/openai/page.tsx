@@ -11,6 +11,8 @@ export default function OnboardingOpenAIPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // Prevent double-submit
+    if (isSubmitting) return;
     setIsSubmitting(true);
     setError(null);
 

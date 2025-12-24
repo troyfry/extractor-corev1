@@ -6,15 +6,16 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "postinstall": "node scripts/copy-pdfjs-worker.mjs"
   },
   "dependencies": {
     "googleapis": "^144.0.0",
-    "mupdf": "^1.26.4",
     "next": "^15.0.0",
     "next-auth": "^5.0.0-beta.25",
     "openai": "^6.10.0",
     "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^5.4.449",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

@@ -7,7 +7,7 @@
 
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { upsertUserRow } from "@/lib/onboarding/usersSheet";
+import { upsertUserRow, resetApiCallCount, getApiCallCount } from "@/lib/onboarding/usersSheet";
 import { cookies } from "next/headers";
 import { auth } from "@/auth";
 
@@ -41,6 +41,7 @@ function extractSpreadsheetId(input: string): string | null {
 }
 
 export async function POST(request: Request) {
+  resetApiCallCount();
   try {
     const user = await getCurrentUser();
     if (!user) {
@@ -154,6 +155,8 @@ export async function POST(request: Request) {
     // The JWT callback will read from cookies on next request, but we can also trigger an update
     // Note: The cookie is the primary storage, and JWT callback reads from it
 
+    const apiCalls = getApiCallCount();
+    console.log(`[onboarding/google] Sheets API calls: ${apiCalls}`);
     return response;
   } catch (error) {
     console.error("Error saving Google settings:", error);

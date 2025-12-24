@@ -18,6 +18,14 @@ export default function OnboardingDonePage() {
 
         if (!response.ok) {
           const data = await response.json();
+          // If error mentions templates, redirect to templates page
+          if (data.redirectTo) {
+            setError(data.error || "Before automation can run, set the Work Order Number crop zone for at least one FM template.");
+            setTimeout(() => {
+              router.push(data.redirectTo);
+            }, 2000);
+            return;
+          }
           throw new Error(data.error || "Failed to complete onboarding");
         }
 

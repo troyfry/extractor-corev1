@@ -133,7 +133,53 @@ export async function POST(req: Request) {
 
     const signedPdfUrl = uploaded.webViewLink || uploaded.webContentLink;
 
-    // Resolve template config based on fmKey (temporary stub uses HARDCODED_TEMPLATES)
+    // Helper function to validate template crop
+    function validateTemplateCrop(region: { xPct: number; yPct: number; wPct: number; hPct: number }): { valid: boolean; reason?: string } {
+      const { xPct, yPct, wPct, hPct } = region;
+      const TOLERANCE = 0.01;
+      const MIN_W = 0.01;
+      const MIN_H = 0.01;
+
+      // Check if default sentinel
+      const isDefault = Math.abs(xPct) < TOLERANCE && 
+                        Math.abs(yPct) < TOLERANCE && 
+                        Math.abs(wPct - 1) < TOLERANCE && 
+                        Math.abs(hPct - 1) < TOLERANCE;
+      if (isDefault) {
+        return { valid: false, reason: "TEMPLATE_NOT_CONFIGURED" };
+      }
+
+      // Check if out of bounds
+      if (xPct < 0 || yPct < 0 || wPct <= 0 || hPct <= 0 || xPct + wPct > 1 || yPct + hPct > 1) {
+        return { valid: false, reason: "INVALID_CROP" };
+      }
+
+      // Check if too small
+      if (wPct < MIN_W || hPct < MIN_H) {
+        return { valid: false, reason: "CROP_TOO_SMALL" };
+      }
+
+      return { valid: true };
+    }
+
+    // Helper function to sanitize DPI
+    function sanitizeDpi(dpi: number | undefined | null): number {
+      if (dpi === undefined || dpi === null || isNaN(dpi) || dpi === 0) {
+        return 200;
+      }
+      return Math.max(100, Math.min(400, Math.round(dpi)));
+    }
+
+    // Helper function to expand crop region by padding
+    function expandCrop(region: { xPct: number; yPct: number; wPct: number; hPct: number }, pad: number): { xPct: number; yPct: number; wPct: number; hPct: number } {
+      const newX = Math.max(0, region.xPct - pad);
+      const newY = Math.max(0, region.yPct - pad);
+      const newW = Math.min(1, region.wPct + 2 * pad);
+      const newH = Math.min(1, region.hPct + 2 * pad);
+      return { xPct: newX, yPct: newY, wPct: newW, hPct: newH };
+    }
+
+    // Resolve template config based on fmKey from Templates sheet
     let templateConfig;
     try {
       templateConfig = await getTemplateConfigForFmKey(fmKey);
@@ -144,24 +190,150 @@ export async function POST(req: Request) {
           page: pageNumber,
         };
       }
+
+      // Validate template crop before calling OCR
+      const cropValidation = validateTemplateCrop(templateConfig.region);
+      if (!cropValidation.valid) {
+        console.log("[Signed Process] Template crop validation failed:", {
+          reason: cropValidation.reason,
+          fmKey,
+          page: templateConfig.page,
+          region: templateConfig.region,
+        });
+
+        const signedFolderId = await getOrCreateFolder(
+          accessToken,
+          SIGNED_DRIVE_FOLDER_NAME
+        );
+
+        const uploaded = await uploadPdfToDrive(
+          accessToken,
+          pdfBuffer,
+          originalFilename,
+          signedFolderId
+        );
+
+        const signedPdfUrl = uploaded.webViewLink || uploaded.webContentLink;
+
+        await appendSignedNeedsReviewRow(accessToken, spreadsheetId, {
+          fmKey,
+          signed_pdf_url: signedPdfUrl,
+          preview_image_url: null,
+          raw_text: "",
+          confidence: "low",
+          reason: cropValidation.reason || "TEMPLATE_NOT_CONFIGURED",
+          manual_work_order_number: null,
+          resolved: "FALSE",
+          resolved_at: null,
+        });
+
+        return NextResponse.json(
+          {
+            mode: "NEEDS_REVIEW",
+            data: {
+              fmKey,
+              woNumber: null,
+              confidenceLabel: "low",
+              confidenceRaw: 0,
+              signedPdfUrl,
+              snippetImageUrl: null,
+              snippetDriveUrl: null,
+              jobExistsInSheet1: false,
+              reason: cropValidation.reason,
+            },
+          },
+          { status: 200 }
+        );
+      }
+
+      // Sanitize DPI
+      templateConfig.dpi = sanitizeDpi(templateConfig.dpi);
+
       console.log("[Signed Process] Template config found:", {
         templateId: templateConfig.templateId,
         page: templateConfig.page,
         pageOverride: pageNumber,
+        dpi: templateConfig.dpi,
       });
     } catch (error) {
       console.error("[Signed Process] Template config error:", error);
+      const errorMessage = error instanceof Error ? error.message : "Template config not found for fmKey";
+      
+      // If template is not configured, route to Needs_Review instead of failing
+      const isTemplateNotConfigured = errorMessage.includes("not configured") || 
+                                       errorMessage.includes("not found") ||
+                                       errorMessage.includes("default 0/0/1/1");
+      
+      if (isTemplateNotConfigured) {
+        console.log("[Signed Process] Template not configured, routing to Needs_Review");
+        
+        // Upload signed PDF to Drive
+        const signedFolderId = await getOrCreateFolder(
+          accessToken,
+          SIGNED_DRIVE_FOLDER_NAME
+        );
+
+        const uploaded = await uploadPdfToDrive(
+          accessToken,
+          pdfBuffer,
+          originalFilename,
+          signedFolderId
+        );
+
+        const signedPdfUrl = uploaded.webViewLink || uploaded.webContentLink;
+
+        // Append to Needs_Review_Signed with reason
+        await appendSignedNeedsReviewRow(accessToken, spreadsheetId, {
+          fmKey,
+          signed_pdf_url: signedPdfUrl,
+          preview_image_url: null,
+          raw_text: "",
+          confidence: "low",
+          reason: "TEMPLATE_NOT_CONFIGURED",
+          manual_work_order_number: null,
+          resolved: "FALSE",
+          resolved_at: null,
+        });
+
+        return NextResponse.json(
+          {
+            mode: "NEEDS_REVIEW",
+            data: {
+              fmKey,
+              woNumber: null,
+              confidenceLabel: "low",
+              confidenceRaw: 0,
+              signedPdfUrl,
+              snippetImageUrl: null,
+              snippetDriveUrl: null,
+              jobExistsInSheet1: false,
+            },
+          },
+          { status: 200 }
+        );
+      }
+      
+      // For other errors, return 400
       return NextResponse.json(
         {
-          error: error instanceof Error ? error.message : "Template config not found for fmKey",
+          error: errorMessage,
           fmKey,
         },
         { status: 400 }
       );
     }
 
-    // Call OCR microservice
-    const ocrResult = await callSignedOcrService(
+    // Helper function to validate extracted WO number (basic validation)
+    function isValidWoNumber(woNumber: string | null): boolean {
+      if (!woNumber || woNumber.trim().length === 0) {
+        return false;
+      }
+      // Basic validation: should have at least some alphanumeric characters
+      return /[a-zA-Z0-9]/.test(woNumber);
+    }
+
+    // Call OCR microservice (first attempt)
+    let ocrResult = await callSignedOcrService(
       pdfBuffer,
       originalFilename,
       {
@@ -172,16 +344,66 @@ export async function POST(req: Request) {
       }
     );
 
+    let retryAttempted = false;
+    const ocrAttempts: Array<{ confidence: number; woNumber: string | null; region: typeof templateConfig.region }> = [
+      {
+        confidence: ocrResult.confidenceRaw ?? 0,
+        woNumber: ocrResult.woNumber ?? null,
+        region: templateConfig.region,
+      },
+    ];
+
+    // Retry logic: if confidence < 0.55 OR WO validation fails, retry with expanded crop
+    const confidenceRaw = ocrResult.confidenceRaw ?? 0;
+    const shouldRetry = confidenceRaw < 0.55 || !isValidWoNumber(ocrResult.woNumber ?? null);
+
+    if (shouldRetry) {
+      console.log("[Signed Process] Low confidence or invalid WO, attempting retry with expanded crop:", {
+        fmKey,
+        page: templateConfig.page,
+        dpi: templateConfig.dpi,
+        firstAttemptConfidence: confidenceRaw,
+        firstAttemptWoNumber: ocrResult.woNumber,
+      });
+
+      retryAttempted = true;
+      const expandedRegion = expandCrop(templateConfig.region, 0.015); // 1.5% padding
+
+      ocrResult = await callSignedOcrService(
+        pdfBuffer,
+        originalFilename,
+        {
+          templateId: templateConfig.templateId,
+          page: templateConfig.page,
+          region: expandedRegion,
+          dpi: templateConfig.dpi,
+        }
+      );
+
+      ocrAttempts.push({
+        confidence: ocrResult.confidenceRaw ?? 0,
+        woNumber: ocrResult.woNumber ?? null,
+        region: expandedRegion,
+      });
+
+      console.log("[Signed Process] Retry OCR result:", {
+        fmKey,
+        page: templateConfig.page,
+        retryConfidence: ocrResult.confidenceRaw ?? 0,
+        retryWoNumber: ocrResult.woNumber,
+      });
+    }
+
     // Normalize confidence & label with explicit thresholds
     // High (>= 0.9): Clear match with image - auto-update
     // Medium (>= 0.6): Somewhat reliable - auto-update
     // Low (< 0.6): Needs manual review
-    const confidenceRaw = ocrResult.confidenceRaw ?? 0;
+    const finalConfidenceRaw = ocrResult.confidenceRaw ?? 0;
     let confidenceLabel: "low" | "medium" | "high";
 
-    if (confidenceRaw >= 0.9) {
+    if (finalConfidenceRaw >= 0.9) {
       confidenceLabel = "high";
-    } else if (confidenceRaw >= 0.6) {
+    } else if (finalConfidenceRaw >= 0.6) {
       confidenceLabel = "medium";
     } else {
       confidenceLabel = "low";
@@ -191,13 +413,25 @@ export async function POST(req: Request) {
     const rawText = ocrResult.rawText || "";
     const snippetImageUrl = ocrResult.snippetImageUrl;
 
+    // Log OCR processing summary
+    console.log("[Signed Process] OCR processing complete:", {
+      reason: confidenceLabel === "low" && retryAttempted ? "LOW_CONFIDENCE_AFTER_RETRY" : undefined,
+      fmKey,
+      page: templateConfig.page,
+      dpi: templateConfig.dpi,
+      retryAttempted,
+      finalConfidence: finalConfidenceRaw,
+      woNumber,
+      attempts: ocrAttempts.length,
+    });
+
     console.log("[Signed Process] OCR result:", {
       fmKey,
       woNumber,
       rawTextLength: rawText?.length || 0,
       rawTextPreview: rawText?.substring(0, 100) || "",
       confidenceLabel,
-      confidenceRaw,
+      confidenceRaw: finalConfidenceRaw,
     });
 
     // Upload snippet to Drive if present (convert base64 to PNG buffer)
@@ -304,7 +538,9 @@ export async function POST(req: Request) {
     if (mode === "NEEDS_REVIEW") {
       const reason =
         manualReason ||
-        (!effectiveWoNumber
+        (confidenceLabel === "low" && retryAttempted
+          ? "LOW_CONFIDENCE_AFTER_RETRY"
+          : !effectiveWoNumber
           ? "no_work_order_number"
           : !jobExistsInSheet1
           ? "no_matching_job_row"
@@ -468,6 +704,21 @@ export async function POST(req: Request) {
       console.log(`[Signed Process] Skipping Work_Orders sheet - no matching job in Sheet1 for wo_number "${effectiveWoNumber}". Record goes to Needs_Review_Signed sheet only.`);
     }
 
+    // Determine reason for response
+    const responseReason = 
+      mode === "NEEDS_REVIEW"
+        ? (manualReason ||
+           (confidenceLabel === "low" && retryAttempted
+             ? "LOW_CONFIDENCE_AFTER_RETRY"
+             : !effectiveWoNumber
+             ? "no_work_order_number"
+             : !jobExistsInSheet1
+             ? "no_matching_job_row"
+             : isMediumOrHighConfidence
+             ? "update_failed"
+             : "low_confidence"))
+        : undefined;
+
     return NextResponse.json(
       {
         mode,
@@ -475,13 +726,15 @@ export async function POST(req: Request) {
           fmKey,
           woNumber: effectiveWoNumber || null,
           confidenceLabel,
-          confidenceRaw,
+          confidenceRaw: finalConfidenceRaw,
           signedPdfUrl,
           // Always include the original base64 snippet URL as fallback
           snippetImageUrl: snippetImageUrl ?? null,
           // Use Drive URL if available, otherwise fall back to base64
           snippetDriveUrl: snippetDriveUrl ?? snippetImageUrl ?? null,
           jobExistsInSheet1: jobExistsInSheet1,
+          retryAttempted,
+          reason: responseReason,
         },
       },
       { status: 200 }

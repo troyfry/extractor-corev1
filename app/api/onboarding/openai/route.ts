@@ -7,7 +7,7 @@
 
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { getUserRowById, upsertUserRow } from "@/lib/onboarding/usersSheet";
+import { getUserRowById, upsertUserRow, ensureUsersSheet } from "@/lib/onboarding/usersSheet";
 import { encryptSecret } from "@/lib/onboarding/crypto";
 import { cookies } from "next/headers";
 import OpenAI from "openai";
@@ -83,6 +83,9 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
+
+    // Ensure Users sheet exists (onboarding route - must ensure sheet exists)
+    await ensureUsersSheet(user.googleAccessToken, mainSpreadsheetId);
 
     // Get existing user row
     const userRow = await getUserRowById(user.googleAccessToken, mainSpreadsheetId, user.userId);

@@ -8,13 +8,14 @@
 
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { getUserRowById } from "@/lib/onboarding/usersSheet";
+import { getUserRowById, resetApiCallCount, getApiCallCount, ensureUsersSheet } from "@/lib/onboarding/usersSheet";
 import { ensureFmProfileSheet, upsertFmProfile } from "@/lib/templates/fmProfilesSheets";
 import { cookies } from "next/headers";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
+  resetApiCallCount();
   try {
     const user = await getCurrentUser();
     if (!user) {
@@ -82,6 +83,9 @@ export async function POST(request: Request) {
       );
     }
 
+    // Ensure Users sheet exists (onboarding route - must ensure sheet exists)
+    await ensureUsersSheet(user.googleAccessToken, mainSpreadsheetId);
+
     // Verify user row exists
     const userRow = await getUserRowById(user.googleAccessToken, mainSpreadsheetId, user.userId);
     if (!userRow) {
@@ -120,6 +124,8 @@ export async function POST(request: Request) {
       });
     }
 
+    const apiCalls = getApiCallCount();
+    console.log(`[onboarding/fm-profiles] Sheets API calls: ${apiCalls}`);
     return NextResponse.json({
       success: true,
       saved: profilesToSave.length,

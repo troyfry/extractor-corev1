@@ -35,6 +35,8 @@ export default function OnboardingFmProfilesPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // Prevent double-submit
+    if (isSubmitting) return;
     setIsSubmitting(true);
     setError(null);
 
@@ -71,7 +73,7 @@ export default function OnboardingFmProfilesPage() {
         throw new Error(data.error || "Failed to save FM profiles");
       }
 
-      router.push("/onboarding/done");
+      router.push("/onboarding/templates");
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
       setIsSubmitting(false);

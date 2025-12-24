@@ -53,20 +53,61 @@ export async function POST(request: Request) {
       );
     }
 
-    // Validate zone values
+    // Validate zone values with edge-case guards
     const zone = template.woNumberZone;
-    if (
-      zone.xPct < 0 || zone.xPct > 1 ||
-      zone.yPct < 0 || zone.yPct > 1 ||
-      zone.wPct < 0 || zone.wPct > 1 ||
-      zone.hPct < 0 || zone.hPct > 1 ||
-      zone.page < 1
-    ) {
+    const { xPct, yPct, wPct, hPct, page } = zone;
+
+    // Validate page
+    if (typeof page !== "number" || page < 1) {
       return NextResponse.json(
-        { error: "Invalid zone values. Percentages must be between 0 and 1." },
+        { error: "page must be a number >= 1" },
         { status: 400 }
       );
     }
+
+    // Validate crop zone is not default sentinel (0/0/1/1)
+    const TOLERANCE = 0.01;
+    const isDefault = Math.abs(xPct) < TOLERANCE && 
+                      Math.abs(yPct) < TOLERANCE && 
+                      Math.abs(wPct - 1) < TOLERANCE && 
+                      Math.abs(hPct - 1) < TOLERANCE;
+
+    if (isDefault) {
+      return NextResponse.json(
+        { 
+          error: "Template crop not configured. Draw a rectangle first.",
+          reason: "TEMPLATE_NOT_CONFIGURED"
+        },
+        { status: 400 }
+      );
+    }
+
+    // Validate crop zone is not out of bounds
+    if (xPct < 0 || yPct < 0 || wPct <= 0 || hPct <= 0 || xPct + wPct > 1 || yPct + hPct > 1) {
+      return NextResponse.json(
+        { 
+          error: "Crop is out of bounds.",
+          reason: "INVALID_CROP"
+        },
+        { status: 400 }
+      );
+    }
+
+    // Validate crop zone is not too small
+    const MIN_W = 0.01;
+    const MIN_H = 0.01;
+    if (wPct < MIN_W || hPct < MIN_H) {
+      return NextResponse.json(
+        { 
+          error: "Crop is too small. Make the rectangle bigger.",
+          reason: "CROP_TOO_SMALL"
+        },
+        { status: 400 }
+      );
+    }
+
+    // Note: DPI support for pro templates would require updating WorkOrderTemplate type
+    // For now, DPI is handled in the onboarding templates endpoint only
 
     // Save template to Sheets
     await upsertTemplateToSheet({

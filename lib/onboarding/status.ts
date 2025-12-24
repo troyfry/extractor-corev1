@@ -11,6 +11,8 @@ import {
   getUserRowById,
   upsertUserRow,
   setOnboardingCompleted,
+  resetApiCallCount,
+  getApiCallCount,
   type UserRow,
 } from "./usersSheet";
 import { auth } from "@/auth";
@@ -35,11 +37,13 @@ export async function getCurrentUserIdAndEmail(): Promise<{
 
 /**
  * Get the main spreadsheet ID for the current user.
- * Checks cookies first (set during onboarding), then session, then Users sheet, then env fallback.
+ * Checks cookies first (set during onboarding), then session, then env fallback.
+ * 
+ * Do not call Google Sheets in getMainSpreadsheetId. Cookie/session only.
+ * This prevents quota errors during /pro page renders.
  */
 async function getMainSpreadsheetId(
-  userId: string,
-  accessToken: string
+  userId: string
 ): Promise<string | null> {
   try {
     // First, check cookie (set during onboarding Google step)
@@ -48,50 +52,13 @@ async function getMainSpreadsheetId(
     const cookieSpreadsheetId = cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
     
     if (cookieSpreadsheetId) {
-      // If we have cookie, try to read Users sheet to get the actual sheetId from user's row
-      try {
-        const { getUserRowById } = await import("./usersSheet");
-        const userRow = await getUserRowById(accessToken, cookieSpreadsheetId, userId);
-        if (userRow) {
-          // Store mainSpreadsheetId in user row if not already set (for future lookups)
-          if (!userRow.mainSpreadsheetId && cookieSpreadsheetId) {
-            const { upsertUserRow } = await import("./usersSheet");
-            await upsertUserRow(accessToken, cookieSpreadsheetId, {
-              ...userRow,
-              mainSpreadsheetId: cookieSpreadsheetId,
-            });
-          }
-          // Use mainSpreadsheetId if available, otherwise cookie value
-          return userRow.mainSpreadsheetId || cookieSpreadsheetId;
-        }
-        // If user row doesn't exist yet, use the cookie value (where Users sheet is stored)
-        return cookieSpreadsheetId;
-      } catch (error) {
-        // If reading Users sheet fails, use cookie value
-        console.warn("[Onboarding Status] Could not read Users sheet, using cookie value:", error);
-        return cookieSpreadsheetId;
-      }
+      return cookieSpreadsheetId;
     }
 
     // Second, try session/JWT token
     const session = await auth();
     const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
-    let candidateSpreadsheetId = await getUserSpreadsheetId(userId, sessionSpreadsheetId);
-
-    // If we have a candidate from session, try to read Users sheet
-    if (candidateSpreadsheetId) {
-      try {
-        const { getUserRowById } = await import("./usersSheet");
-        const userRow = await getUserRowById(accessToken, candidateSpreadsheetId, userId);
-        if (userRow) {
-          // Use mainSpreadsheetId if available, otherwise candidate
-          return userRow.mainSpreadsheetId || candidateSpreadsheetId;
-        }
-      } catch (error) {
-        // If reading Users sheet fails, fall back to candidate
-        console.warn("[Onboarding Status] Could not read Users sheet, using session value:", error);
-      }
-    }
+    const candidateSpreadsheetId = await getUserSpreadsheetId(userId, sessionSpreadsheetId);
 
     return candidateSpreadsheetId;
   } catch (error) {
@@ -113,9 +80,31 @@ export type OnboardingStatusResult = {
  * Get onboarding status for the current user.
  * 
  * If user is not logged in, returns { isAuthenticated: false, onboardingCompleted: false }.
- * If user is logged in but doesn't exist in Users sheet, creates a row with onboardingCompleted = "FALSE".
+ * 
+ * Strategy:
+ * 1. Check onboardingCompleted cookie FIRST - returns immediately if true (no Sheets calls)
+ * 2. If cookie missing, attempt ONE Sheets read (no ensureUsersSheet)
+ * 3. Handle quota errors gracefully
  */
 export async function getOnboardingStatus(): Promise<OnboardingStatusResult> {
+  // STEP 1: Check onboardingCompleted cookie FIRST (no API calls, no token needed)
+  try {
+    const { cookies } = await import("next/headers");
+    const cookieStore = await cookies();
+    const cookieOnboardingCompleted = cookieStore.get("onboardingCompleted")?.value;
+    
+    if (cookieOnboardingCompleted === "true") {
+      console.log("[Onboarding Status] Cookie indicates onboarding completed - returning without Sheets calls");
+      return {
+        isAuthenticated: true,
+        onboardingCompleted: true,
+      };
+    }
+  } catch (error) {
+    console.warn("[Onboarding Status] Could not read cookies:", error);
+  }
+
+  // STEP 2: If cookie not set, check authentication and get user info
   const userInfo = await getCurrentUserIdAndEmail();
   if (!userInfo) {
     return {
@@ -126,7 +115,7 @@ export async function getOnboardingStatus(): Promise<OnboardingStatusResult> {
 
   const { userId, email } = userInfo;
 
-  // Get access token
+  // Get access token (needed for Sheets read if cookie missing)
   const user = await getCurrentUser();
   if (!user || !user.googleAccessToken) {
     console.warn("[Onboarding Status] No Google access token available");
@@ -136,21 +125,17 @@ export async function getOnboardingStatus(): Promise<OnboardingStatusResult> {
     };
   }
 
-  // Get spreadsheet ID - check cookie first (set during onboarding), then session/JWT
-  let spreadsheetId = await getMainSpreadsheetId(userId, user.googleAccessToken);
+  // STEP 3: Get spreadsheet ID (lightweight - cookie/session only, no Sheets calls)
+  let spreadsheetId: string | null = null;
   
-  // If no spreadsheet ID found, try cookie directly (fallback)
-  if (!spreadsheetId) {
-    try {
-      const { cookies } = await import("next/headers");
-      const cookieStore = await cookies();
-      spreadsheetId = cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
-    } catch (error) {
-      console.warn("[Onboarding Status] Could not read cookies:", error);
-    }
+  try {
+    const { cookies } = await import("next/headers");
+    const cookieStore = await cookies();
+    spreadsheetId = cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
+  } catch (error) {
+    console.warn("[Onboarding Status] Could not read cookies:", error);
   }
 
-  // If still no spreadsheet ID, try to get from session/JWT token
   if (!spreadsheetId) {
     try {
       const session = await auth();
@@ -168,39 +153,16 @@ export async function getOnboardingStatus(): Promise<OnboardingStatusResult> {
     };
   }
 
+  // STEP 4: Attempt ONE Sheets read (no ensureUsersSheet)
   try {
-    // Ensure Users sheet exists
-    await ensureUsersSheet(user.googleAccessToken, spreadsheetId);
-
-    // Get user row
-    let userRow = await getUserRowById(user.googleAccessToken, spreadsheetId, userId);
-
-    // If user doesn't exist, create a row with onboardingCompleted = "FALSE"
-    if (!userRow) {
-      await upsertUserRow(user.googleAccessToken, spreadsheetId, {
-        userId,
-        email,
-        onboardingCompleted: "FALSE",
-        sheetId: "",
-        mainSpreadsheetId: spreadsheetId, // Store where Users sheet is located
-        driveFolderId: "",
-        openaiKeyEncrypted: "",
-        createdAt: new Date().toISOString(),
-      });
-      // Re-fetch the row
-      userRow = await getUserRowById(user.googleAccessToken, spreadsheetId, userId);
-    } else if (!userRow.mainSpreadsheetId && spreadsheetId) {
-      // If user exists but doesn't have mainSpreadsheetId, update it
-      await upsertUserRow(user.googleAccessToken, spreadsheetId, {
-        ...userRow,
-        mainSpreadsheetId: spreadsheetId,
-      });
-      // Re-fetch the row
-      userRow = await getUserRowById(user.googleAccessToken, spreadsheetId, userId);
-    }
+    resetApiCallCount();
+    
+    // Get user row (uses cache, does NOT call ensureUsersSheet)
+    const userRow = await getUserRowById(user.googleAccessToken, spreadsheetId, userId);
 
     if (!userRow) {
-      // Still null after creation, something went wrong
+      // User doesn't exist in sheet - assume not completed
+      // Don't create row here (only in onboarding routes)
       return {
         isAuthenticated: true,
         onboardingCompleted: false,
@@ -208,15 +170,33 @@ export async function getOnboardingStatus(): Promise<OnboardingStatusResult> {
     }
 
     const onboardingCompleted = userRow.onboardingCompleted === "TRUE";
+    const apiCalls = getApiCallCount();
+    console.log(`[Onboarding Status] Sheets API calls: ${apiCalls}, completed: ${onboardingCompleted}`);
 
     return {
       isAuthenticated: true,
       onboardingCompleted,
       userRow,
     };
-  } catch (error) {
+  } catch (error: any) {
+    // Check if it's a quota error
+    const isQuotaError = error?.code === 429 || 
+                        error?.status === 429 ||
+                        error?.message?.includes("quota") ||
+                        error?.message?.includes("rate limit") ||
+                        error?.message?.includes("Read requests per minute");
+    
+    if (isQuotaError) {
+      console.warn("[Onboarding Status] Quota error, falling back to cookie/session check:", error.message);
+      // Return not completed but don't throw - let UI show message
+      return {
+        isAuthenticated: true,
+        onboardingCompleted: false,
+      };
+    }
+    
     console.error("[Onboarding Status] Error checking onboarding status:", error);
-    // On error, assume onboarding not completed (safer)
+    // On other errors, assume onboarding not completed (safer)
     return {
       isAuthenticated: true,
       onboardingCompleted: false,
@@ -230,6 +210,8 @@ export async function getOnboardingStatus(): Promise<OnboardingStatusResult> {
  * @param spreadsheetId - Optional spreadsheet ID. If not provided, will try to get from cookie or user row.
  */
 export async function completeOnboarding(spreadsheetId?: string): Promise<void> {
+  resetApiCallCount();
+  
   const userInfo = await getCurrentUserIdAndEmail();
   if (!userInfo) {
     throw new Error("User not authenticated");
@@ -253,9 +235,9 @@ export async function completeOnboarding(spreadsheetId?: string): Promise<void> 
     targetSpreadsheetId = cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
   }
 
-  // If still no spreadsheet ID, try to get from Users sheet
+  // If still no spreadsheet ID, try to get from cookie/session (no Sheets calls)
   if (!targetSpreadsheetId) {
-    targetSpreadsheetId = await getMainSpreadsheetId(userId, user.googleAccessToken);
+    targetSpreadsheetId = await getMainSpreadsheetId(userId);
   }
 
   // If still no spreadsheet ID, try to get from user's row in Users sheet
@@ -285,6 +267,65 @@ export async function completeOnboarding(spreadsheetId?: string): Promise<void> 
 
   if (!targetSpreadsheetId) {
     throw new Error("Spreadsheet ID not configured. Please complete the Google Sheets setup step first.");
+  }
+
+  // Ensure Users sheet exists (onboarding route - must ensure sheet exists)
+  await ensureUsersSheet(user.googleAccessToken, targetSpreadsheetId);
+
+  // Validate prerequisites before completing onboarding
+  const userRow = await getUserRowById(user.googleAccessToken, targetSpreadsheetId, userId);
+  if (!userRow) {
+    throw new Error("User row not found. Please complete the Google Sheets setup step first.");
+  }
+
+  // Check that sheetId and driveFolderId are set
+  if (!userRow.sheetId || !userRow.driveFolderId) {
+    throw new Error("Google Sheets and Drive folder must be configured before completing onboarding.");
+  }
+
+  // Check that at least one FM profile exists
+  const { getAllFmProfiles } = await import("@/lib/templates/fmProfilesSheets");
+  const fmProfiles = await getAllFmProfiles({
+    spreadsheetId: targetSpreadsheetId,
+    accessToken: user.googleAccessToken,
+  });
+  
+  // Filter profiles for this user (check userId field if present, or assume all are for this user if userId column doesn't exist)
+  const userFmProfiles = fmProfiles.filter(p => {
+    // If profile has userId property, check it matches
+    // Otherwise, assume it's for this user (legacy profiles without userId)
+    return !(p as any).userId || (p as any).userId === userId;
+  });
+
+  if (userFmProfiles.length === 0) {
+    throw new Error("At least one FM profile must be configured before completing onboarding.");
+  }
+
+  // Check that at least one template crop zone exists
+  const { listTemplatesForUser } = await import("@/lib/templates/templatesSheets");
+  const templates = await listTemplatesForUser(
+    user.googleAccessToken,
+    targetSpreadsheetId,
+    userId
+  );
+
+  if (templates.length === 0) {
+    throw new Error("Before automation can run, set the Work Order Number crop zone for at least one FM template. Please complete the Templates step.");
+  }
+
+  // Validate templates are not default (0/0/1/1)
+  const validTemplates = templates.filter(t => {
+    const TOLERANCE = 0.01;
+    return !(
+      Math.abs(t.xPct) < TOLERANCE &&
+      Math.abs(t.yPct) < TOLERANCE &&
+      Math.abs(t.wPct - 1) < TOLERANCE &&
+      Math.abs(t.hPct - 1) < TOLERANCE
+    );
+  });
+
+  if (validTemplates.length === 0) {
+    throw new Error("At least one template must have a valid crop zone (not the default full-page). Please configure template crop zones.");
   }
 
   await setOnboardingCompleted(user.googleAccessToken, targetSpreadsheetId, userId);

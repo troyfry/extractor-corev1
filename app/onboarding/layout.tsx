@@ -1,28 +1,42 @@
 /**
  * Layout for onboarding pages.
  * 
- * This layout checks if onboarding is already completed and redirects to /pro if so.
- * This prevents users from accessing onboarding pages after completion.
+ * This layout checks if onboarding is already completed or if spreadsheet is set, and redirects to /pro if so.
+ * This prevents users from accessing onboarding pages after setup is done.
+ * 
+ * NOTE: Uses lightweight checks (cookie/session only) to avoid Sheets API quota issues.
  */
 
 import { redirect } from "next/navigation";
-import { getOnboardingStatus } from "@/lib/onboarding/status";
+import { getCurrentUser } from "@/lib/auth/currentUser";
+import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
+import { cookies } from "next/headers";
+import { auth } from "@/auth";
 
 export default async function OnboardingLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  // Check onboarding status server-side
-  const status = await getOnboardingStatus();
+  // Lightweight check: only check cookie and session (no Sheets API calls)
+  const user = await getCurrentUser();
+  
+  if (!user || !user.userId) {
+    // Not authenticated, allow access (middleware will handle auth redirect)
+    return <>{children}</>;
+  }
 
-  // If user is authenticated and onboarding is completed, redirect to /pro
-  if (status.isAuthenticated && status.onboardingCompleted) {
+  // Check onboardingCompleted cookie first (most reliable indicator)
+  const cookieStore = await cookies();
+  const cookieOnboardingCompleted = cookieStore.get("onboardingCompleted")?.value;
+  
+  if (cookieOnboardingCompleted === "true") {
+    // Onboarding is completed, redirect to /pro
     redirect("/pro");
   }
 
-  // If user is not authenticated, allow access (middleware will handle auth redirect)
-  // If user is authenticated but onboarding not completed, allow access to onboarding pages
+  // If onboardingCompleted cookie is not set, allow access to onboarding pages
+  // Even if googleSheetsSpreadsheetId is set (user might be mid-onboarding)
   return <>{children}</>;
 }
 
