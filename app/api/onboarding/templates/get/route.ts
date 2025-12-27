@@ -49,16 +49,10 @@ export async function GET(request: Request) {
     }
 
     // Ensure Users sheet exists (onboarding route - must ensure sheet exists)
-    await ensureUsersSheet(user.googleAccessToken, mainSpreadsheetId);
+    await ensureUsersSheet(user.googleAccessToken, mainSpreadsheetId, { allowEnsure: true });
 
-    // Verify user row exists
-    const userRow = await getUserRowById(user.googleAccessToken, mainSpreadsheetId, user.userId);
-    if (!userRow) {
-      return NextResponse.json(
-        { error: "User row not found. Please complete the Google step first." },
-        { status: 400 }
-      );
-    }
+    // Note: Templates are shared per spreadsheet, not per user, so we don't require a user row
+    // The userId is stored for audit purposes but templates work without it
 
     // Get template
     const template = await getTemplateByFmKey(

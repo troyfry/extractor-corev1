@@ -83,11 +83,13 @@ export async function POST(request: Request) {
       await sheets.spreadsheets.get({
         spreadsheetId: sheetId,
       });
-    } catch (validationError: any) {
+    } catch (validationError: unknown) {
       console.error("Error validating spreadsheet access:", validationError);
       
       // Provide helpful error messages based on the error type
-      if (validationError?.code === 404 || validationError?.status === 404) {
+      const errorCode = (validationError as { code?: number })?.code;
+      const errorStatus = (validationError as { status?: number })?.status;
+      if (errorCode === 404 || errorStatus === 404) {
         return NextResponse.json(
           {
             error: "Spreadsheet not found. Please check that:\n" +
@@ -98,7 +100,7 @@ export async function POST(request: Request) {
         );
       }
       
-      if (validationError?.code === 403 || validationError?.status === 403) {
+      if (errorCode === 403 || errorStatus === 403) {
         return NextResponse.json(
           {
             error: "Access denied. Please check that:\n" +
@@ -138,7 +140,7 @@ export async function POST(request: Request) {
       onboardingCompleted: "FALSE",
       openaiKeyEncrypted: "",
       createdAt: new Date().toISOString(),
-    });
+    }, { allowEnsure: true });
 
     // Store spreadsheet ID in cookie for session persistence
     const cookieStore = await cookies();

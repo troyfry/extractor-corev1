@@ -3,7 +3,7 @@
  * 
  * Matches work orders to FM profiles based on sender domain ONLY.
  * Subject keywords are no longer used to avoid conflicts when multiple profiles
- * share the same keywords (e.g., "WO#" appears in both superclean and 23rd_group).
+ * share the same keywords (e.g., "WO#" appears in both superclean and 23rdgroup).
  */
 
 import type { FmProfile } from "./fmProfiles";

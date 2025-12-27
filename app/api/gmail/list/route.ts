@@ -11,9 +11,31 @@
 
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { listWorkOrderEmails } from "@/lib/google/gmail";
+import { listWorkOrderEmails, createGmailClient } from "@/lib/google/gmail";
 
 export const runtime = "nodejs";
+
+/**
+ * Resolve label name to labelId (case-insensitive).
+ * Handles labels with spaces and nested labels (e.g., "Signed/WO").
+ */
+async function resolveLabelId(gmail: any, labelName: string): Promise<string | null> {
+  const res = await gmail.users.labels.list({ userId: "me" });
+  const labels = res.data.labels || [];
+
+  // Case-insensitive match - Gmail labels are not reliably case-sensitive
+  const normalizedLabelName = labelName.toLowerCase();
+  const found = labels.find((l: any) => (l.name || "").toLowerCase() === normalizedLabelName);
+  
+  if (found) {
+    console.log(`[Gmail List API] Resolved label "${labelName}" to ID: ${found.id}`);
+    return found.id;
+  }
+  
+  console.warn(`[Gmail List API] Label "${labelName}" not found. Available labels (first 20):`, 
+    labels.slice(0, 20).map((l: any) => l.name).filter(Boolean).join(", "));
+  return null;
+}
 
 export async function GET(request: Request) {
   try {
@@ -35,20 +57,34 @@ export async function GET(request: Request) {
 
     // Get optional query parameters
     const { searchParams } = new URL(request.url);
-    const label = searchParams.get("label") || undefined;
+    const labelName = searchParams.get("label") || undefined;
     const pageToken = searchParams.get("pageToken") || undefined;
     const maxResults = searchParams.get("maxResults") 
       ? parseInt(searchParams.get("maxResults")!, 10) 
-      : 20;
+      : 50; // Increased default to match Step 2
 
-    const result = await listWorkOrderEmails(accessToken, label, pageToken, maxResults);
+    // Step 1: Resolve label name to labelId (case-insensitive, handles spaces and nested labels)
+    let labelId: string | null = null;
+    if (labelName) {
+      const gmail = createGmailClient(accessToken);
+      labelId = await resolveLabelId(gmail, labelName);
+      console.log(`[Gmail List API] Label name: "${labelName}", resolved labelId: ${labelId || "null"}`);
+    }
 
-    // Log for debugging
-    console.log(`Found ${result.emails.length} emails with attachments`);
-    const emailsWithPdfs = result.emails.filter(e => e.attachmentCount > 0);
-    console.log(`Found ${emailsWithPdfs.length} emails with PDF attachments`);
+    const result = await listWorkOrderEmails(accessToken, labelName, labelId, pageToken, maxResults);
+
+    // Step 4: Debug logging - result already filtered to only PDFs
+    const totalPdfAttachments = result.emails.reduce((sum, e) => sum + e.attachmentCount, 0);
+    
+    console.log(`[Gmail List API] Summary for label "${labelName || 'INBOX'}":`);
+    console.log(`[Gmail List API]   - Emails with PDF attachments: ${result.emails.length}`);
+    console.log(`[Gmail List API]   - Total PDF attachments: ${totalPdfAttachments}`);
+    
     if (result.nextPageToken) {
-      console.log(`More emails available (nextPageToken present)`);
+      console.log(`[Gmail List API] More emails available (nextPageToken present)`);
+    }
+    if (result.emails.length === 0) {
+      console.warn(`[Gmail List API] No emails with PDF attachments found. Check if label "${labelName || 'INBOX'}" exists and contains emails with PDF attachments.`);
     }
 
     return NextResponse.json(

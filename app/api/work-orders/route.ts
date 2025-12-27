@@ -111,7 +111,7 @@ export async function POST(req: Request) {
         } else {
           // Then check session/JWT token
           const session = await auth();
-          const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+          const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
           spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
         }
         if (spreadsheetId) {

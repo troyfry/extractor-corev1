@@ -12,6 +12,16 @@
  */
 
 import { google } from "googleapis";
+import {
+  getHeaderCacheKey,
+  getCachedHeaders,
+  setCachedHeaders,
+  getEnsuredKey,
+  isEnsured,
+  markEnsured,
+  columnIndexToLetter,
+  getColumnRange,
+} from "@/lib/google/sheetsCache";
 
 /**
  * Required columns for job records in Sheet1.
@@ -71,6 +81,7 @@ export const WORK_ORDER_REQUIRED_COLUMNS = [
   "signed_preview_image_url",
   "source",
   "last_updated_at",
+  "file_hash",
 ] as const;
 
 /**
@@ -125,8 +136,11 @@ export type WorkOrderRecord = {
   work_order_pdf_link: string | null;
   signed_pdf_url: string | null;
   signed_preview_image_url: string | null;
+  signed_at: string | null; // ISO string or null
   source: string | null; // email, manual_upload, api, etc.
   last_updated_at: string; // ISO string
+  file_hash?: string | null; // Hash of the PDF file for deduplication
+  file_hash_created_at?: string | null; // Timestamp when file_hash was computed
 };
 
 /**
@@ -372,7 +386,7 @@ export async function writeJobRecord(
     // Get all data to find existing row by jobId
     const allDataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: formatSheetRange(sheetName, "A:Z"),
+      range: formatSheetRange(sheetName, getColumnRange(REQUIRED_COLUMNS.length)),
     });
 
     const rows = allDataResponse.data.values || [];
@@ -472,7 +486,7 @@ async function appendJobRecord(
   // Append row
   await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range: formatSheetRange(sheetName, "A:Z"),
+    range: formatSheetRange(sheetName, getColumnRange(REQUIRED_COLUMNS.length)),
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
@@ -562,7 +576,7 @@ export async function findJobRecordByJobId(
   try {
     const allDataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: formatSheetRange(sheetName, "A:Z"),
+      range: formatSheetRange(sheetName, getColumnRange(REQUIRED_COLUMNS.length)),
     });
 
     const rows = allDataResponse.data.values || [];
@@ -589,7 +603,7 @@ export async function findJobRecordByJobId(
           const colIndex = headersLower.indexOf(col.toLowerCase());
           if (colIndex !== -1 && row[colIndex] !== undefined) {
             const value = row[colIndex];
-            (record as any)[col] = value === "" ? null : value;
+            (record as Record<string, unknown>)[col] = value === "" ? null : value;
           }
         }
         return record as JobRecord;
@@ -623,7 +637,7 @@ export async function findWorkOrderRecordByJobId(
   try {
     const allDataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: formatSheetRange(sheetName, "A:Z"),
+      range: formatSheetRange(sheetName, getColumnRange(WORK_ORDER_REQUIRED_COLUMNS.length)),
     });
 
     const rows = allDataResponse.data.values || [];
@@ -648,7 +662,7 @@ export async function findWorkOrderRecordByJobId(
           const colIndex = headersLower.indexOf(col.toLowerCase());
           if (colIndex !== -1 && row[colIndex] !== undefined) {
             const value = row[colIndex];
-            (record as any)[col] = value === "" ? null : value;
+            (record as Record<string, unknown>)[col] = value === "" ? null : value;
           }
         }
 
@@ -685,11 +699,16 @@ export async function updateJobWithSignedInfoByWorkOrderNumber(
   const sheets = createSheetsClient(accessToken);
 
   // Ensure all required columns (including new signed columns) exist
-  await ensureColumnsExist(accessToken, spreadsheetId, sheetName);
+  // Gate with cache to avoid running on every request
+  const ensuredKey = getEnsuredKey(spreadsheetId, sheetName);
+  if (!isEnsured(ensuredKey)) {
+    await ensureColumnsExist(accessToken, spreadsheetId, sheetName);
+    markEnsured(ensuredKey);
+  }
 
   const allDataResponse = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: formatSheetRange(sheetName, "A:Z"),
+    range: formatSheetRange(sheetName, getColumnRange(REQUIRED_COLUMNS.length)),
   });
 
   const rows = allDataResponse.data.values || [];
@@ -876,7 +895,7 @@ async function appendWorkOrderRecord(
 
   await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range: formatSheetRange(sheetName, "A:Z"),
+    range: formatSheetRange(sheetName, getColumnRange(WORK_ORDER_REQUIRED_COLUMNS.length)),
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
@@ -932,6 +951,85 @@ async function updateWorkOrderRecord(
 }
 
 /**
+ * Get sheet headers with caching to reduce API calls.
+ */
+export async function getSheetHeadersCached(
+  accessToken: string,
+  spreadsheetId: string,
+  sheetName: string
+) {
+  const key = getHeaderCacheKey(spreadsheetId, sheetName);
+  const cached = getCachedHeaders(key);
+
+  // Cache TTL: 5 minutes
+  if (cached && Date.now() - cached.fetchedAt < 5 * 60 * 1000) {
+    return cached;
+  }
+
+  const sheets = createSheetsClient(accessToken);
+  const headerResp = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, "1:1"),
+  });
+
+  const headerRow = (headerResp.data.values?.[0] || []) as string[];
+  const headers = headerRow;
+  const headersLower = headers.map((h) => (h || "").toLowerCase().trim());
+
+  const colLetterByLower: Record<string, string> = {};
+  const colIndexByLower: Record<string, number> = {};
+
+  headersLower.forEach((h, idx) => {
+    if (!h) return;
+    colIndexByLower[h] = idx;
+    colLetterByLower[h] = columnIndexToLetter(idx);
+  });
+
+  const value = {
+    headers,
+    headersLower,
+    colLetterByLower,
+    colIndexByLower,
+    fetchedAt: Date.now(),
+  };
+
+  setCachedHeaders(key, value);
+  return value;
+}
+
+/**
+ * Find row index by column value (reads only one column, not entire sheet).
+ */
+export async function findRowIndexByColumnValue(
+  accessToken: string,
+  spreadsheetId: string,
+  sheetName: string,
+  columnLetter: string,
+  targetValue: string
+): Promise<number> {
+  const sheets = createSheetsClient(accessToken);
+
+  // Read only the column (e.g., C:C)
+  const colResp = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, `${columnLetter}:${columnLetter}`),
+  });
+
+  const colValues = colResp.data.values || [];
+  const normalizedTarget = (targetValue || "").trim();
+
+  // values[0] is header; row index is 1-based
+  for (let i = 1; i < colValues.length; i++) {
+    const cell = (colValues[i]?.[0] || "").trim();
+    if (cell === normalizedTarget) {
+      return i + 1; // 1-based row index in Sheets
+    }
+  }
+
+  return -1;
+}
+
+/**
  * Write a work order record to Google Sheets.
  * Creates the row if it doesn't exist, or updates it if it does (by jobId).
  * 
@@ -958,41 +1056,22 @@ export async function writeWorkOrderRecord(
 
   try {
     // Ensure the Work_Orders sheet has all required columns
-    console.log(`[writeWorkOrderRecord] Ensuring columns exist for sheet: ${sheetName}`);
-    await ensureWorkOrderColumnsExist(accessToken, spreadsheetId, sheetName);
-    console.log(`[writeWorkOrderRecord] Columns ensured for sheet: ${sheetName}`);
-
-    // Fetch all data to locate an existing row by jobId
-    console.log(`[writeWorkOrderRecord] Fetching existing data from sheet: ${sheetName}`);
-    const allDataResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: formatSheetRange(sheetName, "A:Z"),
-    });
-
-    const rows = allDataResponse.data.values || [];
-    console.log(`[writeWorkOrderRecord] Found ${rows.length} rows in sheet (including header)`);
-    
-    if (rows.length === 0) {
-      // No headers yet – ensure they exist and append (only if meaningful data)
-      if (hasMeaningfulWorkOrderData(record)) {
-        console.log(`[writeWorkOrderRecord] No rows found, appending new record with meaningful data`);
-        await appendWorkOrderRecord(accessToken, spreadsheetId, sheetName, record);
-        console.log(`[writeWorkOrderRecord] ✅ Appended new record: ${record.jobId}`);
-      } else {
-        console.log(`[writeWorkOrderRecord] Skipping append - no rows exist and record has no meaningful operational data`);
-      }
-      return;
+    // Gate with cache to avoid running on every request
+    const ensuredKey = getEnsuredKey(spreadsheetId, sheetName);
+    if (!isEnsured(ensuredKey)) {
+      console.log(`[writeWorkOrderRecord] Ensuring columns exist for sheet: ${sheetName}`);
+      await ensureWorkOrderColumnsExist(accessToken, spreadsheetId, sheetName);
+      markEnsured(ensuredKey);
+      console.log(`[writeWorkOrderRecord] Columns ensured for sheet: ${sheetName}`);
     }
 
-    const headers = rows[0] as string[];
-    const headersLower = headers.map((h) => h.toLowerCase().trim());
-    console.log(`[writeWorkOrderRecord] Headers found: ${headers.join(", ")}`);
-    
-    const jobIdColIndex = headersLower.indexOf("jobid");
-    console.log(`[writeWorkOrderRecord] jobId column index: ${jobIdColIndex}`);
+    // 1) Get headers (cached)
+    const headerMeta = await getSheetHeadersCached(accessToken, spreadsheetId, sheetName);
 
-    if (jobIdColIndex === -1) {
-      // Fallback: no jobId column, just append (only if meaningful data)
+    // 2) Locate jobId column
+    const jobIdLetter = headerMeta.colLetterByLower["jobid"];
+    if (!jobIdLetter) {
+      // Fallback: append only if meaningful
       if (hasMeaningfulWorkOrderData(record)) {
         console.log(`[writeWorkOrderRecord] No jobId column found, appending new record with meaningful data`);
         await appendWorkOrderRecord(accessToken, spreadsheetId, sheetName, record);
@@ -1003,20 +1082,17 @@ export async function writeWorkOrderRecord(
       return;
     }
 
-    let existingRowIndex = -1;
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      const rowJobId = row?.[jobIdColIndex] || "";
-      if (row && rowJobId === record.jobId) {
-        existingRowIndex = i + 1; // 1-based
-        console.log(`[writeWorkOrderRecord] Found existing row at index ${existingRowIndex} with jobId: ${record.jobId}`);
-        break;
-      }
-    }
+    // 3) Find existing row by reading ONLY jobId column
+    const existingRowIndex = await findRowIndexByColumnValue(
+      accessToken,
+      spreadsheetId,
+      sheetName,
+      jobIdLetter,
+      record.jobId
+    );
 
     if (existingRowIndex === -1) {
-      // Only append new records if they have meaningful operational data
-      // This prevents creating rows with mostly empty fields
+      // No existing row found, append if meaningful
       if (hasMeaningfulWorkOrderData(record)) {
         console.log(`[writeWorkOrderRecord] No existing row found, appending new record with meaningful data`);
         await appendWorkOrderRecord(accessToken, spreadsheetId, sheetName, record);
@@ -1029,22 +1105,24 @@ export async function writeWorkOrderRecord(
           status: record.status,
         });
       }
-    } else {
-      console.log(`[writeWorkOrderRecord] Updating existing row ${existingRowIndex} with data:`, {
-        jobId: record.jobId,
-        fmKey: record.fmKey,
-        wo_number: record.wo_number,
-        status: record.status,
-      });
-      await updateWorkOrderRecord(
-        accessToken,
-        spreadsheetId,
-        sheetName,
-        existingRowIndex,
-        record
-      );
-      console.log(`[writeWorkOrderRecord] ✅ Updated existing record: ${record.jobId}`);
+      return;
     }
+
+    // 4) Update existing row
+    console.log(`[writeWorkOrderRecord] Updating existing row ${existingRowIndex} with data:`, {
+      jobId: record.jobId,
+      fmKey: record.fmKey,
+      wo_number: record.wo_number,
+      status: record.status,
+    });
+    await updateWorkOrderRecord(
+      accessToken,
+      spreadsheetId,
+      sheetName,
+      existingRowIndex,
+      record
+    );
+    console.log(`[writeWorkOrderRecord] ✅ Updated existing record: ${record.jobId}`);
   } catch (error) {
     console.error(`[writeWorkOrderRecord] ❌ ERROR writing work order record:`, {
       error,

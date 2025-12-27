@@ -21,8 +21,7 @@ import { getCurrentUser } from "@/lib/auth/currentUser";
 import { extractWorkOrderNumberFromText } from "@/lib/workOrders/processing";
 import { extractTextFromPdfBuffer } from "@/lib/workOrders/aiParser";
 import { isAiParsingEnabled, getAiModelName, getIndustryProfile } from "@/lib/config/ai";
-import { workOrderRepo } from "@/lib/workOrders/repository";
-import type { WorkOrder, WorkOrderInput } from "@/lib/workOrders/types";
+import type { WorkOrderInput } from "@/lib/workOrders/types";
 import type { ParsedWorkOrder } from "@/lib/workOrders/parsedTypes";
 import OpenAI from "openai";
 import {
@@ -138,7 +137,7 @@ function parseAiResponse(
 /**
  * Convert ParsedWorkOrder[] to WorkOrderInput[] for database insertion.
  */
-function parsedToWorkOrderInput(parsed: ParsedWorkOrder[], userId: string): WorkOrderInput[] {
+function _parsedToWorkOrderInput(parsed: ParsedWorkOrder[], userId: string): WorkOrderInput[] {
   return parsed.map((p) => ({
     userId, // Pro tier: use authenticated user ID
     workOrderNumber: p.workOrderNumber,
@@ -166,12 +165,12 @@ export async function POST(request: Request) {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    const userId = user.userId;
-    const processedAt = new Date().toISOString();
-    let aiModelUsed: string | undefined;
-    let totalPromptTokens = 0;
-    let totalCompletionTokens = 0;
-    let totalTokens = 0;
+    // const userId = user.userId;
+    // const processedAt = new Date().toISOString();
+    let _aiModelUsed: string | undefined;
+    let _totalPromptTokens = 0;
+    let _totalCompletionTokens = 0;
+    let _totalTokens = 0;
 
     const formData = await request.formData();
     const file = formData.get("file");
@@ -357,11 +356,11 @@ CRITICAL:
           temperature: 0.1,
         });
         
-        // Capture token usage
+        // Capture token usage (for future logging/metrics)
         if (response.usage) {
-          totalPromptTokens += response.usage.prompt_tokens || 0;
-          totalCompletionTokens += response.usage.completion_tokens || 0;
-          totalTokens += response.usage.total_tokens || 0;
+          _totalPromptTokens += response.usage.prompt_tokens || 0;
+          _totalCompletionTokens += response.usage.completion_tokens || 0;
+          _totalTokens += response.usage.total_tokens || 0;
         }
         
         const responseText = response.choices[0]?.message?.content;
@@ -369,7 +368,7 @@ CRITICAL:
           const aiResult = parseAiResponse(responseText, file.name);
           if (aiResult && aiResult.length > 0) {
             parsedWorkOrders = aiResult;
-            aiModelUsed = model;
+            _aiModelUsed = model;
             console.log(`AI parser produced ${aiResult.length} work order(s) from PDF`);
           }
         }
@@ -450,7 +449,7 @@ CRITICAL:
         } else {
           // Then check session/JWT token
           const session = await auth();
-          const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+          const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
           spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
         }
         
@@ -519,6 +518,18 @@ CRITICAL:
             }
           }
 
+          // Compute file hash if PDF buffer is available
+          let fileHash: string | null = null;
+          if (pdfBuffer) {
+            try {
+              const { sha256Buffer } = await import("@/lib/workOrders/fileHash");
+              fileHash = sha256Buffer(pdfBuffer);
+            } catch (hashError) {
+              console.error("[extract-pro] Error computing file hash:", hashError);
+              // Continue with null hash
+            }
+          }
+
           for (const parsedWO of parsedWorkOrders) {
             const jobId = generateJobId(issuerKey, parsedWO.workOrderNumber);
             
@@ -543,8 +554,10 @@ CRITICAL:
               work_order_pdf_link: workOrderPdfUrl,
               signed_pdf_url: null,
               signed_preview_image_url: null,
+              signed_at: null,
               source: "manual_upload",
               last_updated_at: nowIso,
+              file_hash: fileHash,
             };
 
             try {

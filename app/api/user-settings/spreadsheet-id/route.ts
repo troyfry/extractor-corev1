@@ -68,7 +68,7 @@ export async function GET(request: Request) {
 
     // Check session/JWT token (preferred - no DB storage)
     const session = await auth();
-    const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+    const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
     
     if (sessionSpreadsheetId) {
       return NextResponse.json({ googleSheetsSpreadsheetId: sessionSpreadsheetId });

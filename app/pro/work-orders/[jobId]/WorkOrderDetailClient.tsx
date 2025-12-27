@@ -213,7 +213,7 @@ export default function WorkOrderDetailClient({ jobId }: Props) {
                     <img
                       src={previewImageUrl}
                       alt={`WO ${workOrder.wo_number} preview`}
-                      className="max-w-md h-auto border border-gray-600 rounded max-h-64 object-contain"
+                      className="max-w-sm h-auto border border-gray-600 rounded max-h-32 object-contain"
                       onError={(e) => {
                         // Try fallback: use original URL if converted URL failed
                         const originalUrl = workOrder.signed_preview_image_url;

@@ -4,41 +4,84 @@ import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
 import { cookies } from "next/headers";
 import { auth } from "@/auth";
+import { normalizeFmKey } from "@/lib/templates/fmProfiles";
 
 export type TemplateConfig = {
   templateId: string;
   page: number;
   region: TemplateRegion;
   dpi?: number;
+  // PDF points fields (when coordSystem is PDF_POINTS_TOP_LEFT)
+  xPt?: number;
+  yPt?: number;
+  wPt?: number;
+  hPt?: number;
+  pageWidthPt?: number;
+  pageHeightPt?: number;
 };
 
 /**
- * Fallback templates for development/testing when Templates sheet is not available.
- * These should only be used if the Templates sheet lookup fails.
+ * Simple in-memory cache for template configs.
+ * Cache key: `${spreadsheetId}:${fmKey}`
+ * TTL: 5 minutes
  */
-const FALLBACK_TEMPLATES: Record<string, TemplateConfig> = {
-  superclean: {
-    templateId: "superclean_fm1",
-    page: 1,
-    region: { xPct: 0.72, yPct: 0.00, wPct: 0.26, hPct: 0.05 },
-    dpi: 300,
-  },
-   "23rd_group": {
-     templateId: "23rd_group_fm1",
-     page: 1,
-     region: { xPct: 0.02, yPct: 0.14, wPct: 0.30, hPct: 0.03 },
-     dpi: 250,
-   },
+type CacheEntry = {
+  config: TemplateConfig;
+  expiresAt: number;
 };
+
+const templateCache = new Map<string, CacheEntry>();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function getCacheKey(spreadsheetId: string, fmKey: string): string {
+  return `${spreadsheetId}:${normalizeFmKey(fmKey)}`;
+}
+
+function getCachedConfig(spreadsheetId: string, fmKey: string): TemplateConfig | null {
+  const key = getCacheKey(spreadsheetId, fmKey);
+  const entry = templateCache.get(key);
+  
+  if (!entry) {
+    return null;
+  }
+  
+  // Check if expired
+  if (Date.now() > entry.expiresAt) {
+    templateCache.delete(key);
+    return null;
+  }
+  
+  return entry.config;
+}
+
+function setCachedConfig(spreadsheetId: string, fmKey: string, config: TemplateConfig): void {
+  const key = getCacheKey(spreadsheetId, fmKey);
+  templateCache.set(key, {
+    config,
+    expiresAt: Date.now() + CACHE_TTL_MS,
+  });
+}
+
+/**
+ * Invalidate cache for a specific spreadsheetId + fmKey combination.
+ * Called after template save to ensure fresh data.
+ */
+export function invalidateTemplateCache(spreadsheetId: string, fmKey: string): void {
+  const key = getCacheKey(spreadsheetId, fmKey);
+  templateCache.delete(key);
+  console.log(`[Template Config] Cache invalidated for key: ${key}`);
+}
 
 /**
  * Get template configuration for an fmKey from the Templates sheet.
- * Falls back to hardcoded templates if sheet lookup fails (for development).
+ * Throws when missing - NO fallback templates.
+ * Throws Error("TEMPLATE_NOT_CONFIGURED") when no row found or template is default (0/0/1/1).
  */
 export async function getTemplateConfigForFmKey(
   fmKey: string
 ): Promise<TemplateConfig> {
-  const normalizedFmKey = fmKey.toLowerCase().trim();
+  // Use normalizeFmKey for consistent normalization (handles spaces, special chars, etc.)
+  const normalizedFmKey = normalizeFmKey(fmKey);
 
   try {
     // Get current user
@@ -56,12 +99,19 @@ export async function getTemplateConfigForFmKey(
       spreadsheetId = cookieSpreadsheetId;
     } else {
       const session = await auth();
-      const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+      const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
       spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
     }
 
     if (!spreadsheetId) {
       throw new Error("Spreadsheet ID not configured");
+    }
+
+    // Check cache first
+    const cached = getCachedConfig(spreadsheetId, normalizedFmKey);
+    if (cached) {
+      console.log(`[Template Config] Cache hit for ${spreadsheetId}:${normalizedFmKey}`);
+      return cached;
     }
 
     // Get template from Templates sheet
@@ -73,18 +123,104 @@ export async function getTemplateConfigForFmKey(
     );
 
     if (!template) {
-      throw new Error(`No template found for fmKey="${normalizedFmKey}"`);
+      // Log debug info to help diagnose why template wasn't found
+      try {
+        const { listTemplatesForUser } = await import("@/lib/templates/templatesSheets");
+        const allTemplates = await listTemplatesForUser(
+          user.googleAccessToken,
+          spreadsheetId,
+          user.userId
+        );
+        console.log(`[Template Config] Template lookup failed for fmKey="${normalizedFmKey}"`, {
+          searchedFmKey: normalizedFmKey,
+          userId: user.userId,
+          spreadsheetId: spreadsheetId.substring(0, 10) + "...",
+          foundTemplates: allTemplates.length,
+          availableFmKeys: allTemplates.map(t => t.fmKey),
+        });
+      } catch (listError) {
+        console.error(`[Template Config] Error listing templates for debug:`, listError);
+      }
+      
+      // No row found for fmKey - throw TEMPLATE_NOT_CONFIGURED
+      throw new Error("TEMPLATE_NOT_CONFIGURED");
     }
 
-    // Validate template is not default (0/0/1/1)
-    const TOLERANCE = 0.01;
-    const isDefault = Math.abs(template.xPct) < TOLERANCE &&
-                      Math.abs(template.yPct) < TOLERANCE &&
-                      Math.abs(template.wPct - 1) < TOLERANCE &&
-                      Math.abs(template.hPct - 1) < TOLERANCE;
+    // Normalize coordSystem: "PDF_POINTS" from sheet -> "PDF_POINTS_TOP_LEFT" internally
+    const normalizedCoordSystem = template.coordSystem === "PDF_POINTS" 
+      ? "PDF_POINTS_TOP_LEFT" 
+      : template.coordSystem;
 
-    if (isDefault) {
-      throw new Error(`Template for fmKey="${normalizedFmKey}" is not configured (still using default 0/0/1/1)`);
+    // Priority rules:
+    // 1. If coordSystem === "PDF_POINTS_TOP_LEFT" AND all pt fields exist → use points (ignore percentages)
+    // 2. Else if % fields exist → legacy fallback
+    // 3. Else → template not configured
+
+    let region: TemplateRegion;
+    let usePoints = false;
+
+    if (normalizedCoordSystem === "PDF_POINTS_TOP_LEFT") {
+      // Strict validation: if coordSystem says PDF_POINTS, all pt fields must exist and be > 0
+      const hasAllPtFields = 
+        template.xPt !== undefined && template.xPt !== null && template.xPt > 0 &&
+        template.yPt !== undefined && template.yPt !== null && template.yPt > 0 &&
+        template.wPt !== undefined && template.wPt !== null && template.wPt > 0 &&
+        template.hPt !== undefined && template.hPt !== null && template.hPt > 0 &&
+        template.pageWidthPt !== undefined && template.pageWidthPt !== null && template.pageWidthPt > 0 &&
+        template.pageHeightPt !== undefined && template.pageHeightPt !== null && template.pageHeightPt > 0;
+
+      if (!hasAllPtFields) {
+        console.error(`[Template Config] Template has coordSystem="PDF_POINTS" but missing or invalid pt fields:`, {
+          fmKey: normalizedFmKey,
+          xPt: template.xPt,
+          yPt: template.yPt,
+          wPt: template.wPt,
+          hPt: template.hPt,
+          pageWidthPt: template.pageWidthPt,
+          pageHeightPt: template.pageHeightPt,
+        });
+        throw new Error("TEMPLATE_NOT_CONFIGURED");
+      }
+
+      // Convert PDF points to percentages for TemplateRegion
+      // (OCR service currently expects percentages, but we're using points as source of truth)
+      const xPct = template.xPt / template.pageWidthPt!;
+      const yPct = template.yPt / template.pageHeightPt!;
+      const wPct = template.wPt / template.pageWidthPt!;
+      const hPct = template.hPt / template.pageHeightPt!;
+
+      region = {
+        xPct,
+        yPct,
+        wPct,
+        hPct,
+      };
+      usePoints = true;
+    } else {
+      // Legacy fallback: use percentages
+      // Validate template is not default (0/0/1/1)
+      const TOLERANCE = 0.01;
+      const isDefault = Math.abs(template.xPct) < TOLERANCE &&
+                        Math.abs(template.yPct) < TOLERANCE &&
+                        Math.abs(template.wPct - 1) < TOLERANCE &&
+                        Math.abs(template.hPct - 1) < TOLERANCE;
+
+      if (isDefault) {
+        throw new Error("TEMPLATE_NOT_CONFIGURED");
+      }
+
+      // Validate percentages exist
+      if (template.xPct === undefined || template.yPct === undefined || 
+          template.wPct === undefined || template.hPct === undefined) {
+        throw new Error("TEMPLATE_NOT_CONFIGURED");
+      }
+
+      region = {
+        xPct: template.xPct,
+        yPct: template.yPct,
+        wPct: template.wPct,
+        hPct: template.hPct,
+      };
     }
 
     // Sanitize DPI: default 200, clamp 100-400
@@ -96,30 +232,42 @@ export async function getTemplateConfigForFmKey(
       }
     }
 
-    return {
+    const config: TemplateConfig = {
       templateId: template.templateId || template.fmKey,
       page: template.page,
-      region: {
-        xPct: template.xPct,
-        yPct: template.yPct,
-        wPct: template.wPct,
-        hPct: template.hPct,
-      },
+      region,
       dpi: sanitizedDpi,
+      // Include point fields when available
+      xPt: usePoints ? template.xPt : undefined,
+      yPt: usePoints ? template.yPt : undefined,
+      wPt: usePoints ? template.wPt : undefined,
+      hPt: usePoints ? template.hPt : undefined,
+      pageWidthPt: usePoints ? template.pageWidthPt : undefined,
+      pageHeightPt: usePoints ? template.pageHeightPt : undefined,
     };
+
+    if (usePoints) {
+      console.log(`[Template Config] Using PDF points for ${normalizedFmKey}:`, {
+        xPt: template.xPt,
+        yPt: template.yPt,
+        wPt: template.wPt,
+        hPt: template.hPt,
+        pageWidthPt: template.pageWidthPt,
+        pageHeightPt: template.pageHeightPt,
+        convertedToPercentages: region,
+      });
+    } else {
+      console.log(`[Template Config] Using legacy percentages for ${normalizedFmKey}:`, region);
+    }
+
+    // Cache the result
+    setCachedConfig(spreadsheetId, normalizedFmKey, config);
+    
+    return config;
   } catch (error) {
     console.error(`[Template Config] Error getting template for fmKey="${normalizedFmKey}":`, error);
     
-    // Fallback to hardcoded templates for development/testing
-    const fallback = FALLBACK_TEMPLATES[normalizedFmKey];
-    if (fallback) {
-      console.warn(`[Template Config] Using fallback template for fmKey="${normalizedFmKey}"`);
-      return fallback;
-    }
-
-    // Re-throw error if no fallback available
-    throw new Error(
-      `No template config found for fmKey="${normalizedFmKey}". ${error instanceof Error ? error.message : "Template not configured in Templates sheet."}`
-    );
+    // Re-throw error - no fallbacks
+    throw error;
   }
 }

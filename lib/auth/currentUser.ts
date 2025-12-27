@@ -27,7 +27,7 @@ export async function getCurrentUser(): Promise<AppUser | null> {
     id: session.user.id || session.user.email || session.userId,
     email: session.user.email || null,
     userId: session.userId,
-    googleAccessToken: (session as any).googleAccessToken,
-    googleRefreshToken: (session as any).googleRefreshToken,
+    googleAccessToken: (session as { googleAccessToken?: string }).googleAccessToken || null,
+    googleRefreshToken: (session as { googleRefreshToken?: string }).googleRefreshToken || null,
   };
 }

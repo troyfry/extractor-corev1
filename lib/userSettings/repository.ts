@@ -29,8 +29,8 @@ export async function getUserSpreadsheetId(
   // Try to get from session/JWT token if available
   try {
     const session = await auth();
-    if (session && (session as any).googleSheetsSpreadsheetId) {
-      return (session as any).googleSheetsSpreadsheetId;
+    if (session && (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId) {
+      return (session as { googleSheetsSpreadsheetId: string }).googleSheetsSpreadsheetId;
     }
   } catch (error) {
     // Session not available, continue to fallback
@@ -84,10 +84,10 @@ export async function getUserSettings(userId: string): Promise<{
   // Try to get from session
   try {
     const session = await auth();
-    if (session && (session as any).googleSheetsSpreadsheetId) {
+    if (session && (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId) {
       return {
         userId,
-        googleSheetsSpreadsheetId: (session as any).googleSheetsSpreadsheetId,
+        googleSheetsSpreadsheetId: (session as { googleSheetsSpreadsheetId: string }).googleSheetsSpreadsheetId,
       };
     }
   } catch (error) {

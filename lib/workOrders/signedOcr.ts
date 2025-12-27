@@ -18,8 +18,15 @@ export type TemplateRegion = {
 export type SignedOcrConfig = {
   templateId: string;
   page: number;
-  region: TemplateRegion;
+  region: TemplateRegion | null; // null when using PDF points mode
   dpi?: number;
+  // PDF points fields (when using PDF_POINTS_TOP_LEFT coordinate system)
+  xPt?: number;
+  yPt?: number;
+  wPt?: number;
+  hPt?: number;
+  pageWidthPt?: number;
+  pageHeightPt?: number;
 };
 
 function getSignedOcrServiceBaseUrl(): string {
@@ -57,11 +64,64 @@ export async function callSignedOcrService(
   const formData = new FormData();
   formData.append("templateId", config.templateId);
   formData.append("page", String(config.page));
-  formData.append("xPct", String(config.region.xPct));
-  formData.append("yPct", String(config.region.yPct));
-  formData.append("wPct", String(config.region.wPct));
-  formData.append("hPct", String(config.region.hPct));
   formData.append("dpi", String(config.dpi ?? 200));
+  
+  // If PDF points are available, use them (convert to pixels based on DPI)
+  // Otherwise fall back to percentages (region must not be null)
+  if (config.xPt !== undefined && config.yPt !== undefined && 
+      config.wPt !== undefined && config.hPt !== undefined &&
+      config.pageWidthPt !== undefined && config.pageHeightPt !== undefined) {
+    // Calculate scale: dpi / 72 (PDF points are in 1/72 inch units)
+    const dpi = config.dpi ?? 200;
+    const scale = dpi / 72;
+    
+    // Rasterize page at dpi: image dimensions = page dimensions * scale
+    const imageWidthPx = config.pageWidthPt * scale;
+    const imageHeightPx = config.pageHeightPt * scale;
+    
+    // Convert points → pixels using the actual output image size
+    const xPx = (config.xPt / config.pageWidthPt) * imageWidthPx;
+    const yPx = (config.yPt / config.pageHeightPt) * imageHeightPx;
+    const wPx = (config.wPt / config.pageWidthPt) * imageWidthPx;
+    const hPx = (config.hPt / config.pageHeightPt) * imageHeightPx;
+    
+    // Send pixels to OCR service
+    formData.append("xPx", String(Math.round(xPx)));
+    formData.append("yPx", String(Math.round(yPx)));
+    formData.append("wPx", String(Math.round(wPx)));
+    formData.append("hPx", String(Math.round(hPx)));
+    formData.append("imageWidthPx", String(Math.round(imageWidthPx)));
+    formData.append("imageHeightPx", String(Math.round(imageHeightPx)));
+    formData.append("coordSystem", "PDF_POINTS_TOP_LEFT");
+    
+    console.log(`[Signed OCR] Using PDF points (converted to pixels):`, {
+      xPt: config.xPt,
+      yPt: config.yPt,
+      wPt: config.wPt,
+      hPt: config.hPt,
+      pageWidthPt: config.pageWidthPt,
+      pageHeightPt: config.pageHeightPt,
+      dpi,
+      scale,
+      imageWidthPx: Math.round(imageWidthPx),
+      imageHeightPx: Math.round(imageHeightPx),
+      xPx: Math.round(xPx),
+      yPx: Math.round(yPx),
+      wPx: Math.round(wPx),
+      hPx: Math.round(hPx),
+    });
+  } else {
+    // Legacy: use percentages (region must not be null)
+    if (!config.region) {
+      throw new Error("Region is required when PDF points are not provided");
+    }
+    formData.append("xPct", String(config.region.xPct));
+    formData.append("yPct", String(config.region.yPct));
+    formData.append("wPct", String(config.region.wPct));
+    formData.append("hPct", String(config.region.hPct));
+    formData.append("coordSystem", "PERCENTAGES");
+  }
+  
   formData.append(
     "file",
     new Blob([new Uint8Array(pdfBuffer)], { type: "application/pdf" }),

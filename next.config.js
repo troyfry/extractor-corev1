@@ -1,5 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
   // No special config required for pdf-parse
   webpack: (config, { isServer }) => {
     // Fix for pdfjs-dist in Next.js

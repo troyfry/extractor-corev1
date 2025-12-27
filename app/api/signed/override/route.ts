@@ -8,8 +8,11 @@ import {
   writeWorkOrderRecord,
   findWorkOrderRecordByJobId,
   type WorkOrderRecord,
+  REQUIRED_COLUMNS,
 } from "@/lib/google/sheets";
 import { generateJobId } from "@/lib/workOrders/sheetsIngestion";
+import { getColumnRange } from "@/lib/google/sheetsCache";
+import { SIGNED_NEEDS_REVIEW_COLUMNS } from "@/lib/workOrders/signedSheets";
 
 export const runtime = "nodejs";
 
@@ -57,7 +60,7 @@ export async function POST(req: Request) {
     } else {
       const session = await auth();
       const sessionSpreadsheetId = session
-        ? (session as any).googleSheetsSpreadsheetId
+        ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId
         : null;
       spreadsheetId = await getUserSpreadsheetId(
         user.userId,
@@ -106,7 +109,7 @@ export async function POST(req: Request) {
     
     const mainSheetResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: formatSheetRange(MAIN_SHEET_NAME, "A:Z"),
+      range: formatSheetRange(MAIN_SHEET_NAME, getColumnRange(REQUIRED_COLUMNS.length)),
     });
     
     const mainRows = mainSheetResponse.data.values || [];
@@ -179,7 +182,7 @@ export async function POST(req: Request) {
       // Get all rows from Needs_Review_Signed sheet
       const needsReviewResponse = await sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: formatSheetRange("Needs_Review_Signed", "A:Z"),
+        range: formatSheetRange("Needs_Review_Signed", getColumnRange(SIGNED_NEEDS_REVIEW_COLUMNS.length)),
       });
       
       const needsReviewRows = needsReviewResponse.data.values || [];
@@ -258,8 +261,10 @@ export async function POST(req: Request) {
         work_order_pdf_link: existingWorkOrder?.work_order_pdf_link ?? null,
         signed_pdf_url: signedPdfUrl,
         signed_preview_image_url: signedPreviewImageUrl ?? null,
+        signed_at: nowIso, // Mark as signed when override is applied
         source: existingWorkOrder?.source ?? "signed_upload",
         last_updated_at: nowIso,
+        file_hash: existingWorkOrder?.file_hash ?? null, // Preserve existing hash if available
       };
 
       await writeWorkOrderRecord(

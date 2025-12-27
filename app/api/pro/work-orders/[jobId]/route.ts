@@ -4,6 +4,7 @@ import { hasFeature } from "@/lib/plan";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
 import { findWorkOrderRecordByJobId } from "@/lib/google/sheets";
+import { getErrorMessage } from "@/lib/utils/error";
 
 export const runtime = "nodejs";
 
@@ -59,7 +60,7 @@ export async function GET(
       // Then check session/JWT token
       const { auth } = await import("@/auth");
       const session = await auth();
-      const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+      const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
       spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
     }
 
@@ -86,10 +87,10 @@ export async function GET(
     }
 
     return NextResponse.json({ workOrder });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("[Work Order GET] Error:", error);
     return NextResponse.json(
-      { error: error?.message || "Failed to fetch work order" },
+      { error: getErrorMessage(error) || "Failed to fetch work order" },
       { status: 500 }
     );
   }

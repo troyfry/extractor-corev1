@@ -6,6 +6,8 @@
  */
 
 import { createSheetsClient, formatSheetRange } from "@/lib/google/sheets";
+import { getErrorMessage } from "@/lib/utils/error";
+import { getColumnRange } from "@/lib/google/sheetsCache";
 
 /**
  * Cache entry for Users sheet data.
@@ -13,6 +15,14 @@ import { createSheetsClient, formatSheetRange } from "@/lib/google/sheets";
 type CacheEntry = {
   headers: string[];
   rows: string[][];
+  timestamp: number;
+};
+
+/**
+ * Cache entry for Users sheet headers only.
+ */
+type HeadersCacheEntry = {
+  headers: string[];
   timestamp: number;
 };
 
@@ -31,6 +41,14 @@ type UserRowCacheEntry = {
  */
 const sheetCache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 15 * 1000; // 15 seconds
+
+/**
+ * In-memory cache for Users sheet headers only.
+ * Key: `${spreadsheetId}:Users:headers`
+ * TTL: 5 minutes
+ */
+const headersCache = new Map<string, HeadersCacheEntry>();
+const HEADERS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * In-memory cache for individual user rows.
@@ -78,16 +96,19 @@ async function retryWithBackoff<T>(
   fn: () => Promise<T>,
   maxRetries: number = 2
 ): Promise<T> {
-  let lastError: any;
+  let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
-    } catch (error: any) {
+    } catch (error: unknown) {
       lastError = error;
-      const isQuotaError = error?.code === 429 || 
-                          error?.status === 429 ||
-                          error?.message?.includes("quota") ||
-                          error?.message?.includes("rate limit");
+      const errorCode = (error as { code?: number })?.code;
+      const errorStatus = (error as { status?: number })?.status;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const isQuotaError = errorCode === 429 || 
+                          errorStatus === 429 ||
+                          errorMessage.includes("quota") ||
+                          errorMessage.includes("rate limit");
       
       if (isQuotaError && attempt < maxRetries) {
         const delayMs = attempt === 0 ? 250 : 750; // 250ms, then 750ms
@@ -131,11 +152,40 @@ export type UserRow = {
 
 /**
  * Get Users sheet data (headers + rows) with caching and deduplication.
+ * 
+ * SECURITY: This function reads the entire Users sheet (A2:Z) which is expensive.
+ * It is restricted in production and may only be called from onboarding/admin routes.
+ * 
+ * For status checks and /pro routes, use getUserRowByIdNoEnsure() instead (column-only reads).
  */
 async function getUsersSheetData(
   accessToken: string,
-  spreadsheetId: string
+  spreadsheetId: string,
+  options?: { allowFullRead?: boolean }
 ): Promise<{ headers: string[]; rows: string[][] }> {
+  // Step 1: Production guard - check call stack to ensure only onboarding routes
+  if (process.env.NODE_ENV === "production") {
+    const stack = new Error().stack || "";
+    const isOnboardingRoute =
+      stack.includes("/api/onboarding/") ||
+      stack.includes("/onboarding/") ||
+      stack.includes("completeOnboarding");
+
+    if (!isOnboardingRoute) {
+      throw new Error(
+        "getUsersSheetData() is restricted in production. Use getUserRowByIdNoEnsure() for status checks."
+      );
+    }
+  }
+  
+  // Step 2: Hard guard - in production, require explicit allowFullRead flag
+  if (process.env.NODE_ENV === "production" && !options?.allowFullRead) {
+    throw new Error(
+      "getUsersSheetData() full read is restricted in production. " +
+      "Use getUserRowByIdNoEnsure() for status checks."
+    );
+  }
+  
   const cacheKey = `${spreadsheetId}:Users`;
   
   // Check cache
@@ -156,14 +206,18 @@ async function getUsersSheetData(
     const sheetName = "Users";
 
     try {
-      // Use batchGet to fetch header + data in one request
+      // Determine last column based on expected columns (8 columns = A-H)
+      const expectedColCount = USERS_SHEET_COLUMNS.length; // 8 columns
+      const lastColLetter = colIndexToLetter(expectedColCount - 1); // H
+      
+      // Use batchGet to fetch header + data in one request (optimized range)
       incrementApiCallCount();
       const batchResponse = await retryWithBackoff(() =>
         sheets.spreadsheets.values.batchGet({
           spreadsheetId,
           ranges: [
             formatSheetRange(sheetName, "1:1"), // Header row
-            formatSheetRange(sheetName, "A2:Z"), // Data rows (skip header)
+            formatSheetRange(sheetName, `A2:${lastColLetter}`), // Data rows (only needed columns, skip header)
           ],
         })
       );
@@ -182,21 +236,40 @@ async function getUsersSheetData(
       });
 
       return { headers, rows };
-    } catch (error: any) {
-      // If sheet doesn't exist or range is invalid, try single read
-      if (error?.code === 400) {
+    } catch (error: unknown) {
+      // If sheet doesn't exist or range is invalid, try optimized fallback
+      const errorCode = (error as { code?: number })?.code;
+      if (errorCode === 400) {
         try {
-          // Fallback: read all data in one request
+          // Fallback: read headers first, then data with only needed columns
+          // Step 1: Read headers (Users!1:1)
           incrementApiCallCount();
-          const allDataResponse = await retryWithBackoff(() =>
+          const headerResponse = await retryWithBackoff(() =>
             sheets.spreadsheets.values.get({
               spreadsheetId,
-              range: formatSheetRange(sheetName, "A:Z"),
+              range: formatSheetRange(sheetName, "1:1"),
             })
           );
-          const allRows = allDataResponse.data.values || [];
-          const headers = (allRows[0] || []) as string[];
-          const rows = allRows.slice(1) as string[][];
+          const headers = (headerResponse.data.values?.[0] || []) as string[];
+          
+          // Step 2: Determine last column based on actual headers or USERS_SHEET_COLUMNS
+          // Use the larger of: actual header count or expected column count
+          const expectedColCount = USERS_SHEET_COLUMNS.length;
+          const actualColCount = headers.length;
+          const colCount = Math.max(expectedColCount, actualColCount, 8); // At least 8 columns (A-H)
+          
+          // Convert column count to letter (e.g., 8 -> H, 15 -> O)
+          const lastColLetter = colIndexToLetter(colCount - 1);
+          
+          // Step 3: Read data with optimized range (Users!A2:{lastCol})
+          incrementApiCallCount();
+          const dataResponse = await retryWithBackoff(() =>
+            sheets.spreadsheets.values.get({
+              spreadsheetId,
+              range: formatSheetRange(sheetName, `A2:${lastColLetter}`),
+            })
+          );
+          const rows = (dataResponse.data.values || []) as string[][];
           
           sheetCache.set(cacheKey, {
             headers,
@@ -225,11 +298,34 @@ async function getUsersSheetData(
 /**
  * Ensure the "Users" tab exists with required headers.
  * Idempotent and low-read: only reads header, doesn't re-read after writing.
+ * 
+ * SECURITY: This function may ONLY be called from onboarding routes:
+ * - /api/onboarding/google
+ * - /api/onboarding/openai
+ * - /api/onboarding/fm-profiles
+ * - /api/onboarding/templates/*
+ * - /api/onboarding/complete (or /onboarding/done)
+ * 
+ * It must NEVER be called from:
+ * - /pro routes
+ * - /api/signed/process
+ * - status helpers (getOnboardingStatus)
+ * - server component render paths
  */
 export async function ensureUsersSheet(
   accessToken: string,
-  spreadsheetId: string
+  spreadsheetId: string,
+  options?: { allowEnsure?: boolean }
 ): Promise<void> {
+  // Hard guard: in production, require explicit allowEnsure flag
+  if (process.env.NODE_ENV === "production" && !options?.allowEnsure) {
+    console.error("[Users Sheet] BLOCKED: ensureUsersSheet() called without allowEnsure in production");
+    throw new Error(
+      "ensureUsersSheet() is restricted in production. " +
+      "Call ensureUsersSheet(accessToken, spreadsheetId, { allowEnsure: true }) only from onboarding setup routes."
+    );
+  }
+  
   const sheets = createSheetsClient(accessToken);
   const sheetName = "Users";
 
@@ -321,18 +417,20 @@ export async function ensureUsersSheet(
     // Invalidate cache since headers changed
     sheetCache.delete(`${spreadsheetId}:Users`);
     console.log(`[Users Sheet] Added ${missingColumns.length} missing columns to "${sheetName}" sheet`);
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error(`[Users Sheet] Error ensuring Users sheet:`, error);
     
     // Provide more helpful error messages
-    if (error?.code === 404 || error?.status === 404) {
+    const errorCode = (error as { code?: number })?.code;
+    const errorStatus = (error as { status?: number })?.status;
+    if (errorCode === 404 || errorStatus === 404) {
       throw new Error(
         `Spreadsheet not found (ID: ${spreadsheetId}). ` +
         `Please verify the spreadsheet ID is correct and the spreadsheet exists.`
       );
     }
     
-    if (error?.code === 403 || error?.status === 403) {
+    if (errorCode === 403 || errorStatus === 403) {
       throw new Error(
         `Access denied to spreadsheet (ID: ${spreadsheetId}). ` +
         `Please ensure the spreadsheet is shared with your Google account and you have edit access.`
@@ -346,39 +444,148 @@ export async function ensureUsersSheet(
     
     // For other errors, wrap with context
     throw new Error(
-      `Failed to access spreadsheet: ${error?.message || "Unknown error"}. ` +
+      `Failed to access spreadsheet: ${getErrorMessage(error) || "Unknown error"}. ` +
       `Please verify the spreadsheet ID and your access permissions.`
     );
   }
 }
 
 /**
- * Get a user row by userId from the Users sheet.
+ * Get Users sheet headers with caching (TTL 5 min).
+ * Reads only Users!1:1.
+ */
+async function getUsersHeadersCached(
+  accessToken: string,
+  spreadsheetId: string
+): Promise<string[]> {
+  const cacheKey = `${spreadsheetId}:Users:headers`;
+  const cached = sheetCache.get(cacheKey);
+  
+  // Headers cache TTL: 5 minutes (longer than full sheet cache since headers change rarely)
+  if (cached?.headers && Date.now() - cached.timestamp < HEADERS_CACHE_TTL_MS) {
+    return cached.headers;
+  }
+
+  const sheets = createSheetsClient(accessToken);
+  incrementApiCallCount();
+  const res = await retryWithBackoff(() =>
+    sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: formatSheetRange("Users", "1:1"),
+    })
+  );
+
+  const headers = (res.data.values?.[0] || []) as string[];
+  sheetCache.set(cacheKey, { headers, rows: [], timestamp: Date.now() });
+  return headers;
+}
+
+/**
+ * Convert column index to letter (A, B, C, ..., Z, AA, AB, ...).
+ */
+function colIndexToLetter(index: number): string {
+  let n = index + 1;
+  let s = "";
+  while (n > 0) {
+    const m = (n - 1) % 26;
+    s = String.fromCharCode(65 + m) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+/**
+ * Find user row index by reading ONLY the userId column.
+ * Reads only Users!{userIdColLetter}:{userIdColLetter}.
+ */
+async function findRowIndexByUserId(
+  accessToken: string,
+  spreadsheetId: string,
+  userId: string,
+  userIdColLetter: string
+): Promise<number> {
+  const sheets = createSheetsClient(accessToken);
+  incrementApiCallCount();
+  const res = await retryWithBackoff(() =>
+    sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `Users!${userIdColLetter}:${userIdColLetter}`,
+    })
+  );
+
+  const col = res.data.values || [];
+  const normalizedUserId = userId.trim();
+  
+  for (let i = 0; i < col.length; i++) {
+    const cell = (col[i]?.[0] || "").trim();
+    if (cell === normalizedUserId) {
+      return i + 1; // 1-based row index
+    }
+  }
+  return -1;
+}
+
+/**
+ * Read ONE row only.
+ * Reads only Users!{rowIndex}:{rowIndex}.
+ */
+async function readRowByIndex(
+  accessToken: string,
+  spreadsheetId: string,
+  rowIndex: number
+): Promise<string[]> {
+  const sheets = createSheetsClient(accessToken);
+  incrementApiCallCount();
+  const res = await retryWithBackoff(() =>
+    sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: formatSheetRange("Users", `${rowIndex}:${rowIndex}`),
+    })
+  );
+  return (res.data.values?.[0] || []) as string[];
+}
+
+/**
+ * Get a user row by userId from the Users sheet (NO ensure, NO full reads).
  * Uses cached data when possible.
  * 
- * NOTE: Does NOT call ensureUsersSheet automatically. Call ensureUsersSheet separately
- * in onboarding routes if needed.
+ * This is the safe version that NEVER calls ensureUsersSheet or getUsersSheetData().
+ * Use this for status checks, /pro routes, and any non-onboarding paths.
+ * 
+ * Optimized "column-only + row-only" flow:
+ * 1. Check userRowCache first (TTL: 60 seconds) - 0 reads if cache hit
+ * 2. Headers = getUsersHeadersCached(Users!1:1) - 1 read, cached 5 minutes
+ * 3. Find userId column index
+ * 4. Read only that column: Users!{UserIdCol}:{UserIdCol} - 1 read
+ * 5. Locate the row index
+ * 6. Read one row: Users!{rowIndex}:{rowIndex} - 1 read
+ * 7. Map row → UserRow
+ * 8. Cache userRowCache
+ * 
+ * Total: Max 3 reads (1 header + 1 column + 1 row)
+ * On repeated /pro refreshes: 0 reads if userRowCache TTL hits
+ * 
+ * NOTE: Does NOT call ensureUsersSheet or getUsersSheetData().
  */
-export async function getUserRowById(
+export async function getUserRowByIdNoEnsure(
   accessToken: string,
   spreadsheetId: string,
   userId: string
 ): Promise<UserRow | null> {
   const cacheKey = `${spreadsheetId}:${userId}`;
   
-  // Check per-user cache first
+  // Check userRowCache first (0 reads if cache hit)
   const cached = userRowCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
-    console.log(`[Users Sheet] Cache hit for user ${userId}`);
+    console.log(`[Users Sheet] Cache hit for user ${userId} - 0 API reads`);
     return cached.value;
   }
 
   try {
-    // Get data from cache or fetch (this uses sheet-level cache)
-    const { headers, rows } = await getUsersSheetData(accessToken, spreadsheetId);
+    // Step 1: Headers = getUsersHeadersCached(Users!1:1) - 1 read, cached 5 minutes
+    const headers = await getUsersHeadersCached(accessToken, spreadsheetId);
     
-    if (rows.length === 0 || headers.length === 0) {
-      // Cache null result
+    if (headers.length === 0) {
       userRowCache.set(cacheKey, {
         value: null,
         expiresAt: Date.now() + USER_ROW_CACHE_TTL_MS,
@@ -388,10 +595,9 @@ export async function getUserRowById(
 
     const headersLower = headers.map((h) => h.toLowerCase().trim());
 
-    // Find userId column index
+    // Step 2: Find userId column index
     const userIdColIndex = headersLower.indexOf("userid");
     if (userIdColIndex === -1) {
-      // Cache null result
       userRowCache.set(cacheKey, {
         value: null,
         expiresAt: Date.now() + USER_ROW_CACHE_TTL_MS,
@@ -399,38 +605,50 @@ export async function getUserRowById(
       return null;
     }
 
-    // Find row with matching userId
-    for (const row of rows) {
-      if (row && row[userIdColIndex] === userId) {
-        // Build UserRow from row
-        const userRow: Partial<UserRow> = {};
-        for (const col of USERS_SHEET_COLUMNS) {
-          const colIndex = headersLower.indexOf(col.toLowerCase());
-          if (colIndex !== -1 && row[colIndex] !== undefined) {
-            const value = row[colIndex];
-            (userRow as any)[col] = value === "" ? "" : value;
-          } else {
-            (userRow as any)[col] = "";
-          }
-        }
-        const result = userRow as UserRow;
-        
-        // Cache the result
-        userRowCache.set(cacheKey, {
-          value: result,
-          expiresAt: Date.now() + USER_ROW_CACHE_TTL_MS,
-        });
-        console.log(`[Users Sheet] Fetched and cached user row for ${userId}`);
-        return result;
-      }
+    // Step 3: Convert index to column letter (A, B, C...)
+    const userIdColLetter = colIndexToLetter(userIdColIndex);
+
+    // Step 4: Read only that column: Users!{UserIdCol}:{UserIdCol} - 1 read
+    const rowIndex = await findRowIndexByUserId(
+      accessToken,
+      spreadsheetId,
+      userId,
+      userIdColLetter
+    );
+
+    // Step 5: If not found, cache null
+    if (rowIndex === -1) {
+      userRowCache.set(cacheKey, {
+        value: null,
+        expiresAt: Date.now() + USER_ROW_CACHE_TTL_MS,
+      });
+      return null;
     }
 
-    // User not found, cache null result
+    // Step 6: Read one row: Users!{rowIndex}:{rowIndex} - 1 read
+    const row = await readRowByIndex(accessToken, spreadsheetId, rowIndex);
+
+    // Step 7: Map row → UserRow
+    const userRow: Partial<UserRow> = {};
+    for (const col of USERS_SHEET_COLUMNS) {
+      const colIndex = headersLower.indexOf(col.toLowerCase());
+      if (colIndex !== -1 && row[colIndex] !== undefined) {
+        const value = row[colIndex];
+        (userRow as Record<string, string>)[col] = value === "" ? "" : value;
+      } else {
+        (userRow as Record<string, string>)[col] = "";
+      }
+    }
+    const result = userRow as UserRow;
+    
+    // Step 8: Cache userRowCache (TTL: 60 seconds)
+    // On repeated /pro refreshes, this becomes 0 reads if cache TTL hits
     userRowCache.set(cacheKey, {
-      value: null,
+      value: result,
       expiresAt: Date.now() + USER_ROW_CACHE_TTL_MS,
     });
-    return null;
+    console.log(`[Users Sheet] Fetched and cached user row for ${userId} (column-only read: 1 header + 1 column + 1 row = 3 reads total)`);
+    return result;
   } catch (error) {
     console.error(`[Users Sheet] Error getting user row:`, error);
     throw error;
@@ -438,24 +656,47 @@ export async function getUserRowById(
 }
 
 /**
+ * Get a user row by userId from the Users sheet.
+ * Uses cached data when possible.
+ * 
+ * NOTE: This function may call ensureUsersSheet in some contexts.
+ * For status checks and /pro routes, use getUserRowByIdNoEnsure() instead.
+ * 
+ * @deprecated For status checks, use getUserRowByIdNoEnsure() instead.
+ */
+export async function getUserRowById(
+  accessToken: string,
+  spreadsheetId: string,
+  userId: string
+): Promise<UserRow | null> {
+  // Delegate to no-ensure version (getUserRowById never called ensure anyway)
+  return getUserRowByIdNoEnsure(accessToken, spreadsheetId, userId);
+}
+
+/**
  * Upsert a user row in the Users sheet.
  * If userId exists, updates the row; otherwise appends a new row.
  * Uses cached data when possible.
+ * 
+ * @param options.allowEnsure - If true, allows ensureUsersSheet to run (onboarding routes only)
  */
 export async function upsertUserRow(
   accessToken: string,
   spreadsheetId: string,
-  user: Partial<UserRow> & { userId: string; email: string }
+  user: Partial<UserRow> & { userId: string; email: string },
+  options?: { allowEnsure?: boolean }
 ): Promise<void> {
   const sheets = createSheetsClient(accessToken);
   const sheetName = "Users";
 
-  // Ensure sheet exists
-  await ensureUsersSheet(accessToken, spreadsheetId);
+  // Ensure sheet exists (only if explicitly allowed, typically in onboarding routes)
+  if (options?.allowEnsure) {
+    await ensureUsersSheet(accessToken, spreadsheetId, { allowEnsure: true });
+  }
 
   try {
-    // Get data from cache or fetch
-    const { headers, rows } = await getUsersSheetData(accessToken, spreadsheetId);
+    // Get data from cache or fetch (onboarding route - allow full read)
+    const { headers, rows } = await getUsersSheetData(accessToken, spreadsheetId, { allowFullRead: true });
     const headersLower = headers.map((h) => h.toLowerCase().trim());
 
     // Find userId column index
@@ -503,7 +744,7 @@ export async function setOnboardingCompleted(
   spreadsheetId: string,
   userId: string
 ): Promise<void> {
-  const userRow = await getUserRowById(accessToken, spreadsheetId, userId);
+  const userRow = await getUserRowByIdNoEnsure(accessToken, spreadsheetId, userId);
   if (!userRow) {
     throw new Error(`User ${userId} not found in Users sheet`);
   }
@@ -511,7 +752,7 @@ export async function setOnboardingCompleted(
   await upsertUserRow(accessToken, spreadsheetId, {
     ...userRow,
     onboardingCompleted: "TRUE",
-  });
+  }, { allowEnsure: true }); // Allow ensure in onboarding completion
   
   // Invalidate user row cache (upsertUserRow already does this, but be explicit)
   userRowCache.delete(`${spreadsheetId}:${userId}`);
@@ -576,7 +817,7 @@ async function appendUserRow(
   await retryWithBackoff(() =>
     sheets.spreadsheets.values.append({
       spreadsheetId,
-      range: formatSheetRange(sheetName, "A:Z"),
+      range: formatSheetRange(sheetName, getColumnRange(USERS_SHEET_COLUMNS.length)),
       valueInputOption: "RAW",
       insertDataOption: "INSERT_ROWS",
       requestBody: {

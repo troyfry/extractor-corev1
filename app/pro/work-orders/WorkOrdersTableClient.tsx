@@ -4,93 +4,6 @@ import { useMemo, useState, useEffect } from "react";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 
-// Component to handle snippet image with proper React state management
-function SnippetImageCell({ signedPreviewImageUrl, woNumber }: { signedPreviewImageUrl: string | null; woNumber: string }) {
-  const [imageError, setImageError] = useState(false);
-  const [currentSrc, setCurrentSrc] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!signedPreviewImageUrl) {
-      setCurrentSrc(null);
-      setImageError(false);
-      return;
-    }
-
-    // Convert Google Drive view link to direct image link
-    let directImageUrl = signedPreviewImageUrl;
-    
-    // Handle Google Drive URLs - convert to direct image link
-    if (signedPreviewImageUrl.includes("drive.google.com")) {
-      // Try to extract file ID from various Google Drive URL formats
-      const fileIdMatch = signedPreviewImageUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || 
-                        signedPreviewImageUrl.match(/id=([a-zA-Z0-9_-]+)/) ||
-                        signedPreviewImageUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-      
-      if (fileIdMatch) {
-        const fileId = fileIdMatch[1];
-        // Use the thumbnail format which is more reliable for public images
-        directImageUrl = `https://drive.google.com/thumbnail?id=${fileId}&sz=w400`;
-      }
-    }
-    
-    // Handle base64 data URLs
-    if (signedPreviewImageUrl.startsWith("data:image")) {
-      directImageUrl = signedPreviewImageUrl;
-    }
-    
-    setCurrentSrc(directImageUrl);
-    setImageError(false);
-  }, [signedPreviewImageUrl]);
-
-  if (!signedPreviewImageUrl) {
-    return <span className="text-gray-500">-</span>;
-  }
-
-  if (imageError) {
-    return <span className="text-gray-500 text-xs">Image unavailable</span>;
-  }
-
-  return (
-    <a
-      href={signedPreviewImageUrl}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="inline-block"
-    >
-      <img
-        src={currentSrc || signedPreviewImageUrl}
-        alt={`WO ${woNumber} preview`}
-        className="h-6 w-auto border border-gray-600 rounded max-w-[50px] object-contain"
-        onError={(e) => {
-          console.error("Failed to load snippet image:", {
-            original: signedPreviewImageUrl,
-            current: currentSrc,
-            woNumber: woNumber,
-          });
-          
-          // Try fallback: use original URL if we tried a converted URL
-          if (currentSrc && currentSrc !== signedPreviewImageUrl && e.currentTarget.src === currentSrc) {
-            e.currentTarget.src = signedPreviewImageUrl;
-            return;
-          }
-          
-          // If both failed, mark as error (React will re-render)
-          setImageError(true);
-        }}
-        onLoad={() => {
-          // Only log in development to reduce console noise
-          if (process.env.NODE_ENV === "development") {
-            console.log("Successfully loaded snippet image:", {
-              woNumber: woNumber,
-              url: currentSrc || signedPreviewImageUrl,
-            });
-          }
-        }}
-      />
-    </a>
-  );
-}
-
 type WorkOrderRow = {
   jobId: string;
   wo_number: string;
@@ -274,9 +187,6 @@ export function WorkOrdersTableClient({ jobs }: Props) {
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">
                   Signed PDF
                 </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">
-                  Snippet
-                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-700">
@@ -319,9 +229,6 @@ export function WorkOrdersTableClient({ jobs }: Props) {
                     ) : (
                       <span className="text-gray-500">-</span>
                     )}
-                  </td>
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    <SnippetImageCell signedPreviewImageUrl={row.signed_preview_image_url} woNumber={row.wo_number} />
                   </td>
                 </tr>
               ))}

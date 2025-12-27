@@ -35,7 +35,11 @@ export async function uploadPdfToDrive(
 
   try {
     // Prepare file metadata
-    const fileMetadata: any = {
+    const fileMetadata: {
+      name: string;
+      mimeType: string;
+      parents?: string[];
+    } = {
       name: filename,
       mimeType: "application/pdf",
     };
@@ -118,7 +122,11 @@ export async function getOrCreateFolder(
     }
 
     // Create folder if it doesn't exist
-    const folderMetadata: any = {
+    const folderMetadata: {
+      name: string;
+      mimeType: string;
+      parents?: string[];
+    } = {
       name: folderName,
       mimeType: "application/vnd.google-apps.folder",
     };

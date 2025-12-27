@@ -22,6 +22,14 @@ type WorkOrderRow = {
   signed_preview_image_url: string | null;
 };
 
+/**
+ * Work Orders Page
+ * 
+ * TODO Phase 3: Wire Work Orders tab (currently placeholder) — Phase 3 implementation
+ * - Ensure route + sheet reads are fully implemented
+ * - Add empty-state handling
+ * - Complete any missing functionality
+ */
 export default function WorkOrdersPage() {
   const { plan } = useCurrentPlan();
   const canUsePro = canUseProFeatures(plan);

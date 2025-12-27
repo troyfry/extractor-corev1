@@ -18,6 +18,8 @@ let mupdfInstancePromise: Promise<any> | null = null;
 async function getMupdfInstance() {
   if (!mupdfInstancePromise) {
     mupdfInstancePromise = (async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // @ts-expect-error - mupdf module exists at runtime but has no type declarations
       const mupdfModule: any = await import("mupdf");
 
       // Most WASM bundles export an async init function as default.
@@ -77,14 +79,17 @@ export async function renderPdfPageToPng(
     console.log("[renderPdfPage] mupdf.Document:", typeof mupdf.Document);
     
     // mupdf exports Document directly or as a property
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const Document = (mupdf as any).Document;
     
     if (!Document) {
       throw new Error("mupdf.Document is not available - module may not be fully initialized");
     }
     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (typeof (Document as any).openDocument !== "function") {
       console.error("[renderPdfPage] Document structure:", {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         hasOpenDocument: !!(Document as any).openDocument,
         DocumentKeys: Object.keys(Document).slice(0, 10),
         DocumentType: typeof Document,
@@ -96,6 +101,7 @@ export async function renderPdfPageToPng(
     // Ensure buffer is a proper Uint8Array for mupdf
     console.log("[renderPdfPage] Opening document, buffer size:", pdfBuffer.length);
     const pdfUint8Array = new Uint8Array(pdfBuffer);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const doc = (Document as any).openDocument(pdfUint8Array, "application/pdf");
     
     if (!doc) {
@@ -131,7 +137,9 @@ export async function renderPdfPageToPng(
 
     // Create a scale matrix for rendering
     // mupdf requires a Matrix object and ColorSpace
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const Matrix = (mupdf as any).Matrix;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const ColorSpace = (mupdf as any).ColorSpace;
     
     if (!Matrix || typeof Matrix.scale !== "function") {

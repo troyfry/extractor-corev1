@@ -11,6 +11,7 @@
 import { createSheetsClient } from "@/lib/google/sheets";
 import type { WorkOrderTemplate, WorkOrderNumberZone } from "./workOrders";
 import type { FmProfile } from "./fmProfiles";
+import { getColumnRange } from "@/lib/google/sheetsCache";
 
 /**
  * Required columns for template storage in Google Sheets.
@@ -151,7 +152,7 @@ export async function upsertTemplateToSheet(params: {
     // Get all data to find existing row by issuerKey
     const allDataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: formatSheetRange(sheetName, "A:Z"),
+      range: formatSheetRange(sheetName, getColumnRange(TEMPLATE_COLUMNS.length)),
     });
 
     const rows = allDataResponse.data.values || [];
@@ -217,7 +218,7 @@ export async function getTemplateFromSheet(params: {
     // Get all data
     const allDataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: formatSheetRange(sheetName, "A:Z"),
+      range: formatSheetRange(sheetName, getColumnRange(TEMPLATE_COLUMNS.length)),
     });
 
     const rows = allDataResponse.data.values || [];
@@ -297,7 +298,7 @@ async function appendTemplateRow(
   // Append row
   await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range: formatSheetRange(sheetName, "A:Z"),
+    range: formatSheetRange(sheetName, getColumnRange(TEMPLATE_COLUMNS.length)),
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: {

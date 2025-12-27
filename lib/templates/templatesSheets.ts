@@ -6,6 +6,9 @@
  */
 
 import { createSheetsClient } from "@/lib/google/sheets";
+import { getErrorMessage } from "@/lib/utils/error";
+import { normalizeFmKey } from "@/lib/templates/fmProfiles";
+import { getColumnRange } from "@/lib/google/sheetsCache";
 
 /**
  * Required columns for Template storage in Google Sheets.
@@ -20,6 +23,13 @@ const TEMPLATE_COLUMNS = [
   "wPct",
   "hPct",
   "dpi",
+  "coordSystem",
+  "pageWidthPt",
+  "pageHeightPt",
+  "xPt",
+  "yPt",
+  "wPt",
+  "hPt",
   "updated_at",
 ] as const;
 
@@ -46,6 +56,14 @@ export type Template = {
   wPct: number;
   hPct: number;
   dpi?: number;
+  // New PDF points fields (optional for backward compatibility)
+  coordSystem?: string;
+  pageWidthPt?: number;
+  pageHeightPt?: number;
+  xPt?: number;
+  yPt?: number;
+  wPt?: number;
+  hPt?: number;
   updated_at: string;
 };
 
@@ -134,10 +152,14 @@ export async function ensureTemplatesSheet(
 /**
  * Get all templates for a user from Google Sheets.
  */
+/**
+ * List all templates for a spreadsheet (shared across users).
+ * Templates are scoped to spreadsheetId + fmKey, not userId.
+ */
 export async function listTemplatesForUser(
   accessToken: string,
   spreadsheetId: string,
-  userId: string
+  userId: string // Kept for backward compatibility but not used for filtering
 ): Promise<Template[]> {
   const sheets = createSheetsClient(accessToken);
   const sheetName = "Templates";
@@ -149,7 +171,7 @@ export async function listTemplatesForUser(
     // Get all data
     const allDataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: formatSheetRange(sheetName, "A:Z"),
+      range: formatSheetRange(sheetName, getColumnRange(TEMPLATE_COLUMNS.length)),
     });
 
     const rows = allDataResponse.data.values || [];
@@ -169,22 +191,25 @@ export async function listTemplatesForUser(
         continue;
       }
       const template = parseTemplateFromRow(row, headers);
-      if (template && template.userId === userId) {
+      // Templates are shared per spreadsheet - no userId filtering
+      if (template) {
         templates.push(template);
       }
     }
 
-    console.log(`[Templates] Loaded ${templates.length} template(s) for userId: ${userId}`);
+    console.log(`[Templates] Loaded ${templates.length} template(s) for spreadsheet: ${spreadsheetId.substring(0, 10)}...`);
     return templates;
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error(`[Templates] Error getting templates:`, error);
     
     // Check if it's an authentication/authorization error
-    if (error?.message?.includes("Invalid Credentials") || 
-        error?.message?.includes("unauthorized") ||
-        error?.message?.includes("authentication") ||
-        error?.code === 401 ||
-        error?.code === 403) {
+    const errorMessage = getErrorMessage(error);
+    const errorCode = (error as { code?: number })?.code;
+    if (errorMessage.includes("Invalid Credentials") || 
+        errorMessage.includes("unauthorized") ||
+        errorMessage.includes("authentication") ||
+        errorCode === 401 ||
+        errorCode === 403) {
       throw new Error("Google authentication expired or invalid. Please sign out and sign in again.");
     }
     
@@ -196,26 +221,44 @@ export async function listTemplatesForUser(
 /**
  * Get template by fmKey for a user.
  */
+/**
+ * Get template by fmKey for a spreadsheet (shared across users).
+ * Templates are scoped to spreadsheetId + fmKey, not userId.
+ */
 export async function getTemplateByFmKey(
   accessToken: string,
   spreadsheetId: string,
-  userId: string,
+  userId: string, // Kept for backward compatibility but not used for filtering
   fmKey: string
 ): Promise<Template | null> {
   const templates = await listTemplatesForUser(accessToken, spreadsheetId, userId);
-  const normalizedFmKey = fmKey.toLowerCase().trim();
-  return templates.find(t => t.fmKey.toLowerCase().trim() === normalizedFmKey) || null;
+  // Use normalizeFmKey for consistent normalization (handles spaces, special chars, etc.)
+  const normalizedFmKey = normalizeFmKey(fmKey);
+  const found = templates.find(t => normalizeFmKey(t.fmKey) === normalizedFmKey) || null;
+  
+  if (!found) {
+    console.log(`[Templates] getTemplateByFmKey: Template not found`, {
+      searchedFmKey: normalizedFmKey,
+      originalFmKey: fmKey,
+      spreadsheetId: spreadsheetId.substring(0, 10) + "...",
+      foundTemplates: templates.length,
+      availableFmKeys: templates.map(t => ({ original: t.fmKey, normalized: normalizeFmKey(t.fmKey) })),
+    });
+  }
+  
+  return found;
 }
 
 /**
  * Upsert a template (insert or update).
- * One row per (userId + fmKey). Update if exists, append if missing.
+ * Templates are shared per spreadsheet - one row per (spreadsheetId + fmKey).
+ * userId is stored for audit purposes but not used for uniqueness.
  */
 export async function upsertTemplate(
   accessToken: string,
   spreadsheetId: string,
   template: {
-    userId: string;
+    userId: string; // Stored for audit but not used for uniqueness
     fmKey: string;
     templateId?: string; // Optional, defaults to fmKey
     page: number;
@@ -224,6 +267,14 @@ export async function upsertTemplate(
     wPct: number;
     hPct: number;
     dpi?: number;
+    // New PDF points fields (optional)
+    coordSystem?: string;
+    pageWidthPt?: number;
+    pageHeightPt?: number;
+    xPt?: number;
+    yPt?: number;
+    wPt?: number;
+    hPt?: number;
   }
 ): Promise<void> {
   const sheets = createSheetsClient(accessToken);
@@ -233,13 +284,14 @@ export async function upsertTemplate(
   await ensureTemplatesSheet(spreadsheetId, accessToken);
 
   const templateId = template.templateId || template.fmKey;
-  const normalizedFmKey = template.fmKey.toLowerCase().trim();
+  // Use normalizeFmKey for consistent normalization (handles spaces, special chars, etc.)
+  const normalizedFmKey = normalizeFmKey(template.fmKey);
 
   try {
     // Get all data to find existing row by userId + fmKey
     const allDataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: formatSheetRange(sheetName, "A:Z"),
+      range: formatSheetRange(sheetName, getColumnRange(TEMPLATE_COLUMNS.length)),
     });
 
     const rows = allDataResponse.data.values || [];
@@ -253,7 +305,7 @@ export async function upsertTemplate(
       return;
     }
 
-    // Find row index by userId + fmKey
+    // Find row index by fmKey only (templates are shared per spreadsheet)
     const headers = rows[0] as string[];
     const userIdColIndex = headers.findIndex(
       (h) => h.toLowerCase().trim() === "userid"
@@ -265,8 +317,8 @@ export async function upsertTemplate(
       (h) => h.toLowerCase().trim() === "templateid"
     );
 
-    if (userIdColIndex === -1 || fmKeyColIndex === -1) {
-      // Required columns not found, just append
+    if (fmKeyColIndex === -1) {
+      // Required column not found, just append
       await appendTemplateRow(sheets, spreadsheetId, sheetName, {
         ...template,
         templateId,
@@ -275,36 +327,38 @@ export async function upsertTemplate(
       return;
     }
 
-    // Find existing row by userId + fmKey
+    // Find existing row by fmKey only (templates are shared per spreadsheet, not per user)
+    // Use normalizeFmKey for consistent comparison
     let existingRowIndex = -1;
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const rowUserId = (row?.[userIdColIndex] || "").trim();
-      const rowFmKey = (row?.[fmKeyColIndex] || "").trim().toLowerCase();
-      if (rowUserId === template.userId && rowFmKey === normalizedFmKey) {
+      const rowFmKeyRaw = (row?.[fmKeyColIndex] || "").trim();
+      const rowFmKeyNormalized = normalizeFmKey(rowFmKeyRaw);
+      if (rowFmKeyNormalized === normalizedFmKey) {
         existingRowIndex = i + 1; // +1 because Sheets is 1-indexed
         break;
       }
     }
 
     // Check for duplicate templateId (if templateId column exists)
+    // TemplateId should be unique per spreadsheet
     if (templateIdColIndex !== -1) {
       const normalizedTemplateId = templateId.toLowerCase().trim();
       for (let i = 1; i < rows.length; i++) {
         const row = rows[i];
-        const rowUserId = (row?.[userIdColIndex] || "").trim();
         const rowTemplateId = (row?.[templateIdColIndex] || "").trim().toLowerCase();
-        const rowFmKey = (row?.[fmKeyColIndex] || "").trim().toLowerCase();
+        const rowFmKeyRaw = (row?.[fmKeyColIndex] || "").trim();
+        const rowFmKeyNormalized = normalizeFmKey(rowFmKeyRaw);
         
-        // Check if templateId already exists for this user
-        if (rowUserId === template.userId && rowTemplateId === normalizedTemplateId) {
+        // Check if templateId already exists
+        if (rowTemplateId === normalizedTemplateId) {
           // If it's the same row we're updating (by fmKey), that's OK
           if (existingRowIndex !== -1 && i + 1 === existingRowIndex) {
             continue; // Same row, allow update
           }
           // Otherwise, it's a duplicate templateId for a different fmKey
           throw new Error(
-            `Template ID "${templateId}" already exists for this user (FM Key: ${rowFmKey}). Each template ID must be unique.`
+            `Template ID "${templateId}" already exists (FM Key: ${rowFmKeyNormalized}). Each template ID must be unique per spreadsheet.`
           );
         }
       }
@@ -363,6 +417,13 @@ async function appendTemplateRow(
     wPct: String(template.wPct),
     hPct: String(template.hPct),
     dpi: template.dpi !== undefined ? String(template.dpi) : "",
+    coordSystem: template.coordSystem || "",
+    pageWidthPt: template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "",
+    pageHeightPt: template.pageHeightPt !== undefined ? String(template.pageHeightPt) : "",
+    xPt: template.xPt !== undefined ? String(template.xPt) : "",
+    yPt: template.yPt !== undefined ? String(template.yPt) : "",
+    wPt: template.wPt !== undefined ? String(template.wPt) : "",
+    hPt: template.hPt !== undefined ? String(template.hPt) : "",
     updated_at: template.updated_at,
   };
 
@@ -378,7 +439,7 @@ async function appendTemplateRow(
   // Append row
   await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range: formatSheetRange(sheetName, "A:Z"),
+    range: formatSheetRange(sheetName, getColumnRange(TEMPLATE_COLUMNS.length)),
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
@@ -433,6 +494,13 @@ async function updateTemplateRow(
     wPct: String(template.wPct),
     hPct: String(template.hPct),
     dpi: template.dpi !== undefined ? String(template.dpi) : "",
+    coordSystem: template.coordSystem || "",
+    pageWidthPt: template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "",
+    pageHeightPt: template.pageHeightPt !== undefined ? String(template.pageHeightPt) : "",
+    xPt: template.xPt !== undefined ? String(template.xPt) : "",
+    yPt: template.yPt !== undefined ? String(template.yPt) : "",
+    wPt: template.wPt !== undefined ? String(template.wPt) : "",
+    hPt: template.hPt !== undefined ? String(template.hPt) : "",
     updated_at: template.updated_at,
   };
 
@@ -481,14 +549,22 @@ function parseTemplateFromRow(
   const wPct = getValue("wPct");
   const hPct = getValue("hPct");
   const dpi = getValue("dpi");
+  const coordSystem = getValue("coordSystem");
+  const pageWidthPt = getValue("pageWidthPt");
+  const pageHeightPt = getValue("pageHeightPt");
+  const xPt = getValue("xPt");
+  const yPt = getValue("yPt");
+  const wPt = getValue("wPt");
+  const hPt = getValue("hPt");
 
-  if (!userId || !fmKey || !page || !xPct || !yPct || !wPct || !hPct) {
+  // userId is optional (for backward compatibility), but fmKey and other fields are required
+  if (!fmKey || !page || !xPct || !yPct || !wPct || !hPct) {
     return undefined;
   }
 
   try {
     const template: Template = {
-      userId,
+      userId: userId || "", // Default to empty string if not present (for backward compatibility)
       fmKey,
       templateId: templateId || fmKey, // Default to fmKey if templateId not set
       page: parseInt(page, 10),
@@ -497,6 +573,14 @@ function parseTemplateFromRow(
       wPct: parseFloat(wPct),
       hPct: parseFloat(hPct),
       dpi: dpi ? parseFloat(dpi) : undefined,
+      // Normalize coordSystem: "PDF_POINTS" from sheet -> "PDF_POINTS_TOP_LEFT" internally
+      coordSystem: coordSystem === "PDF_POINTS" ? "PDF_POINTS_TOP_LEFT" : (coordSystem || undefined),
+      pageWidthPt: pageWidthPt ? parseFloat(pageWidthPt) : undefined,
+      pageHeightPt: pageHeightPt ? parseFloat(pageHeightPt) : undefined,
+      xPt: xPt ? parseFloat(xPt) : undefined,
+      yPt: yPt ? parseFloat(yPt) : undefined,
+      wPt: wPt ? parseFloat(wPt) : undefined,
+      hPt: hPt ? parseFloat(hPt) : undefined,
       updated_at: getValue("updated_at") || new Date().toISOString(),
     };
 

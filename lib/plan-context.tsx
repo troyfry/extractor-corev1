@@ -38,18 +38,12 @@ export function PlanProvider({ children }: { children: ReactNode }) {
     if (!isDevMode) {
       return "FREE_BYOK";
     }
-    // In dev mode, try to load from localStorage synchronously on initial render
-    // This ensures plan persists across navigation
-    if (typeof window !== "undefined") {
-      const stored = localStorage.getItem(PLAN_STORAGE_KEY);
-      if (stored && isValidPlan(stored)) {
-        return stored;
-      }
-    }
+    // Always return default plan for initial state to ensure SSR/client match
+    // We'll load from localStorage in useEffect after hydration
     return getDefaultPlan(); // PRO in dev
   };
 
-  // Always start with initial plan to avoid hydration mismatch
+  // Always start with default plan to avoid hydration mismatch
   // We'll load from localStorage in useEffect after hydration for updates
   const [plan, setPlanState] = useState<Plan>(getInitialPlan());
   const [isHydrated, setIsHydrated] = useState(false);

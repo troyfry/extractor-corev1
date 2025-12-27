@@ -42,7 +42,11 @@ const TILES: Tile[] = [
   },
 ];
 
-export default function ProHomePageClient() {
+type Props = {
+  quotaError?: boolean;
+};
+
+export default function ProHomePageClient({ quotaError }: Props = {}) {
   const { plan } = useCurrentPlan();
   const canUsePro = canUseProFeatures(plan);
 
@@ -52,6 +56,21 @@ export default function ProHomePageClient() {
 
       <div className="min-h-screen bg-slate-900">
         <div className="max-w-5xl mx-auto px-4 py-8">
+          {/* Quota error message - stable UI, no auto-refresh */}
+          {quotaError && (
+            <div className="mb-6 rounded-lg border border-yellow-700 bg-yellow-900/20 p-4 text-yellow-200">
+              <div className="flex items-start space-x-3">
+                <div className="text-xl">⚠️</div>
+                <div className="flex-1">
+                  <h3 className="font-semibold mb-1">Google Sheets quota hit</h3>
+                  <p className="text-sm text-yellow-300">
+                    Try again in 60 seconds. The page will not auto-refresh to prevent quota errors.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Gate for non-Pro users */}
           {!canUsePro && (
             <div className="mb-8">

@@ -85,7 +85,7 @@ export async function POST(request: Request) {
     }
 
     // Ensure Users sheet exists (onboarding route - must ensure sheet exists)
-    await ensureUsersSheet(user.googleAccessToken, mainSpreadsheetId);
+    await ensureUsersSheet(user.googleAccessToken, mainSpreadsheetId, { allowEnsure: true });
 
     // Get existing user row
     const userRow = await getUserRowById(user.googleAccessToken, mainSpreadsheetId, user.userId);
@@ -100,7 +100,7 @@ export async function POST(request: Request) {
     await upsertUserRow(user.googleAccessToken, mainSpreadsheetId, {
       ...userRow,
       openaiKeyEncrypted: encryptedKey,
-    });
+    }, { allowEnsure: true });
 
     return NextResponse.json({ success: true });
   } catch (error) {

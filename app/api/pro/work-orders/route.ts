@@ -3,7 +3,9 @@ import { getPlanFromRequest } from "@/lib/api/getPlanFromRequest";
 import { hasFeature } from "@/lib/plan";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
-import { createSheetsClient, formatSheetRange } from "@/lib/google/sheets";
+import { createSheetsClient, formatSheetRange, WORK_ORDER_REQUIRED_COLUMNS } from "@/lib/google/sheets";
+import { getErrorMessage } from "@/lib/utils/error";
+import { getColumnRange } from "@/lib/google/sheetsCache";
 
 export const runtime = "nodejs";
 
@@ -61,7 +63,7 @@ export async function GET(request: Request) {
       // Then check session/JWT token
       const { auth } = await import("@/auth");
       const session = await auth();
-      const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+      const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
       spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
     }
 
@@ -78,7 +80,7 @@ export async function GET(request: Request) {
     // Get all data from Work_Orders sheet
     const allDataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: formatSheetRange(WORK_ORDERS_SHEET_NAME, "A:Z"),
+      range: formatSheetRange(WORK_ORDERS_SHEET_NAME, getColumnRange(WORK_ORDER_REQUIRED_COLUMNS.length)),
     });
 
     const rows = allDataResponse.data.values || [];
@@ -154,10 +156,10 @@ export async function GET(request: Request) {
 
     console.log(`[Work Orders GET] Returning ${workOrderRows.length} work order(s)`);
     return NextResponse.json({ rows: workOrderRows });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("[Work Orders GET] Error:", error);
     return NextResponse.json(
-      { error: error?.message || "Failed to fetch work orders" },
+      { error: getErrorMessage(error) || "Failed to fetch work orders" },
       { status: 500 }
     );
   }

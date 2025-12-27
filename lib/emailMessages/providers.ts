@@ -8,7 +8,21 @@
 import crypto from "node:crypto";
 import type { EmailMessageInput, EmailAttachment } from "./types";
 
-export type RawWebhookPayload = any;
+export type RawWebhookPayload = {
+  from?: string;
+  to?: string;
+  subject?: string;
+  receivedAt?: string;
+  id?: string;
+  attachments?: Array<{
+    id?: string;
+    filename?: string;
+    mimeType?: string;
+    sizeBytes?: number;
+    storageLocation?: string;
+  }>;
+  [key: string]: unknown;
+};
 
 /**
  * Simple helper to generate attachment IDs.
@@ -42,8 +56,16 @@ function generateAttachmentId(): string {
 export async function parseTestWebhook(body: RawWebhookPayload): Promise<EmailMessageInput> {
   const now = new Date().toISOString();
 
+  type RawAttachment = {
+    id?: string;
+    filename?: string;
+    mimeType?: string;
+    sizeBytes?: number;
+    storageLocation?: string;
+  };
+
   const attachments: EmailAttachment[] = (body.attachments || []).map(
-    (att: any) => ({
+    (att: RawAttachment) => ({
       id: att.id || generateAttachmentId(),
       filename: String(att.filename ?? "attachment"),
       mimeType: String(att.mimeType ?? "application/octet-stream"),

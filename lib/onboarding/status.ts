@@ -8,7 +8,7 @@ import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
 import {
   ensureUsersSheet,
-  getUserRowById,
+  getUserRowByIdNoEnsure,
   upsertUserRow,
   setOnboardingCompleted,
   resetApiCallCount,
@@ -41,6 +41,7 @@ export async function getCurrentUserIdAndEmail(): Promise<{
  * 
  * Do not call Google Sheets in getMainSpreadsheetId. Cookie/session only.
  * This prevents quota errors during /pro page renders.
+ * Cookie-first; do not touch Sheets here
  */
 async function getMainSpreadsheetId(
   userId: string
@@ -57,7 +58,7 @@ async function getMainSpreadsheetId(
 
     // Second, try session/JWT token
     const session = await auth();
-    const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+    const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
     const candidateSpreadsheetId = await getUserSpreadsheetId(userId, sessionSpreadsheetId);
 
     return candidateSpreadsheetId;
@@ -74,6 +75,7 @@ export type OnboardingStatusResult = {
   isAuthenticated: boolean;
   onboardingCompleted: boolean;
   userRow?: UserRow;
+  quotaError?: boolean; // Set to true if quota error occurred (fallback to cookie/session)
 };
 
 /**
@@ -87,11 +89,36 @@ export type OnboardingStatusResult = {
  * 3. Handle quota errors gracefully
  */
 export async function getOnboardingStatus(): Promise<OnboardingStatusResult> {
-  // STEP 1: Check onboardingCompleted cookie FIRST (no API calls, no token needed)
+  // STEP 0: Check quota cooldown cookie - if set and not expired, skip Sheets calls entirely
   try {
     const { cookies } = await import("next/headers");
     const cookieStore = await cookies();
-    const cookieOnboardingCompleted = cookieStore.get("onboardingCompleted")?.value;
+    const cooldownUntil = cookieStore.get("sheetsQuotaCooldownUntil")?.value;
+    
+    if (cooldownUntil) {
+      const cooldownTimestamp = parseInt(cooldownUntil, 10);
+      if (!isNaN(cooldownTimestamp) && Date.now() < cooldownTimestamp) {
+        const remainingSeconds = Math.ceil((cooldownTimestamp - Date.now()) / 1000);
+        console.log(`[Onboarding Status] Quota cooldown active (${remainingSeconds}s remaining) - skipping Sheets calls, returning cached "not completed"`);
+        
+        // Return cached "not completed" response without hitting Sheets
+        return {
+          isAuthenticated: true,
+          onboardingCompleted: false,
+          quotaError: true,
+        };
+      }
+    }
+  } catch (error) {
+    // Continue if cookie check fails
+  }
+
+  // STEP 1: Check onboardingCompleted cookie FIRST (no API calls, no token needed)
+  let cookieOnboardingCompleted: string | undefined = undefined;
+  try {
+    const { cookies } = await import("next/headers");
+    const cookieStore = await cookies();
+    cookieOnboardingCompleted = cookieStore.get("onboardingCompleted")?.value;
     
     if (cookieOnboardingCompleted === "true") {
       console.log("[Onboarding Status] Cookie indicates onboarding completed - returning without Sheets calls");
@@ -139,7 +166,7 @@ export async function getOnboardingStatus(): Promise<OnboardingStatusResult> {
   if (!spreadsheetId) {
     try {
       const session = await auth();
-      spreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+      spreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
     } catch (error) {
       console.warn("[Onboarding Status] Could not read session:", error);
     }
@@ -153,12 +180,13 @@ export async function getOnboardingStatus(): Promise<OnboardingStatusResult> {
     };
   }
 
-  // STEP 4: Attempt ONE Sheets read (no ensureUsersSheet)
+  // STEP 4: Attempt ONE Sheets read (no ensureUsersSheet) with rate-limit backoff
   try {
     resetApiCallCount();
     
     // Get user row (uses cache, does NOT call ensureUsersSheet)
-    const userRow = await getUserRowById(user.googleAccessToken, spreadsheetId, userId);
+    // Use explicit no-ensure version for status checks
+    const userRow = await getUserRowByIdNoEnsure(user.googleAccessToken, spreadsheetId, userId);
 
     if (!userRow) {
       // User doesn't exist in sheet - assume not completed
@@ -178,20 +206,52 @@ export async function getOnboardingStatus(): Promise<OnboardingStatusResult> {
       onboardingCompleted,
       userRow,
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
     // Check if it's a quota error
-    const isQuotaError = error?.code === 429 || 
-                        error?.status === 429 ||
-                        error?.message?.includes("quota") ||
-                        error?.message?.includes("rate limit") ||
-                        error?.message?.includes("Read requests per minute");
+    const errorCode = (error as { code?: number })?.code;
+    const errorStatus = (error as { status?: number })?.status;
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    
+    const isQuotaError = errorCode === 429 || 
+                        errorStatus === 429 ||
+                        errorMessage.includes("quota") ||
+                        errorMessage.includes("rate limit") ||
+                        errorMessage.includes("Read requests per minute");
     
     if (isQuotaError) {
-      console.warn("[Onboarding Status] Quota error, falling back to cookie/session check:", error.message);
-      // Return not completed but don't throw - let UI show message
+      console.warn("[Onboarding Status] Quota error, falling back to cookie/session check:", errorMessage);
+      
+      // Set quota cooldown cookie (60 seconds) - prevents refresh spam from blowing up quota
+      try {
+        const { cookies } = await import("next/headers");
+        const cookieStore = await cookies();
+        const cooldownUntil = Date.now() + 60000; // 60 seconds from now
+        
+        cookieStore.set("sheetsQuotaCooldownUntil", String(cooldownUntil), {
+          maxAge: 60, // 60 seconds
+          httpOnly: true,
+          sameSite: "lax",
+        });
+        
+        // Also set degraded status cookie for API route compatibility
+        cookieStore.set("onboardingStatusDegraded", "true", {
+          maxAge: 60, // 60 seconds
+          httpOnly: true,
+          sameSite: "lax",
+        });
+        
+        console.log(`[Onboarding Status] Set quota cooldown until ${new Date(cooldownUntil).toISOString()}`);
+      } catch (cookieError) {
+        // Ignore cookie errors
+        console.warn("[Onboarding Status] Could not set cooldown cookie:", cookieError);
+      }
+      
+      // Return best-known state from cookie/session (fail open)
+      // Mark quotaError so caller knows not to redirect in a loop
       return {
         isAuthenticated: true,
-        onboardingCompleted: false,
+        onboardingCompleted: cookieOnboardingCompleted === "true",
+        quotaError: true,
       };
     }
     
@@ -244,13 +304,13 @@ export async function completeOnboarding(spreadsheetId?: string): Promise<void> 
   // We need a spreadsheet ID to read Users sheet, so try session/cookie first
   if (!targetSpreadsheetId) {
     const session = await auth();
-    const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+    const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
     const candidateSpreadsheetId = await getUserSpreadsheetId(userId, sessionSpreadsheetId);
     
     if (candidateSpreadsheetId) {
       // Try to read Users sheet to get the actual sheetId from user's row
       try {
-        const userRow = await getUserRowById(user.googleAccessToken, candidateSpreadsheetId, userId);
+        const userRow = await getUserRowByIdNoEnsure(user.googleAccessToken, candidateSpreadsheetId, userId);
         if (userRow && userRow.sheetId) {
           targetSpreadsheetId = userRow.sheetId;
         } else {
@@ -270,10 +330,10 @@ export async function completeOnboarding(spreadsheetId?: string): Promise<void> 
   }
 
   // Ensure Users sheet exists (onboarding route - must ensure sheet exists)
-  await ensureUsersSheet(user.googleAccessToken, targetSpreadsheetId);
+  await ensureUsersSheet(user.googleAccessToken, targetSpreadsheetId, { allowEnsure: true });
 
   // Validate prerequisites before completing onboarding
-  const userRow = await getUserRowById(user.googleAccessToken, targetSpreadsheetId, userId);
+  const userRow = await getUserRowByIdNoEnsure(user.googleAccessToken, targetSpreadsheetId, userId);
   if (!userRow) {
     throw new Error("User row not found. Please complete the Google Sheets setup step first.");
   }
@@ -294,7 +354,7 @@ export async function completeOnboarding(spreadsheetId?: string): Promise<void> 
   const userFmProfiles = fmProfiles.filter(p => {
     // If profile has userId property, check it matches
     // Otherwise, assume it's for this user (legacy profiles without userId)
-    return !(p as any).userId || (p as any).userId === userId;
+    return !(p as { userId?: string }).userId || (p as { userId?: string }).userId === userId;
   });
 
   if (userFmProfiles.length === 0) {

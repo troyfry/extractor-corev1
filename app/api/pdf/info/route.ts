@@ -33,12 +33,17 @@ export async function POST(req: Request) {
       );
     }
 
-    // Get page count using pdf-parse
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const pdfParse = require("pdf-parse");
-    const parseFn = typeof pdfParse === "function" ? pdfParse : pdfParse.default ?? pdfParse;
-    const data = await parseFn(pdfBuffer);
-    const pageCount = data.numpages || 1;
+   // Get page count using pdf-parse (Node-only)
+const pdfParseModule: any = await import("pdf-parse");
+
+// pdf-parse can be either a function or { default: function }
+const parseFn =
+  typeof pdfParseModule === "function"
+    ? pdfParseModule
+    : pdfParseModule.default;
+
+const data = await parseFn(pdfBuffer);
+const pageCount = data?.numpages || 1;
 
     // This endpoint only returns page count
     // PDF rendering is done client-side using pdfjs-dist in the browser

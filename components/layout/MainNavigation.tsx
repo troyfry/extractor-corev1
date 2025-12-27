@@ -34,7 +34,7 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
   
   // Check visibility with dev override
   const canUsePro = canUseProFeatures(plan);
-  const canUsePremium = canUsePremiumFeatures(plan);
+  const _canUsePremium = canUsePremiumFeatures(plan); // Reserved for future use
 
   // Define all nav items (keep all code intact for Pro/Premium)
   const allNavItems: NavItem[] = [

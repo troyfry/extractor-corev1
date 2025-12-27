@@ -15,7 +15,7 @@ import { extractWorkOrderNumberFromText } from "@/lib/workOrders/processing";
 import { isAiParsingEnabled, getAiModelName, getIndustryProfile } from "@/lib/config/ai";
 import { getPlanFromRequest } from "@/lib/api/getPlanFromRequest";
 import { hasFeature } from "@/lib/plan";
-import { Plan } from "@/lib/plan";
+// import { Plan } from "@/lib/plan"; // Unused for now
 import { extractTextFromPdfBuffer as extractTextFromPdfBufferAiParser } from "@/lib/workOrders/aiParser";
 import OpenAI from "openai";
 import type { ParsedWorkOrder, ManualProcessResponse } from "@/lib/workOrders/parsedTypes";
@@ -49,7 +49,7 @@ type AiWorkOrder = {
   notes: string;
 };
 
-type AiParserResponse = {
+type _AiParserResponse = {
   workOrders: AiWorkOrder[];
 };
 
@@ -95,8 +95,8 @@ function escapeCsvValue(value: string | null | undefined): string {
 /**
  * Generate CSV string from parsed work orders.
  */
-function generateCsv(workOrders: ParsedWorkOrder[], issuerKey: string): string {
-  const { generateJobId } = require("@/lib/workOrders/sheetsIngestion");
+async function generateCsv(workOrders: ParsedWorkOrder[], issuerKey: string): Promise<string> {
+  const { generateJobId } = await import("@/lib/workOrders/sheetsIngestion");
   
   const headers = [
     "Job ID",
@@ -148,7 +148,7 @@ function generateCsv(workOrders: ParsedWorkOrder[], issuerKey: string): string {
  */
 function parseAiResponse(
   responseText: string,
-  filename: string
+  _filename: string
 ): ParsedWorkOrder[] | null {
   try {
     let jsonText = responseText.trim();
@@ -412,7 +412,7 @@ export async function POST(request: Request) {
           const model = getAiModelName();
           
           // Build prompt with PDF and email text
-          let prompt = `You are a Work Order Extraction Engine for ${profile.label}.
+          const prompt = `You are a Work Order Extraction Engine for ${profile.label}.
 
 Extract work order information from the following PDF text and email text and return it as JSON.
 
@@ -588,7 +588,7 @@ ${pdfText}`;
       } else {
         // Then check session/JWT token
         const session = await auth();
-        const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+        const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
         spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
         if (spreadsheetId) {
           console.log(`[Gmail Process] Using spreadsheet ID from session/DB: ${spreadsheetId.substring(0, 10)}...`);
@@ -733,8 +733,10 @@ ${pdfText}`;
             work_order_pdf_link: null, // Will be updated from main sheet if needed
             signed_pdf_url: null,
             signed_preview_image_url: null,
+            signed_at: null,
             source: "email",
             last_updated_at: nowIso,
+            file_hash: null, // Gmail processing: multiple PDFs may map to multiple work orders, hash not directly mappable
           };
 
           try {
@@ -818,7 +820,7 @@ ${pdfText}`;
     }
 
     // Generate CSV from all parsed work orders (only if we got here = success)
-    const csv = generateCsv(allParsedWorkOrders, issuerKey);
+    const csv = await generateCsv(allParsedWorkOrders, issuerKey);
 
     // Return parsed work orders and CSV
     const response: ManualProcessResponse = {

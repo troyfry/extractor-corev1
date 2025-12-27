@@ -1,7 +1,9 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import React, { useState, useEffect, useRef, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
+import AppShell from "@/components/layout/AppShell";
+import MainNavigation from "@/components/layout/MainNavigation";
 
 // Coordinate system constants
 // Internal: use PDF_POINTS_TOP_LEFT to be explicit about origin
@@ -104,8 +106,7 @@ type CropZone = {
   height: number;
 };
 
-export default function OnboardingTemplatesPage() {
-  const router = useRouter();
+function TemplateZonesPageContent() {
   const searchParams = useSearchParams();
   const [fmProfiles, setFmProfiles] = useState<FmProfile[]>([]);
   const [selectedFmKey, setSelectedFmKey] = useState<string>("");
@@ -133,6 +134,23 @@ export default function OnboardingTemplatesPage() {
   const [pdfDoc, setPdfDoc] = useState<any>(null);
   const hasInitializedFromQuery = useRef<boolean>(false);
   const [manualCoords, setManualCoords] = useState<{ xPct: string; yPct: string; wPct: string; hPct: string } | null>(null);
+  
+  // Known working coordinates per fmKey (can be expanded)
+  // These are tested coordinates that work well for each FM profile
+  const calibratedCoordinates: Record<string, { xPct: number; yPct: number; wPct: number; hPct: number }> = {
+    superclean: {
+      xPct: 0.72,
+      yPct: 0.00,
+      wPct: 0.26,
+      hPct: 0.05,
+    },
+    "23rdgroup": {
+      xPct: 0.02,
+      yPct: 0.14,
+      wPct: 0.30,
+      hPct: 0.032,
+    },
+  };
 
   // Auto-select fmKey from query parameter (will be validated after profiles load)
   useEffect(() => {
@@ -262,9 +280,9 @@ export default function OnboardingTemplatesPage() {
           // Convert template to pixel coordinates if we have an image
           // Prefer PDF points if available, otherwise fallback to percentages
           if (previewImage && imageWidth > 0 && imageHeight > 0 && template.page === selectedPage) {
-          // If template has PDF points and we have page dimensions, use points → pixels conversion
-          const normalizedCoordSystem = normalizeCoordSystem(template.coordSystem);
-          if (normalizedCoordSystem === COORD_SYSTEM_PDF_POINTS_TOP_LEFT &&
+            // If template has PDF points and we have page dimensions, use points → pixels conversion
+            const normalizedCoordSystem = normalizeCoordSystem(template.coordSystem);
+            if (normalizedCoordSystem === COORD_SYSTEM_PDF_POINTS_TOP_LEFT && 
                 template.pageWidthPt && template.pageHeightPt &&
                 template.xPt !== undefined && template.yPt !== undefined &&
                 template.wPt !== undefined && template.hPt !== undefined &&
@@ -297,15 +315,13 @@ export default function OnboardingTemplatesPage() {
             setCoordsPage(null);
           }
         } else {
+          // No template found - if we have calibrated coordinates, offer to use them
           setSavedTemplate(null);
-          setCropZone(null);
-          setCoordsPage(null);
+          // Don't set cropZone here - wait for PDF/image to load, then auto-apply in renderPage
         }
       } else {
-        // Template not found is OK
+        // Template not found is OK - calibrated coords will be auto-applied when PDF loads
         setSavedTemplate(null);
-        setCropZone(null);
-        setCoordsPage(null);
       }
     } catch (err) {
       console.error("Error loading template:", err);
@@ -326,18 +342,18 @@ export default function OnboardingTemplatesPage() {
       return;
     }
 
-      setPdfFile(file);
-      setError(null);
-      setSuccess(null);
-      setIsRenderingPdf(true);
-      setPreviewImage(null);
-      setImageWidth(0);
-      setImageHeight(0);
-      setCropZone(null);
-      setCoordsPage(null);
-      setSelectedPage(1);
-      setPageCount(0);
-      setPdfDoc(null);
+    setPdfFile(file);
+    setError(null);
+    setSuccess(null);
+    setIsRenderingPdf(true);
+    setPreviewImage(null);
+    setImageWidth(0);
+    setImageHeight(0);
+    setCropZone(null);
+    setCoordsPage(null);
+    setSelectedPage(1);
+    setPageCount(0);
+    setPdfDoc(null);
 
     try {
       // Ensure pdf.js is loaded (uses shared helper)
@@ -374,6 +390,25 @@ export default function OnboardingTemplatesPage() {
       
       // Render first page
       await renderPage(pdf, 1);
+      
+      // After PDF loads, check if we should auto-apply calibrated coordinates
+      // This happens after renderPage sets imageWidth/imageHeight
+      setTimeout(() => {
+        if (selectedFmKey && calibratedCoordinates[selectedFmKey] && !savedTemplate) {
+          // Only auto-apply if no saved template exists
+          const calibrated = calibratedCoordinates[selectedFmKey];
+          if (imageWidth > 0 && imageHeight > 0) {
+            setCropZone({
+              x: calibrated.xPct * imageWidth,
+              y: calibrated.yPct * imageHeight,
+              width: calibrated.wPct * imageWidth,
+              height: calibrated.hPct * imageHeight,
+            });
+            setCoordsPage(selectedPage);
+            setSuccess(`Auto-applied calibrated coordinates for ${selectedFmKey}. Review and adjust if needed.`);
+          }
+        }
+      }, 100); // Small delay to ensure image dimensions are set
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Failed to render PDF";
       console.error("[PDF Render] Error:", err);
@@ -466,7 +501,18 @@ export default function OnboardingTemplatesPage() {
       setImageHeight(viewport.height);
       
       // If we have a saved template for this page, the useEffect will convert it to pixels
-      // Otherwise, cropZone will remain null for user to draw
+      // Otherwise, auto-apply calibrated coordinates if available (for new users)
+      if (!savedTemplate && selectedFmKey && calibratedCoordinates[selectedFmKey]) {
+        const calibrated = calibratedCoordinates[selectedFmKey];
+        setCropZone({
+          x: calibrated.xPct * viewport.width,
+          y: calibrated.yPct * viewport.height,
+          width: calibrated.wPct * viewport.width,
+          height: calibrated.hPct * viewport.height,
+        });
+        setCoordsPage(pageNum);
+        setSuccess(`Auto-applied calibrated coordinates for ${selectedFmKey}. Review and adjust if needed, then save.`);
+      }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Failed to render PDF page";
       console.error("[PDF Render] Error:", err);
@@ -634,282 +680,326 @@ export default function OnboardingTemplatesPage() {
     setManualCoords(null);
   }
 
+  function handleApplyCalibratedCoords() {
+    if (!selectedFmKey || !imageWidth || !imageHeight) {
+      setError("Please select an FM profile and upload a PDF first");
+      return;
+    }
+
+    const calibrated = calibratedCoordinates[selectedFmKey];
+    if (!calibrated) {
+      setError(`No calibrated coordinates found for "${selectedFmKey}"`);
+      return;
+    }
+
+    // Apply calibrated coordinates
+    setCropZone({
+      x: calibrated.xPct * imageWidth,
+      y: calibrated.yPct * imageHeight,
+      width: calibrated.wPct * imageWidth,
+      height: calibrated.hPct * imageHeight,
+    });
+    setCoordsPage(selectedPage);
+    setManualCoords(null);
+    setSuccess(`Applied calibrated coordinates for ${selectedFmKey}`);
+    setError(null);
+  }
+
   const percentages = calculatePercentages();
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-50 p-8">
-      <div className="max-w-6xl mx-auto">
-        <h1 className="text-3xl font-semibold mb-4">Template Crop Zones</h1>
-        <p className="text-slate-300 mb-8">
-          Upload a sample work order PDF and define where the Work Order Number is located for each FM template.
-          This allows the OCR system to extract work order numbers accurately.
-        </p>
+    <AppShell>
+      <MainNavigation />
+      <div className="min-h-screen bg-slate-900 text-slate-50 pt-8 p-8">
+        <div className="max-w-6xl mx-auto">
+          <h1 className="text-3xl font-semibold mb-4">Template Crop Zones</h1>
+          <p className="text-slate-300 mb-8">
+            Upload a sample work order PDF and define where the Work Order Number is located for each FM template.
+            This allows the OCR system to extract work order numbers accurately.
+          </p>
 
-        <div className="space-y-6">
-          {/* FM Profile Selection */}
-          <div>
-            <label htmlFor="fmKey" className="block text-sm font-medium mb-2">
-              FM Profile <span className="text-red-400">*</span>
-            </label>
-            {isLoadingProfiles ? (
-              <div className="text-slate-400">Loading FM profiles...</div>
-            ) : fmProfiles.length === 0 ? (
-              <div className="text-yellow-400">
-                No FM profiles found. Please complete the FM Profiles step first.
-              </div>
-            ) : (
-              <select
-                id="fmKey"
-                value={selectedFmKey}
-                onChange={(e) => setSelectedFmKey(e.target.value)}
-                className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-500"
-              >
-                {fmProfiles.map((profile) => (
-                  <option key={profile.fmKey} value={profile.fmKey}>
-                    {profile.fmLabel || profile.fmKey}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-
-          {/* PDF Upload */}
-          <div>
-            <label htmlFor="pdfFile" className="block text-sm font-medium mb-2">
-              Sample PDF <span className="text-red-400">*</span>
-            </label>
-            <input
-              id="pdfFile"
-              type="file"
-              accept="application/pdf"
-              onChange={handleFileUpload}
-              disabled={isRenderingPdf}
-              className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-500 disabled:opacity-50 disabled:cursor-not-allowed"
-            />
-            <p className="mt-2 text-sm text-slate-400">
-              Upload a sample work order PDF (preferably a signed work order)
-            </p>
-            {isRenderingPdf && (
-              <p className="mt-2 text-sm text-slate-300">Rendering PDF preview...</p>
-            )}
-          </div>
-
-          {/* Preview and Crop Zone Selector */}
-          {previewImage && (
+          <div className="space-y-6">
+            {/* FM Profile Selection */}
             <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="block text-sm font-medium">
-                  Select Work Order Number Region
-                </label>
-                <div className="text-sm text-slate-400">
-                  Cropping Page: <span className="font-semibold text-slate-200">{selectedPage}</span> of {pageCount}
+              <label htmlFor="fmKey" className="block text-sm font-medium mb-2">
+                FM Profile <span className="text-red-400">*</span>
+              </label>
+              {isLoadingProfiles ? (
+                <div className="text-slate-400">Loading FM profiles...</div>
+              ) : fmProfiles.length === 0 ? (
+                <div className="text-yellow-400">
+                  No FM profiles found. Please create an FM profile first.
                 </div>
-              </div>
-              <p className="text-sm text-slate-400 mb-4">
-                Click and drag on the image below to select the region where the Work Order Number appears.
-              </p>
-              
-              {/* Page Navigation */}
-              {pageCount > 1 && (
-                <div className="flex items-center gap-2 mb-4">
-                  <button
-                    onClick={() => handlePageChange(selectedPage - 1)}
-                    disabled={selectedPage <= 1}
-                    className="px-3 py-1 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded text-sm transition-colors"
-                  >
-                    ← Previous
-                  </button>
-                  <span className="text-sm text-slate-300">
-                    Page {selectedPage} / {pageCount}
-                  </span>
-                  <button
-                    onClick={() => handlePageChange(selectedPage + 1)}
-                    disabled={selectedPage >= pageCount}
-                    className="px-3 py-1 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded text-sm transition-colors"
-                  >
-                    Next →
-                  </button>
-                </div>
+              ) : (
+                <select
+                  id="fmKey"
+                  value={selectedFmKey}
+                  onChange={(e) => setSelectedFmKey(e.target.value)}
+                  className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                >
+                  {fmProfiles.map((profile) => (
+                    <option key={profile.fmKey} value={profile.fmKey}>
+                      {profile.fmLabel || profile.fmKey}
+                    </option>
+                  ))}
+                </select>
               )}
+            </div>
 
-              {/* Warning banner if page changed after drawing */}
-              {coordsPage !== null && coordsPage !== selectedPage && (
-                <div className="mb-4 p-4 bg-yellow-900/20 border border-yellow-700 rounded-lg text-yellow-200">
-                  <p className="font-medium mb-1">Page Mismatch</p>
-                  <p className="text-sm">
-                    You changed pages. The current rectangle was drawn on page {coordsPage}. Switch back to page {coordsPage} or redraw on this page.
-                  </p>
-                </div>
+            {/* PDF Upload */}
+            <div>
+              <label htmlFor="pdfFile" className="block text-sm font-medium mb-2">
+                Sample PDF <span className="text-red-400">*</span>
+              </label>
+              <input
+                id="pdfFile"
+                type="file"
+                accept="application/pdf"
+                onChange={handleFileUpload}
+                disabled={isRenderingPdf}
+                className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              />
+              <p className="mt-2 text-sm text-slate-400">
+                Upload a sample work order PDF (preferably a signed work order)
+              </p>
+              {isRenderingPdf && (
+                <p className="mt-2 text-sm text-slate-300">Rendering PDF preview...</p>
               )}
-              <div
-                ref={imageContainerRef}
-                className="relative border-2 border-slate-700 rounded-lg overflow-hidden bg-slate-800"
-                style={{ width: imageWidth, maxWidth: "100%" }}
-                onMouseDown={handleMouseDown}
-                onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseUp}
-              >
-                <img
-                  src={previewImage}
-                  alt="PDF Preview"
-                  style={{ display: "block", width: imageWidth, height: imageHeight }}
-                  draggable={false}
-                />
-                {cropZone && cropZone.width > 0 && cropZone.height > 0 && (
-                  <div
-                    className="absolute border-2 border-sky-500 bg-sky-500/20 pointer-events-none"
-                    style={{
-                      left: `${cropZone.x}px`,
-                      top: `${cropZone.y}px`,
-                      width: `${cropZone.width}px`,
-                      height: `${cropZone.height}px`,
-                    }}
+            </div>
+
+            {/* Preview and Crop Zone Selector */}
+            {previewImage && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-medium">
+                    Select Work Order Number Region
+                  </label>
+                  <div className="text-sm text-slate-400">
+                    Cropping Page: <span className="font-semibold text-slate-200">{selectedPage}</span> of {pageCount}
+                  </div>
+                </div>
+                <p className="text-sm text-slate-400 mb-4">
+                  Click and drag on the image below to select the region where the Work Order Number appears.
+                </p>
+                
+                {/* Page Navigation */}
+                {pageCount > 1 && (
+                  <div className="flex items-center gap-2 mb-4">
+                    <button
+                      onClick={() => handlePageChange(selectedPage - 1)}
+                      disabled={selectedPage <= 1}
+                      className="px-3 py-1 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded text-sm transition-colors"
+                    >
+                      ← Previous
+                    </button>
+                    <span className="text-sm text-slate-300">
+                      Page {selectedPage} / {pageCount}
+                    </span>
+                    <button
+                      onClick={() => handlePageChange(selectedPage + 1)}
+                      disabled={selectedPage >= pageCount}
+                      className="px-3 py-1 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded text-sm transition-colors"
+                    >
+                      Next →
+                    </button>
+                  </div>
+                )}
+
+                {/* Warning banner if page changed after drawing */}
+                {coordsPage !== null && coordsPage !== selectedPage && (
+                  <div className="mb-4 p-4 bg-yellow-900/20 border border-yellow-700 rounded-lg text-yellow-200">
+                    <p className="font-medium mb-1">Page Mismatch</p>
+                    <p className="text-sm">
+                      You changed pages. The current rectangle was drawn on page {coordsPage}. Switch back to page {coordsPage} or redraw on this page.
+                    </p>
+                  </div>
+                )}
+                <div
+                  ref={imageContainerRef}
+                  className="relative border-2 border-slate-700 rounded-lg overflow-hidden bg-slate-800"
+                  style={{ width: imageWidth, maxWidth: "100%" }}
+                  onMouseDown={handleMouseDown}
+                  onMouseMove={handleMouseMove}
+                  onMouseUp={handleMouseUp}
+                  onMouseLeave={handleMouseUp}
+                >
+                  <img
+                    src={previewImage}
+                    alt="PDF Preview"
+                    style={{ display: "block", width: imageWidth, height: imageHeight }}
+                    draggable={false}
                   />
+                  {cropZone && cropZone.width > 0 && cropZone.height > 0 && (
+                    <div
+                      className="absolute border-2 border-sky-500 bg-sky-500/20 pointer-events-none"
+                      style={{
+                        left: `${cropZone.x}px`,
+                        top: `${cropZone.y}px`,
+                        width: `${cropZone.width}px`,
+                        height: `${cropZone.height}px`,
+                      }}
+                    />
+                  )}
+                </div>
+
+                {/* Percentages Display / Edit */}
+                {percentages && (
+                  <div className="mt-4 p-4 bg-slate-800 rounded-lg">
+                    <div className="text-sm font-medium mb-3">Crop Zone Percentages (0.0 to 1.0):</div>
+                    <div className="grid grid-cols-4 gap-4 text-sm">
+                      <div>
+                        <label className="block text-slate-400 mb-1 text-xs">xPct:</label>
+                        <input
+                          type="number"
+                          step="0.0001"
+                          min="0"
+                          max="1"
+                          value={manualCoords?.xPct ?? percentages.xPct.toFixed(4)}
+                          onChange={(e) => handleManualCoordChange("xPct", e.target.value)}
+                          onBlur={() => {
+                            if (manualCoords) {
+                              handleApplyManualCoords();
+                            }
+                          }}
+                          className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 mb-1 text-xs">yPct:</label>
+                        <input
+                          type="number"
+                          step="0.0001"
+                          min="0"
+                          max="1"
+                          value={manualCoords?.yPct ?? percentages.yPct.toFixed(4)}
+                          onChange={(e) => handleManualCoordChange("yPct", e.target.value)}
+                          onBlur={() => {
+                            if (manualCoords) {
+                              handleApplyManualCoords();
+                            }
+                          }}
+                          className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 mb-1 text-xs">wPct:</label>
+                        <input
+                          type="number"
+                          step="0.0001"
+                          min="0"
+                          max="1"
+                          value={manualCoords?.wPct ?? percentages.wPct.toFixed(4)}
+                          onChange={(e) => handleManualCoordChange("wPct", e.target.value)}
+                          onBlur={() => {
+                            if (manualCoords) {
+                              handleApplyManualCoords();
+                            }
+                          }}
+                          className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 mb-1 text-xs">hPct:</label>
+                        <input
+                          type="number"
+                          step="0.0001"
+                          min="0"
+                          max="1"
+                          value={manualCoords?.hPct ?? percentages.hPct.toFixed(4)}
+                          onChange={(e) => handleManualCoordChange("hPct", e.target.value)}
+                          onBlur={() => {
+                            if (manualCoords) {
+                              handleApplyManualCoords();
+                            }
+                          }}
+                          className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        />
+                      </div>
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Edit values above to adjust the crop zone. Changes apply when you click outside the field or save.
+                    </p>
+                  </div>
                 )}
               </div>
+            )}
 
-              {/* Percentages Display / Edit */}
-              {percentages && (
-                <div className="mt-4 p-4 bg-slate-800 rounded-lg">
-                  <div className="text-sm font-medium mb-3">Crop Zone Percentages (0.0 to 1.0):</div>
-                  <div className="grid grid-cols-4 gap-4 text-sm">
-                    <div>
-                      <label className="block text-slate-400 mb-1 text-xs">xPct:</label>
-                      <input
-                        type="number"
-                        step="0.0001"
-                        min="0"
-                        max="1"
-                        value={manualCoords?.xPct ?? percentages.xPct.toFixed(4)}
-                        onChange={(e) => handleManualCoordChange("xPct", e.target.value)}
-                        onBlur={() => {
-                          if (manualCoords) {
-                            handleApplyManualCoords();
-                          }
-                        }}
-                        className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-slate-400 mb-1 text-xs">yPct:</label>
-                      <input
-                        type="number"
-                        step="0.0001"
-                        min="0"
-                        max="1"
-                        value={manualCoords?.yPct ?? percentages.yPct.toFixed(4)}
-                        onChange={(e) => handleManualCoordChange("yPct", e.target.value)}
-                        onBlur={() => {
-                          if (manualCoords) {
-                            handleApplyManualCoords();
-                          }
-                        }}
-                        className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-slate-400 mb-1 text-xs">wPct:</label>
-                      <input
-                        type="number"
-                        step="0.0001"
-                        min="0"
-                        max="1"
-                        value={manualCoords?.wPct ?? percentages.wPct.toFixed(4)}
-                        onChange={(e) => handleManualCoordChange("wPct", e.target.value)}
-                        onBlur={() => {
-                          if (manualCoords) {
-                            handleApplyManualCoords();
-                          }
-                        }}
-                        className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-slate-400 mb-1 text-xs">hPct:</label>
-                      <input
-                        type="number"
-                        step="0.0001"
-                        min="0"
-                        max="1"
-                        value={manualCoords?.hPct ?? percentages.hPct.toFixed(4)}
-                        onChange={(e) => handleManualCoordChange("hPct", e.target.value)}
-                        onBlur={() => {
-                          if (manualCoords) {
-                            handleApplyManualCoords();
-                          }
-                        }}
-                        className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-                      />
-                    </div>
-                  </div>
-                  <p className="mt-2 text-xs text-slate-500">
-                    Edit values above to adjust the crop zone. Changes apply when you click outside the field or save.
-                  </p>
-                </div>
+            {/* Messages */}
+            {error && (
+              <div className="p-4 bg-red-900/20 border border-red-700 rounded-lg text-red-200">
+                {error}
+              </div>
+            )}
+
+            {success && (
+              <div className="p-4 bg-green-900/20 border border-green-700 rounded-lg text-green-200">
+                {success}
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="flex gap-4 flex-wrap">
+              <button
+                onClick={handleSave}
+                disabled={
+                  isSaving || 
+                  !selectedFmKey || 
+                  !previewImage || 
+                  !cropZone || 
+                  !percentages ||
+                  coordsPage === null ||
+                  coordsPage !== selectedPage
+                }
+                className="px-6 py-3 bg-sky-600 hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+              >
+                {isSaving ? "Saving..." : "Save Template Zone"}
+              </button>
+              {cropZone && (
+                <button
+                  onClick={handleClearRectangle}
+                  className="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-medium transition-colors"
+                >
+                  Clear Rectangle
+                </button>
+              )}
+              {previewImage && selectedFmKey && calibratedCoordinates[selectedFmKey] && (
+                <button
+                  onClick={handleApplyCalibratedCoords}
+                  className="px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors"
+                  title={`Apply calibrated coordinates: x=${calibratedCoordinates[selectedFmKey].xPct}, y=${calibratedCoordinates[selectedFmKey].yPct}, w=${calibratedCoordinates[selectedFmKey].wPct}, h=${calibratedCoordinates[selectedFmKey].hPct}`}
+                >
+                  Apply Calibrated Coords
+                </button>
               )}
             </div>
-          )}
-
-          {/* Messages */}
-          {error && (
-            <div className="p-4 bg-red-900/20 border border-red-700 rounded-lg text-red-200">
-              {error}
-            </div>
-          )}
-
-          {success && (
-            <div className="p-4 bg-green-900/20 border border-green-700 rounded-lg text-green-200">
-              {success}
-            </div>
-          )}
-
-          {/* Actions */}
-          <div className="flex gap-4">
-            <button
-              onClick={handleSave}
-              disabled={
-                isSaving || 
-                !selectedFmKey || 
-                !previewImage || 
-                !cropZone || 
-                !percentages ||
-                coordsPage === null ||
-                coordsPage !== selectedPage
-              }
-              className="px-6 py-3 bg-sky-600 hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
-            >
-              {isSaving ? "Saving..." : "Save Template Zone"}
-            </button>
-            {cropZone && (
-              <button
-                onClick={handleClearRectangle}
-                className="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-medium transition-colors"
-              >
-                Clear Rectangle
-              </button>
-            )}
             {savedTemplate && (
-              <button
-                onClick={() => router.push("/onboarding/done")}
-                className="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-medium transition-colors"
-              >
-                Continue to Next Step →
-              </button>
+              <div className="p-4 bg-green-900/20 border border-green-700 rounded-lg text-green-200">
+                <p className="font-medium mb-1">Template Saved</p>
+                <p className="text-sm">
+                  Template for {savedTemplate.fmKey} is configured. You can edit it above or create templates for other FM profiles.
+                </p>
+              </div>
             )}
           </div>
-          {!savedTemplate && (
-            <div className="p-4 bg-yellow-900/20 border border-yellow-700 rounded-lg text-yellow-200">
-              <p className="font-medium mb-1">Required Step</p>
-              <p className="text-sm">
-                Before automation can run, you must set the Work Order Number crop zone for at least one FM template.
-                Please upload a PDF and select the crop zone above.
-              </p>
-            </div>
-          )}
         </div>
       </div>
-    </div>
+    </AppShell>
+  );
+}
+
+export default function TemplateZonesPage() {
+  return (
+    <Suspense fallback={
+      <AppShell>
+        <div className="min-h-screen bg-slate-900 text-slate-50 p-8">
+          <div className="max-w-6xl mx-auto">
+            <div className="text-slate-300">Loading...</div>
+          </div>
+        </div>
+      </AppShell>
+    }>
+      <TemplateZonesPageContent />
+    </Suspense>
   );
 }
 

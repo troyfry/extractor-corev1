@@ -1,8 +1,11 @@
-import { createSheetsClient, formatSheetRange } from "@/lib/google/sheets";
+import { createSheetsClient, formatSheetRange, getSheetHeadersCached, findRowIndexByColumnValue } from "@/lib/google/sheets";
+import { getColumnRange } from "@/lib/google/sheetsCache";
 
 export const SIGNED_NEEDS_REVIEW_SHEET_NAME = "Needs_Review_Signed" as const;
 
 export const SIGNED_NEEDS_REVIEW_COLUMNS = [
+  "review_id",
+  "created_at",
   "fmKey",
   "signed_pdf_url",
   "preview_image_url",
@@ -12,9 +15,19 @@ export const SIGNED_NEEDS_REVIEW_COLUMNS = [
   "manual_work_order_number",
   "resolved",
   "resolved_at",
+  "reason_note",
+  "file_hash",
+  "source",
+  "gmail_message_id",
+  "gmail_attachment_id",
+  "gmail_subject",
+  "gmail_from",
+  "gmail_date",
 ] as const;
 
 export type SignedNeedsReviewRecord = {
+  review_id?: string | null;
+  created_at?: string | null;
   fmKey: string | null;
   signed_pdf_url: string | null;
   preview_image_url: string | null;
@@ -24,6 +37,14 @@ export type SignedNeedsReviewRecord = {
   manual_work_order_number: string | null;
   resolved: string | null;
   resolved_at: string | null;
+  reason_note?: string | null;
+  file_hash?: string | null; // Hash of the PDF file for deduplication
+  source?: "UPLOAD" | "GMAIL" | null;
+  gmail_message_id?: string | null;
+  gmail_attachment_id?: string | null;
+  gmail_subject?: string | null;
+  gmail_from?: string | null;
+  gmail_date?: string | null;
 };
 
 /**
@@ -99,6 +120,8 @@ export async function appendSignedNeedsReviewRow(
   const rowData = new Array(headers.length).fill("");
 
   const toMap: Record<string, string | null> = {
+    review_id: record.review_id || null,
+    created_at: record.created_at || null,
     fmKey: record.fmKey,
     signed_pdf_url: record.signed_pdf_url,
     preview_image_url: record.preview_image_url,
@@ -108,6 +131,14 @@ export async function appendSignedNeedsReviewRow(
     manual_work_order_number: record.manual_work_order_number,
     resolved: record.resolved,
     resolved_at: record.resolved_at,
+    reason_note: record.reason_note || null,
+    file_hash: record.file_hash || null,
+    source: record.source || null,
+    gmail_message_id: record.gmail_message_id || null,
+    gmail_attachment_id: record.gmail_attachment_id || null,
+    gmail_subject: record.gmail_subject || null,
+    gmail_from: record.gmail_from || null,
+    gmail_date: record.gmail_date || null,
   };
 
   for (const [key, value] of Object.entries(toMap)) {
@@ -129,7 +160,7 @@ export async function appendSignedNeedsReviewRow(
 
   await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range: formatSheetRange(sheetName, "A:Z"),
+    range: formatSheetRange(sheetName, getColumnRange(SIGNED_NEEDS_REVIEW_COLUMNS.length)),
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
@@ -138,5 +169,156 @@ export async function appendSignedNeedsReviewRow(
   });
 
   console.log("[Sheets] Appended Needs_Review_Signed row");
+}
+
+/**
+ * Find a Needs_Review_Signed row by review_id using column-only reads.
+ */
+export async function findSignedNeedsReviewRowById(
+  accessToken: string,
+  spreadsheetId: string,
+  reviewId: string
+): Promise<{ rowIndex: number; rowData: string[] } | null> {
+  const sheets = createSheetsClient(accessToken);
+  const sheetName = SIGNED_NEEDS_REVIEW_SHEET_NAME;
+
+  // Get headers to find review_id column
+  const headerMeta = await getSheetHeadersCached(accessToken, spreadsheetId, sheetName);
+  const reviewIdLetter = headerMeta.colLetterByLower["review_id"];
+  
+  if (!reviewIdLetter) {
+    console.warn("[Signed Sheets] review_id column not found");
+    return null;
+  }
+
+  // Find row index by reading only the review_id column
+  const rowIndex = await findRowIndexByColumnValue(
+    accessToken,
+    spreadsheetId,
+    sheetName,
+    reviewIdLetter,
+    reviewId
+  );
+
+  if (rowIndex === -1) {
+    return null;
+  }
+
+  // Read the specific row
+  const rowResponse = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, `${rowIndex}:${rowIndex}`),
+  });
+
+  const rowData = (rowResponse.data.values?.[0] || []) as string[];
+  return { rowIndex, rowData };
+}
+
+/**
+ * Mark a Needs_Review_Signed row as resolved.
+ */
+export async function markSignedNeedsReviewResolved(
+  accessToken: string,
+  spreadsheetId: string,
+  reviewId: string,
+  woNumber: string,
+  reasonNote?: string
+): Promise<void> {
+  const sheets = createSheetsClient(accessToken);
+  const sheetName = SIGNED_NEEDS_REVIEW_SHEET_NAME;
+
+  // Find the row
+  const found = await findSignedNeedsReviewRowById(accessToken, spreadsheetId, reviewId);
+  if (!found) {
+    throw new Error(`Review row not found: ${reviewId}`);
+  }
+
+  // Get headers to map fields
+  const headerResponse = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, "1:1"),
+  });
+
+  const headers = (headerResponse.data.values?.[0] || []) as string[];
+  const headersLower = headers.map((h) => (h || "").toLowerCase().trim());
+
+  // Update row data
+  const rowData = [...found.rowData];
+  const nowIso = new Date().toISOString();
+
+  const resolvedIdx = headersLower.indexOf("resolved");
+  const resolvedAtIdx = headersLower.indexOf("resolved_at");
+  const manualWoIdx = headersLower.indexOf("manual_work_order_number");
+  const reasonNoteIdx = headersLower.indexOf("reason_note");
+
+  if (resolvedIdx >= 0) rowData[resolvedIdx] = "TRUE";
+  if (resolvedAtIdx >= 0) rowData[resolvedAtIdx] = nowIso;
+  if (manualWoIdx >= 0) rowData[manualWoIdx] = woNumber;
+  if (reasonNoteIdx >= 0 && reasonNote) rowData[reasonNoteIdx] = reasonNote;
+
+  // Update the row
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, `${found.rowIndex}:${found.rowIndex}`),
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [rowData],
+    },
+  });
+
+  console.log(`[Signed Sheets] Marked review ${reviewId} as resolved`);
+}
+
+/**
+ * Update a Needs_Review_Signed row with manual WO number but keep resolved FALSE.
+ */
+export async function updateSignedNeedsReviewUnresolved(
+  accessToken: string,
+  spreadsheetId: string,
+  reviewId: string,
+  woNumber: string,
+  reason: string,
+  reasonNote?: string
+): Promise<void> {
+  const sheets = createSheetsClient(accessToken);
+  const sheetName = SIGNED_NEEDS_REVIEW_SHEET_NAME;
+
+  // Find the row
+  const found = await findSignedNeedsReviewRowById(accessToken, spreadsheetId, reviewId);
+  if (!found) {
+    throw new Error(`Review row not found: ${reviewId}`);
+  }
+
+  // Get headers to map fields
+  const headerResponse = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, "1:1"),
+  });
+
+  const headers = (headerResponse.data.values?.[0] || []) as string[];
+  const headersLower = headers.map((h) => (h || "").toLowerCase().trim());
+
+  // Update row data
+  const rowData = [...found.rowData];
+
+  const manualWoIdx = headersLower.indexOf("manual_work_order_number");
+  const reasonIdx = headersLower.indexOf("reason");
+  const reasonNoteIdx = headersLower.indexOf("reason_note");
+
+  if (manualWoIdx >= 0) rowData[manualWoIdx] = woNumber;
+  if (reasonIdx >= 0) rowData[reasonIdx] = reason;
+  if (reasonNoteIdx >= 0 && reasonNote) rowData[reasonNoteIdx] = reasonNote;
+
+  // Update the row
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, `${found.rowIndex}:${found.rowIndex}`),
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [rowData],
+    },
+  });
+
+  console.log(`[Signed Sheets] Updated review ${reviewId} with manual WO but kept unresolved`);
 }
 

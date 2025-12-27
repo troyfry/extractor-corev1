@@ -9,7 +9,7 @@ import { NextResponse } from "next/server";
 import { completeOnboarding } from "@/lib/onboarding/status";
 import { resetApiCallCount, getApiCallCount } from "@/lib/onboarding/usersSheet";
 import { cookies } from "next/headers";
-import { auth } from "@/auth";
+// import { auth } from "@/auth"; // Unused
 
 export const runtime = "nodejs";
 

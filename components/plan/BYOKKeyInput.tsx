@@ -85,7 +85,7 @@ export default function BYOKKeyInput({ onKeySet }: BYOKKeyInputProps) {
           <h3 className="text-sm font-semibold text-blue-300">OpenAI API Key Required</h3>
         </div>
         <p className="text-xs text-blue-200">
-          You're using the Free (BYOK) plan. Please enter your OpenAI API key to process work orders.
+          You&apos;re using the Free (BYOK) plan. Please enter your OpenAI API key to process work orders.
         </p>
         <div className="flex gap-2">
           <input

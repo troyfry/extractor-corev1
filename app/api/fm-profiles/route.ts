@@ -46,7 +46,7 @@ export async function GET(request: Request) {
       // Then check session/JWT token
       const { auth } = await import("@/auth");
       const session = await auth();
-      const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+      const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
       spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
     }
     
@@ -65,15 +65,17 @@ export async function GET(request: Request) {
 
     console.log(`[FM Profiles GET] Returning ${profiles.length} profile(s)`);
     return NextResponse.json({ profiles });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("[FM Profiles GET] Error:", error);
     
     // Check for authentication errors
-    if (error?.message?.includes("authentication") || 
-        error?.message?.includes("Invalid Credentials") ||
-        error?.message?.includes("unauthorized") ||
-        error?.code === 401 ||
-        error?.code === 403) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorCode = (error as { code?: number })?.code;
+    if (errorMessage.includes("authentication") || 
+        errorMessage.includes("Invalid Credentials") ||
+        errorMessage.includes("unauthorized") ||
+        errorCode === 401 ||
+        errorCode === 403) {
       return NextResponse.json(
         { error: "Google authentication expired or invalid. Please sign out and sign in again to refresh your access token." },
         { status: 401 }
@@ -124,7 +126,7 @@ export async function POST(request: Request) {
       // Then check session/JWT token
       const { auth } = await import("@/auth");
       const session = await auth();
-      const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+      const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
       spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
     }
     
@@ -227,7 +229,7 @@ export async function DELETE(request: Request) {
       // Then check session/JWT token
       const { auth } = await import("@/auth");
       const session = await auth();
-      const sessionSpreadsheetId = session ? (session as any).googleSheetsSpreadsheetId : null;
+      const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
       spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
     }
     

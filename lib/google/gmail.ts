@@ -51,6 +51,59 @@ export async function getWorkOrderLabelId(accessToken: string): Promise<string |
 }
 
 /**
+ * Get Gmail label ID by label name (case-insensitive).
+ * 
+ * @param accessToken Google OAuth access token
+ * @param labelName Label name to search for
+ * @returns Label ID if found, null otherwise
+ */
+export async function getLabelIdByName(
+  accessToken: string,
+  labelName: string
+): Promise<string | null> {
+  try {
+    const gmail = createGmailClient(accessToken);
+    const res = await gmail.users.labels.list({ userId: "me" });
+    const labels = res.data.labels ?? [];
+
+    console.log(`[Gmail] Searching for label: "${labelName}"`);
+    console.log(`[Gmail] Total labels available: ${labels.length}`);
+    
+    // Find label by name (case-insensitive)
+    const label = labels.find(
+      (lbl) => lbl.name?.toLowerCase() === labelName.toLowerCase()
+    );
+
+    if (label) {
+      console.log(`[Gmail] ✓ Found label "${labelName}" with ID: ${label.id}`);
+      console.log(`[Gmail] Label details: name="${label.name}", id="${label.id}", type="${label.type}"`);
+      return label.id ?? null;
+    } else {
+      // Show all user-created labels (not system labels) for debugging
+      const userLabels = labels
+        .filter(l => l.type === "user")
+        .map(l => l.name)
+        .filter(Boolean);
+      console.warn(`[Gmail] ✗ Label "${labelName}" not found.`);
+      console.warn(`[Gmail] User-created labels (first 20):`, userLabels.slice(0, 20).join(", "));
+      
+      // Also check for close matches
+      const closeMatches = labels.filter(l => 
+        l.name && l.name.toLowerCase().includes(labelName.toLowerCase())
+      );
+      if (closeMatches.length > 0) {
+        console.warn(`[Gmail] Close matches found:`, closeMatches.map(l => `"${l.name}"`).join(", "));
+      }
+      
+      return null;
+    }
+  } catch (error) {
+    console.error("[Gmail] Error fetching Gmail labels:", error);
+    return null;
+  }
+}
+
+/**
  * Remove the work orders label from a Gmail message.
  * 
  * @param accessToken Google OAuth access token
@@ -113,83 +166,75 @@ export type ListWorkOrderEmailsResult = {
  * List recent emails with PDF attachments (likely work orders).
  * 
  * @param accessToken Google OAuth access token
- * @param label Optional Gmail label to filter by (e.g., "Work Orders", "INBOX", or label ID)
+ * @param labelName Optional Gmail label name to filter by (e.g., "Work Orders", "signed WO", "Signed/WO")
+ * @param labelId Optional pre-resolved label ID (if provided, labelName is ignored for lookup)
  * @param pageToken Optional page token for pagination
- * @param maxResults Maximum number of results per page (default: 20)
+ * @param maxResults Maximum number of results per page (default: 50)
  * @returns Array of email metadata with PDF attachment counts and next page token
+ * 
+ * Note: Only returns emails that have PDF attachments. Labels are matched case-insensitively.
  */
 export async function listWorkOrderEmails(
   accessToken: string,
-  label?: string,
+  labelName?: string,
+  labelId?: string | null,
   pageToken?: string,
-  maxResults: number = 20
+  maxResults: number = 50
 ): Promise<ListWorkOrderEmailsResult> {
   const gmail = createGmailClient(accessToken);
 
-  // Build search query
-  // Gmail search syntax:
-  // - has:attachment - finds emails with any attachment
-  // - in:INBOX - search in inbox only (default)
-  // - -in:SENT - exclude sent mailbox
-  // - label:"name" - search by label name
-  let query = "has:attachment";
-  let labelIds: string[] | undefined = undefined;
+  // IMPORTANT FILTERING RULES:
+  // - ✅ Filter by: label (labelToUse) and PDF attachments
+  // - ❌ Does NOT filter by subject line - emails with any subject are included
+  // - ❌ Does NOT filter by sender/from address - emails from anyone are included
+  // - ❌ Does NOT filter by recipient - emails to anyone are included
+  // Only the label and PDF attachment requirement matter.
   
-  // Always exclude SENT mailbox
-  query += " -in:SENT";
-  
-  // Add label filter if provided
-  // Labels can be specified as:
-  // - Label name (e.g., "Work Orders") - use Gmail search syntax: label:"Work Orders"
-  // - Special labels like "INBOX", "DRAFT", etc. - use: in:INBOX
-  // - Label ID (e.g., "Label_1234567890") - use labelIds parameter
-  // If no label provided, default to INBOX
-  if (label && label.trim()) {
-    const trimmedLabel = label.trim();
-    
-    // Special Gmail labels (INBOX, DRAFT, etc.) - SENT is excluded above
-    const specialLabels = ["INBOX", "DRAFT", "SPAM", "TRASH", "UNREAD", "STARRED"];
-    const upperLabel = trimmedLabel.toUpperCase();
-    
-    if (specialLabels.includes(upperLabel)) {
-      query += ` in:${upperLabel}`;
-    } else if (trimmedLabel.startsWith("Label_")) {
-      // Label ID - use labelIds parameter
-      labelIds = [trimmedLabel];
-    } else {
-      // Regular label name - use label:"name" syntax
-      query += ` label:"${trimmedLabel}"`;
-    }
-  } else {
-    // Default to INBOX if no label provided
-    query += " in:INBOX";
-  }
+  const baseQ = "has:attachment filename:pdf";
 
-  const res = await gmail.users.messages.list({
+  // If labelId exists, DON'T put label name in the query at all.
+  // If labelId doesn't exist but labelName does, quote it.
+  const q = labelId
+    ? baseQ
+    : labelName
+      ? `label:"${labelName.replace(/"/g, '\\"')}" ${baseQ}`
+      : baseQ;
+
+  // Step 4: Debug logging
+  console.log(`[Gmail List] Debug info:`);
+  console.log(`[Gmail List]   - labelName: "${labelName || 'none'}"`);
+  console.log(`[Gmail List]   - labelId: ${labelId || 'none'}`);
+  console.log(`[Gmail List]   - query: "${q}"`);
+  console.log(`[Gmail List]   - labelIds: ${labelId ? labelId : 'none'}`);
+
+  const listRes = await gmail.users.messages.list({
     userId: "me",
+    q,
+    labelIds: labelId ? [labelId] : undefined,
+    pageToken,
     maxResults,
-    q: query,
-    ...(labelIds ? { labelIds } : {}),
-    ...(pageToken ? { pageToken } : {}),
+    includeSpamTrash: false,
   });
 
-  const messages = res.data.messages ?? [];
+  const messageIds = (listRes.data.messages || []).map((m: any) => m.id).filter(Boolean);
+  console.log(`[Gmail List] Found ${messageIds.length} message IDs from Gmail API`);
 
-  if (messages.length === 0) {
+  if (messageIds.length === 0) {
+    console.log(`[Gmail List] No messages found in label "${labelName || 'none'}"`);
     return {
       emails: [],
-      nextPageToken: res.data.nextPageToken || null,
+      nextPageToken: listRes.data.nextPageToken || null,
     };
   }
 
   // Fetch detailed metadata for each message
   // Use "full" format to get complete message structure for PDF detection
   const detailed = await Promise.all(
-    messages.map(async (msg) => {
+    messageIds.map(async (messageId: string) => {
       try {
         const full = await gmail.users.messages.get({
           userId: "me",
-          id: msg.id!,
+          id: messageId,
           format: "full", // Use "full" to get complete payload structure
         });
 
@@ -208,10 +253,24 @@ export async function listWorkOrderEmails(
         let attachmentCount = 0;
         
         /**
+         * Gmail message part structure
+         */
+        type GmailMessagePart = {
+          mimeType?: string;
+          filename?: string;
+          body?: {
+            attachmentId?: string;
+            data?: string;
+            size?: number;
+          };
+          parts?: GmailMessagePart[];
+        };
+
+        /**
          * Recursively traverse message parts to find PDF attachments.
          * Gmail messages can have nested multipart structures.
          */
-        function countPdfParts(parts: any[]): void {
+        function countPdfParts(parts: GmailMessagePart[]): void {
           if (!parts || !Array.isArray(parts)) return;
           
           parts.forEach((p) => {
@@ -221,13 +280,13 @@ export async function listWorkOrderEmails(
             const filename = (p.filename ?? "").toLowerCase();
             const body = p.body ?? {};
             
-            // Check if this part is a PDF
+            // Step 3: Check if this part is a PDF - ONLY count PDFs
+            // filename ends with .pdf OR mimeType === "application/pdf"
             const isPdf = 
-              mimeType === "application/pdf" ||
-              mimeType.includes("pdf") ||
-              filename.endsWith(".pdf");
+              filename.endsWith(".pdf") ||
+              mimeType === "application/pdf";
             
-            // PDF attachments have an attachmentId in the body
+            // PDF attachments have an attachmentId in the body (only count actual attachments)
             if (isPdf && body.attachmentId) {
               attachmentCount += 1;
             }
@@ -239,27 +298,28 @@ export async function listWorkOrderEmails(
           });
         }
 
-        // Start traversal from root payload
+        // Step 3: Start traversal from root payload
         if (payload) {
           // If payload itself is a PDF (rare but possible)
           const rootMimeType = (payload.mimeType ?? "").toLowerCase();
           const rootFilename = (payload.filename ?? "").toLowerCase();
+          // Step 3: Only count if it's a PDF AND has attachmentId
           if (
-            (rootMimeType === "application/pdf" || rootMimeType.includes("pdf") || rootFilename.endsWith(".pdf")) &&
+            (rootMimeType === "application/pdf" || rootFilename.endsWith(".pdf")) &&
             payload.body?.attachmentId
           ) {
             attachmentCount += 1;
           }
           
-          // Traverse parts
+          // Traverse parts recursively (critical for nested structures)
           if (payload.parts && Array.isArray(payload.parts)) {
             countPdfParts(payload.parts);
           }
         }
 
         return {
-          id: msg.id!,
-          threadId: msg.threadId ?? null,
+          id: messageId,
+          threadId: full.data.threadId ?? null,
           from,
           subject,
           date,
@@ -267,11 +327,11 @@ export async function listWorkOrderEmails(
           attachmentCount,
         };
       } catch (error) {
-        console.error(`Error fetching message ${msg.id}:`, error);
+        console.error(`Error fetching message ${messageId}:`, error);
         // Return minimal info if we can't fetch the full message
         return {
-          id: msg.id!,
-          threadId: msg.threadId ?? null,
+          id: messageId,
+          threadId: null,
           from: "",
           subject: "",
           date: "",
@@ -282,12 +342,20 @@ export async function listWorkOrderEmails(
     })
   );
 
-  // Filter out emails with 0 PDF attachments (but still return the list for debugging)
-  // Return all emails, let the UI show which ones have PDFs
-
+  // Step 3: Filter to only return emails with PDF attachments
+  const emailsWithPdfs = detailed.filter(e => e.attachmentCount > 0);
+  const totalPdfAttachments = detailed.reduce((sum, e) => sum + e.attachmentCount, 0);
+  
+  // Step 4: Debug logging
+  console.log(`[Gmail List] Summary for label "${labelName || 'INBOX'}":`);
+  console.log(`[Gmail List]   - Total messages fetched: ${detailed.length}`);
+  console.log(`[Gmail List]   - Emails with PDF attachments: ${emailsWithPdfs.length}`);
+  console.log(`[Gmail List]   - Total PDF attachments: ${totalPdfAttachments}`);
+  
+  // Step 3: Only return emails that have PDF attachments
   return {
-    emails: detailed,
-    nextPageToken: res.data.nextPageToken || null,
+    emails: emailsWithPdfs, // Changed: only return emails with PDFs
+    nextPageToken: listRes.data.nextPageToken || null,
   };
 }
 
@@ -340,9 +408,23 @@ export async function getEmailWithPdfAttachments(
   const pdfAttachments: PdfAttachment[] = [];
 
   /**
+   * Gmail message part structure
+   */
+  type GmailMessagePart = {
+    mimeType?: string;
+    filename?: string;
+    body?: {
+      attachmentId?: string;
+      data?: string;
+      size?: number;
+    };
+    parts?: GmailMessagePart[];
+  };
+
+  /**
    * Recursively collect PDF attachments from message parts.
    */
-  async function collectParts(parts: any[]): Promise<void> {
+  async function collectParts(parts: GmailMessagePart[]): Promise<void> {
     for (const part of parts) {
       const mimeType = part.mimeType ?? "";
       const filename = part.filename ?? "";

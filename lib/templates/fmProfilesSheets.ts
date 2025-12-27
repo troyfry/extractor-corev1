@@ -7,6 +7,8 @@
 
 import { createSheetsClient } from "@/lib/google/sheets";
 import type { FmProfile } from "./fmProfiles";
+import { getErrorMessage } from "@/lib/utils/error";
+import { getColumnRange } from "@/lib/google/sheetsCache";
 
 /**
  * Required columns for FM Profile storage in Google Sheets.
@@ -138,7 +140,7 @@ export async function upsertFmProfile(params: {
     // Get all data to find existing row by fmKey
     const allDataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: formatSheetRange(sheetName, "A:Z"),
+      range: formatSheetRange(sheetName, getColumnRange(FM_PROFILE_COLUMNS.length)),
     });
 
     const rows = allDataResponse.data.values || [];
@@ -199,23 +201,24 @@ export async function getAllFmProfiles(params: {
     // If this fails due to auth issues, we'll catch it below
     try {
       await ensureFmProfileSheet(spreadsheetId, accessToken);
-    } catch (ensureError: any) {
+    } catch (ensureError: unknown) {
       // If sheet doesn't exist and we can't create it, try to read anyway (maybe it exists)
       // But if it's an auth error, re-throw it
-      if (ensureError?.message?.includes("Invalid Credentials") || 
-          ensureError?.message?.includes("unauthorized") ||
-          ensureError?.message?.includes("authentication")) {
-        console.error(`[FM Profiles] Authentication error ensuring sheet:`, ensureError.message);
+      const errorMessage = getErrorMessage(ensureError);
+      if (errorMessage.includes("Invalid Credentials") || 
+          errorMessage.includes("unauthorized") ||
+          errorMessage.includes("authentication")) {
+        console.error(`[FM Profiles] Authentication error ensuring sheet:`, errorMessage);
         throw ensureError;
       }
       // For other errors (like sheet not found), try to read anyway
-      console.warn(`[FM Profiles] Could not ensure sheet exists, trying to read anyway:`, ensureError.message);
+      console.warn(`[FM Profiles] Could not ensure sheet exists, trying to read anyway:`, errorMessage);
     }
 
     // Get all data
     const allDataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: formatSheetRange(sheetName, "A:Z"),
+      range: formatSheetRange(sheetName, getColumnRange(FM_PROFILE_COLUMNS.length)),
     });
 
     const rows = allDataResponse.data.values || [];
@@ -242,15 +245,17 @@ export async function getAllFmProfiles(params: {
 
     console.log(`[FM Profiles] Loaded ${profiles.length} profile(s) from "${sheetName}" sheet`);
     return profiles;
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error(`[FM Profiles] Error getting profiles:`, error);
     
     // Check if it's an authentication/authorization error
-    if (error?.message?.includes("Invalid Credentials") || 
-        error?.message?.includes("unauthorized") ||
-        error?.message?.includes("authentication") ||
-        error?.code === 401 ||
-        error?.code === 403) {
+    const errorMessage = getErrorMessage(error);
+    const errorCode = (error as { code?: number })?.code;
+    if (errorMessage.includes("Invalid Credentials") || 
+        errorMessage.includes("unauthorized") ||
+        errorMessage.includes("authentication") ||
+        errorCode === 401 ||
+        errorCode === 403) {
       throw new Error("Google authentication expired or invalid. Please sign out and sign in again.");
     }
     
@@ -275,7 +280,7 @@ export async function deleteFmProfile(params: {
     // Get all data to find row by fmKey
     const allDataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: formatSheetRange(sheetName, "A:Z"),
+      range: formatSheetRange(sheetName, getColumnRange(FM_PROFILE_COLUMNS.length)),
     });
 
     const rows = allDataResponse.data.values || [];
@@ -365,7 +370,7 @@ async function appendFmProfileRow(
   // Append row
   await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range: formatSheetRange(sheetName, "A:Z"),
+    range: formatSheetRange(sheetName, getColumnRange(FM_PROFILE_COLUMNS.length)),
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
