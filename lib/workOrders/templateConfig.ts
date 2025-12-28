@@ -83,6 +83,11 @@ export async function getTemplateConfigForFmKey(
   // Use normalizeFmKey for consistent normalization (handles spaces, special chars, etc.)
   const normalizedFmKey = normalizeFmKey(fmKey);
 
+  console.log(`[Template Config] Looking up template:`, {
+    rawFmKey: fmKey,
+    normalizedFmKey,
+  });
+
   try {
     // Get current user
     const user = await getCurrentUser();
@@ -114,7 +119,7 @@ export async function getTemplateConfigForFmKey(
       return cached;
     }
 
-    // Get template from Templates sheet
+    // Get template from Templates sheet (getTemplateByFmKey normalizes fmKey internally)
     const template = await getTemplateByFmKey(
       user.googleAccessToken,
       spreadsheetId,
@@ -131,12 +136,18 @@ export async function getTemplateConfigForFmKey(
           spreadsheetId,
           user.userId
         );
-        console.log(`[Template Config] Template lookup failed for fmKey="${normalizedFmKey}"`, {
+        console.log(`[Template Config] Template row NOT FOUND for normalizedFmKey="${normalizedFmKey}"`, {
           searchedFmKey: normalizedFmKey,
+          rawFmKey: fmKey,
           userId: user.userId,
           spreadsheetId: spreadsheetId.substring(0, 10) + "...",
           foundTemplates: allTemplates.length,
-          availableFmKeys: allTemplates.map(t => t.fmKey),
+          availableFmKeys: allTemplates.map(t => ({ 
+            raw: t.fmKey, 
+            normalized: normalizeFmKey(t.fmKey),
+            hasPoints: !!(t.xPt && t.yPt && t.wPt && t.hPt && t.pageWidthPt && t.pageHeightPt),
+            coordSystem: t.coordSystem,
+          })),
         });
       } catch (listError) {
         console.error(`[Template Config] Error listing templates for debug:`, listError);
@@ -145,6 +156,21 @@ export async function getTemplateConfigForFmKey(
       // No row found for fmKey - throw TEMPLATE_NOT_CONFIGURED
       throw new Error("TEMPLATE_NOT_CONFIGURED");
     }
+
+    console.log(`[Template Config] Template row FOUND for normalizedFmKey="${normalizedFmKey}"`, {
+      templateId: template.templateId,
+      page: template.page,
+      coordSystem: template.coordSystem,
+      hasPoints: !!(template.xPt && template.yPt && template.wPt && template.hPt && template.pageWidthPt && template.pageHeightPt),
+      points: template.xPt !== undefined ? {
+        xPt: template.xPt,
+        yPt: template.yPt,
+        wPt: template.wPt,
+        hPt: template.hPt,
+        pageWidthPt: template.pageWidthPt,
+        pageHeightPt: template.pageHeightPt,
+      } : null,
+    });
 
     // Normalize coordSystem: "PDF_POINTS" from sheet -> "PDF_POINTS_TOP_LEFT" internally
     const normalizedCoordSystem = template.coordSystem === "PDF_POINTS" 
@@ -161,6 +187,7 @@ export async function getTemplateConfigForFmKey(
 
     if (normalizedCoordSystem === "PDF_POINTS_TOP_LEFT") {
       // Strict validation: if coordSystem says PDF_POINTS, all pt fields must exist and be > 0
+      // DO NOT block if row exists - only block if points are missing/invalid
       const hasAllPtFields = 
         template.xPt !== undefined && template.xPt !== null && template.xPt > 0 &&
         template.yPt !== undefined && template.yPt !== null && template.yPt > 0 &&
@@ -170,14 +197,17 @@ export async function getTemplateConfigForFmKey(
         template.pageHeightPt !== undefined && template.pageHeightPt !== null && template.pageHeightPt > 0;
 
       if (!hasAllPtFields) {
-        console.error(`[Template Config] Template has coordSystem="PDF_POINTS" but missing or invalid pt fields:`, {
-          fmKey: normalizedFmKey,
+        console.error(`[Template Config] Template row EXISTS but missing or invalid PDF points fields:`, {
+          normalizedFmKey,
+          templateId: template.templateId,
+          coordSystem: template.coordSystem,
           xPt: template.xPt,
           yPt: template.yPt,
           wPt: template.wPt,
           hPt: template.hPt,
           pageWidthPt: template.pageWidthPt,
           pageHeightPt: template.pageHeightPt,
+          note: "Row exists but points are missing/invalid - template not configured for PDF_POINTS mode",
         });
         throw new Error("TEMPLATE_NOT_CONFIGURED");
       }
@@ -197,13 +227,22 @@ export async function getTemplateConfigForFmKey(
       };
       usePoints = true;
     } else {
-      // Legacy fallback: use percentages
+      // Legacy fallback: use percentages ONLY if points are missing (transition period)
+      // After this refactor, if points missing treat as not configured
+      console.log(`[Template Config] Template row exists but missing PDF points - using legacy pct fallback:`, {
+        normalizedFmKey,
+        templateId: template.templateId,
+        hasPoints: false,
+        hasPct: !!(template.xPct !== undefined && template.yPct !== undefined && 
+                   template.wPct !== undefined && template.hPct !== undefined),
+      });
+      
       // Validate template is not default (0/0/1/1)
       const TOLERANCE = 0.01;
-      const isDefault = Math.abs(template.xPct) < TOLERANCE &&
-                        Math.abs(template.yPct) < TOLERANCE &&
-                        Math.abs(template.wPct - 1) < TOLERANCE &&
-                        Math.abs(template.hPct - 1) < TOLERANCE;
+      const isDefault = Math.abs(template.xPct || 0) < TOLERANCE &&
+                        Math.abs(template.yPct || 0) < TOLERANCE &&
+                        Math.abs((template.wPct || 0) - 1) < TOLERANCE &&
+                        Math.abs((template.hPct || 0) - 1) < TOLERANCE;
 
       if (isDefault) {
         throw new Error("TEMPLATE_NOT_CONFIGURED");
@@ -212,6 +251,7 @@ export async function getTemplateConfigForFmKey(
       // Validate percentages exist
       if (template.xPct === undefined || template.yPct === undefined || 
           template.wPct === undefined || template.hPct === undefined) {
+        // Points missing AND pct missing = not configured
         throw new Error("TEMPLATE_NOT_CONFIGURED");
       }
 

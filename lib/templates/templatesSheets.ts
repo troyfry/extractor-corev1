@@ -222,6 +222,83 @@ export async function listTemplatesForUser(
  * Get template by fmKey for a user.
  */
 /**
+ * Helper function to get rowData for logging (used in save route).
+ * This simulates what will be written to Sheets without actually writing.
+ */
+export async function getTemplateRowDataForLogging(
+  accessToken: string,
+  spreadsheetId: string,
+  template: {
+    userId: string;
+    fmKey: string;
+    templateId: string;
+    page: number;
+    xPct: string | number;
+    yPct: string | number;
+    wPct: string | number;
+    hPct: string | number;
+    dpi?: number;
+    coordSystem: string;
+    pageWidthPt: number;
+    pageHeightPt: number;
+    xPt: number;
+    yPt: number;
+    wPt: number;
+    hPt: number;
+    updated_at?: string;
+  }
+): Promise<{ rowData: string[]; columnMapping: Record<string, { index: number; value: string }> }> {
+  const sheets = createSheetsClient(accessToken);
+  const sheetName = "Templates";
+  
+  // Get headers to determine column order
+  const headerResponse = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, "1:1"),
+  });
+
+  const headers = (headerResponse.data.values?.[0] || []) as string[];
+  const headersLower = headers.map((h) => h.toLowerCase().trim());
+
+  // Build row data in the correct column order
+  const rowData: string[] = new Array(headers.length).fill("");
+
+  // Map template fields to columns
+  // POINTS-ONLY: xPct/yPct/wPct/hPct may be empty strings
+  const templateData: Record<string, string> = {
+    userId: template.userId,
+    fmKey: template.fmKey,
+    templateId: template.templateId,
+    page: String(template.page),
+    xPct: template.xPct === "" ? "" : String(template.xPct),
+    yPct: template.yPct === "" ? "" : String(template.yPct),
+    wPct: template.wPct === "" ? "" : String(template.wPct),
+    hPct: template.hPct === "" ? "" : String(template.hPct),
+    dpi: template.dpi !== undefined ? String(template.dpi) : "",
+    coordSystem: template.coordSystem || "",
+    pageWidthPt: template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "",
+    pageHeightPt: template.pageHeightPt !== undefined ? String(template.pageHeightPt) : "",
+    xPt: template.xPt !== undefined ? String(template.xPt) : "",
+    yPt: template.yPt !== undefined ? String(template.yPt) : "",
+    wPt: template.wPt !== undefined ? String(template.wPt) : "",
+    hPt: template.hPt !== undefined ? String(template.hPt) : "",
+    updated_at: template.updated_at || new Date().toISOString(),
+  };
+
+  const columnMapping: Record<string, { index: number; value: string }> = {};
+
+  for (const col of TEMPLATE_COLUMNS) {
+    const index = headersLower.indexOf(col.toLowerCase());
+    if (index !== -1 && templateData[col] !== undefined) {
+      rowData[index] = templateData[col];
+      columnMapping[col] = { index, value: templateData[col] };
+    }
+  }
+
+  return { rowData, columnMapping };
+}
+
+/**
  * Get template by fmKey for a spreadsheet (shared across users).
  * Templates are scoped to spreadsheetId + fmKey, not userId.
  */
@@ -262,10 +339,10 @@ export async function upsertTemplate(
     fmKey: string;
     templateId?: string; // Optional, defaults to fmKey
     page: number;
-    xPct: number;
-    yPct: number;
-    wPct: number;
-    hPct: number;
+    xPct: string | number; // POINTS-ONLY: can be "" (empty string) to avoid fallback
+    yPct: string | number;
+    wPct: string | number;
+    hPct: string | number;
     dpi?: number;
     // New PDF points fields (optional)
     coordSystem?: string;
@@ -297,8 +374,10 @@ export async function upsertTemplate(
     const rows = allDataResponse.data.values || [];
     if (rows.length === 0) {
       // No data, just append
+      // Always save normalized fmKey to ensure consistency
       await appendTemplateRow(sheets, spreadsheetId, sheetName, {
         ...template,
+        fmKey: normalizedFmKey, // Ensure normalized fmKey is saved
         templateId,
         updated_at: new Date().toISOString(),
       });
@@ -319,8 +398,10 @@ export async function upsertTemplate(
 
     if (fmKeyColIndex === -1) {
       // Required column not found, just append
+      // Always save normalized fmKey to ensure consistency
       await appendTemplateRow(sheets, spreadsheetId, sheetName, {
         ...template,
+        fmKey: normalizedFmKey, // Ensure normalized fmKey is saved
         templateId,
         updated_at: new Date().toISOString(),
       });
@@ -366,15 +447,19 @@ export async function upsertTemplate(
 
     if (existingRowIndex === -1) {
       // Row doesn't exist, append it
+      // Always save normalized fmKey to ensure consistency
       await appendTemplateRow(sheets, spreadsheetId, sheetName, {
         ...template,
+        fmKey: normalizedFmKey, // Ensure normalized fmKey is saved
         templateId,
         updated_at: new Date().toISOString(),
       });
     } else {
       // Row exists, update it
+      // Always save normalized fmKey to ensure consistency
       await updateTemplateRow(sheets, spreadsheetId, sheetName, existingRowIndex, {
         ...template,
+        fmKey: normalizedFmKey, // Ensure normalized fmKey is saved
         templateId,
         updated_at: new Date().toISOString(),
       });
@@ -412,10 +497,10 @@ async function appendTemplateRow(
     fmKey: template.fmKey,
     templateId: template.templateId,
     page: String(template.page),
-    xPct: String(template.xPct),
-    yPct: String(template.yPct),
-    wPct: String(template.wPct),
-    hPct: String(template.hPct),
+    xPct: template.xPct === "" ? "" : String(template.xPct),
+    yPct: template.yPct === "" ? "" : String(template.yPct),
+    wPct: template.wPct === "" ? "" : String(template.wPct),
+    hPct: template.hPct === "" ? "" : String(template.hPct),
     dpi: template.dpi !== undefined ? String(template.dpi) : "",
     coordSystem: template.coordSystem || "",
     pageWidthPt: template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "",
@@ -489,10 +574,10 @@ async function updateTemplateRow(
     fmKey: template.fmKey,
     templateId: template.templateId,
     page: String(template.page),
-    xPct: String(template.xPct),
-    yPct: String(template.yPct),
-    wPct: String(template.wPct),
-    hPct: String(template.hPct),
+    xPct: template.xPct === "" ? "" : String(template.xPct),
+    yPct: template.yPct === "" ? "" : String(template.yPct),
+    wPct: template.wPct === "" ? "" : String(template.wPct),
+    hPct: template.hPct === "" ? "" : String(template.hPct),
     dpi: template.dpi !== undefined ? String(template.dpi) : "",
     coordSystem: template.coordSystem || "",
     pageWidthPt: template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "",
@@ -557,8 +642,21 @@ function parseTemplateFromRow(
   const wPt = getValue("wPt");
   const hPt = getValue("hPt");
 
-  // userId is optional (for backward compatibility), but fmKey and other fields are required
-  if (!fmKey || !page || !xPct || !yPct || !wPct || !hPct) {
+  // POINTS-ONLY mode: Require points fields. Allow pct fallback ONLY if points are missing (transition period)
+  // Check if values exist and are not empty strings
+  const hasPoints = xPt && xPt.trim() !== "" && 
+                    yPt && yPt.trim() !== "" && 
+                    wPt && wPt.trim() !== "" && 
+                    hPt && hPt.trim() !== "" && 
+                    pageWidthPt && pageWidthPt.trim() !== "" && 
+                    pageHeightPt && pageHeightPt.trim() !== "";
+  const hasPct = xPct && xPct.trim() !== "" && 
+                 yPct && yPct.trim() !== "" && 
+                 wPct && wPct.trim() !== "" && 
+                 hPct && hPct.trim() !== "";
+  
+  // If no points and no pct, template is invalid
+  if (!fmKey || !page || (!hasPoints && !hasPct)) {
     return undefined;
   }
 
@@ -568,31 +666,64 @@ function parseTemplateFromRow(
       fmKey,
       templateId: templateId || fmKey, // Default to fmKey if templateId not set
       page: parseInt(page, 10),
-      xPct: parseFloat(xPct),
-      yPct: parseFloat(yPct),
-      wPct: parseFloat(wPct),
-      hPct: parseFloat(hPct),
+      // Parse pct only if they exist (may be empty strings in points-only mode)
+      xPct: xPct && xPct.trim() !== "" ? parseFloat(xPct) : 0,
+      yPct: yPct && yPct.trim() !== "" ? parseFloat(yPct) : 0,
+      wPct: wPct && wPct.trim() !== "" ? parseFloat(wPct) : 0,
+      hPct: hPct && hPct.trim() !== "" ? parseFloat(hPct) : 0,
       dpi: dpi ? parseFloat(dpi) : undefined,
       // Normalize coordSystem: "PDF_POINTS" from sheet -> "PDF_POINTS_TOP_LEFT" internally
       coordSystem: coordSystem === "PDF_POINTS" ? "PDF_POINTS_TOP_LEFT" : (coordSystem || undefined),
       pageWidthPt: pageWidthPt ? parseFloat(pageWidthPt) : undefined,
       pageHeightPt: pageHeightPt ? parseFloat(pageHeightPt) : undefined,
+      // Read points in explicit x,y,w,h order from named columns (not reordered)
       xPt: xPt ? parseFloat(xPt) : undefined,
       yPt: yPt ? parseFloat(yPt) : undefined,
       wPt: wPt ? parseFloat(wPt) : undefined,
       hPt: hPt ? parseFloat(hPt) : undefined,
       updated_at: getValue("updated_at") || new Date().toISOString(),
     };
+    
+    // Log readback to verify order
+    if (template.xPt !== undefined && template.yPt !== undefined && 
+        template.wPt !== undefined && template.hPt !== undefined) {
+      console.log(`[Templates] Read template points (x,y,w,h order):`, {
+        fmKey: template.fmKey,
+        xPt: template.xPt,
+        yPt: template.yPt,
+        wPt: template.wPt,
+        hPt: template.hPt,
+        pageWidthPt: template.pageWidthPt,
+        pageHeightPt: template.pageHeightPt,
+      });
+    }
 
     // Validate values
-    if (
-      isNaN(template.page) ||
-      isNaN(template.xPct) ||
-      isNaN(template.yPct) ||
-      isNaN(template.wPct) ||
-      isNaN(template.hPct)
-    ) {
-      return undefined;
+    // POINTS-ONLY: If points exist, validate them. Otherwise validate pct (legacy fallback)
+    if (hasPoints) {
+      // Validate points are finite numbers
+      if (
+        isNaN(template.page) ||
+        template.xPt === undefined || !Number.isFinite(template.xPt) ||
+        template.yPt === undefined || !Number.isFinite(template.yPt) ||
+        template.wPt === undefined || !Number.isFinite(template.wPt) ||
+        template.hPt === undefined || !Number.isFinite(template.hPt) ||
+        template.pageWidthPt === undefined || !Number.isFinite(template.pageWidthPt) ||
+        template.pageHeightPt === undefined || !Number.isFinite(template.pageHeightPt)
+      ) {
+        return undefined;
+      }
+    } else {
+      // Legacy fallback: validate percentages
+      if (
+        isNaN(template.page) ||
+        template.xPct === undefined || isNaN(template.xPct) ||
+        template.yPct === undefined || isNaN(template.yPct) ||
+        template.wPct === undefined || isNaN(template.wPct) ||
+        template.hPct === undefined || isNaN(template.hPct)
+      ) {
+        return undefined;
+      }
     }
 
     return template;

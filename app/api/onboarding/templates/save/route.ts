@@ -30,45 +30,48 @@ export async function POST(request: Request) {
 
     const body = await request.json();
     
-    // Support both new format (rectPx + PDF points) and legacy format (xPct/yPct/wPct/hPct)
-    const isNewFormat = body.rectPx && body.renderWidthPx && body.pageWidthPt;
+    // PDF_POINTS only: require points directly (computed client-side using viewport conversion)
+    // Also accept rectPx for validation/debugging
+    const hasPoints = body.xPt !== undefined && body.yPt !== undefined && 
+                     body.wPt !== undefined && body.hPt !== undefined &&
+                     body.pageWidthPt !== undefined && body.pageHeightPt !== undefined;
+    
+    if (!hasPoints) {
+      return NextResponse.json(
+        { error: "PDF_POINTS format required: xPt, yPt, wPt, hPt, pageWidthPt, and pageHeightPt are required" },
+        { status: 400 }
+      );
+    }
     
     let fmKey: string;
     let page: number;
+    let xPt: number;
+    let yPt: number;
+    let wPt: number;
+    let hPt: number;
+    let pageWidthPt: number;
+    let pageHeightPt: number;
+    let templateId: string | undefined;
+    let dpi: number | undefined;
     let rectPx: { x: number; y: number; w: number; h: number } | undefined;
     let renderWidthPx: number | undefined;
     let renderHeightPx: number | undefined;
-    let pageWidthPt: number | undefined;
-    let pageHeightPt: number | undefined;
-    let xPct: number | undefined;
-    let yPct: number | undefined;
-    let wPct: number | undefined;
-    let hPct: number | undefined;
-    let templateId: string | undefined;
-    let dpi: number | undefined;
 
-    if (isNewFormat) {
-      // New format: rectPx + PDF points
-      fmKey = body.fmKey;
-      page = body.page;
-      rectPx = body.rectPx;
-      renderWidthPx = body.renderWidthPx;
-      renderHeightPx = body.renderHeightPx;
-      pageWidthPt = body.pageWidthPt;
-      pageHeightPt = body.pageHeightPt;
-      templateId = body.templateId;
-      dpi = body.dpi;
-    } else {
-      // Legacy format: percentages
-      fmKey = body.fmKey;
-      page = body.page;
-      xPct = body.xPct;
-      yPct = body.yPct;
-      wPct = body.wPct;
-      hPct = body.hPct;
-      templateId = body.templateId;
-      dpi = body.dpi;
-    }
+    // PDF_POINTS format - points are computed client-side using viewport conversion
+    fmKey = body.fmKey;
+    page = body.page;
+    xPt = body.xPt;
+    yPt = body.yPt;
+    wPt = body.wPt;
+    hPt = body.hPt;
+    pageWidthPt = body.pageWidthPt;
+    pageHeightPt = body.pageHeightPt;
+    templateId = body.templateId;
+    dpi = body.dpi;
+    // Optional: rectPx for validation/debugging
+    rectPx = body.rectPx;
+    renderWidthPx = body.renderWidthPx;
+    renderHeightPx = body.renderHeightPx;
 
     // Validate required fields
     if (!fmKey || typeof fmKey !== "string" || !fmKey.trim()) {
@@ -83,118 +86,6 @@ export async function POST(request: Request) {
         { error: "page must be a number >= 1" },
         { status: 400 }
       );
-    }
-
-    if (isNewFormat) {
-      // Validate new format fields
-      if (!rectPx || typeof rectPx.x !== "number" || typeof rectPx.y !== "number" ||
-          typeof rectPx.w !== "number" || typeof rectPx.h !== "number") {
-        return NextResponse.json(
-          { error: "rectPx must be an object with x, y, w, h numbers" },
-          { status: 400 }
-        );
-      }
-
-      if (typeof renderWidthPx !== "number" || typeof renderHeightPx !== "number" ||
-          renderWidthPx <= 0 || renderHeightPx <= 0) {
-        return NextResponse.json(
-          { error: "renderWidthPx and renderHeightPx must be positive numbers" },
-          { status: 400 }
-        );
-      }
-
-      if (typeof pageWidthPt !== "number" || typeof pageHeightPt !== "number" ||
-          pageWidthPt <= 0 || pageHeightPt <= 0) {
-        return NextResponse.json(
-          { error: "pageWidthPt and pageHeightPt must be positive numbers" },
-          { status: 400 }
-        );
-      }
-
-      // Validate crop zone bounds in pixels
-      if (rectPx.x < 0 || rectPx.y < 0 || rectPx.w <= 0 || rectPx.h <= 0) {
-        return NextResponse.json(
-          { error: "Crop zone must have positive dimensions" },
-          { status: 400 }
-        );
-      }
-
-      if (rectPx.x + rectPx.w > renderWidthPx || rectPx.y + rectPx.h > renderHeightPx) {
-        return NextResponse.json(
-          { error: "Crop zone is out of bounds" },
-          { status: 400 }
-        );
-      }
-
-      // Convert pixels to PDF points (top-left origin) for validation
-      const wPtForValidation = (rectPx.w / renderWidthPx) * pageWidthPt;
-      const hPtForValidation = (rectPx.h / renderHeightPx) * pageHeightPt;
-
-      // Validate minimum size in points
-      const MIN_W_PT = 8;
-      const MIN_H_PT = 8;
-      if (wPtForValidation < MIN_W_PT || hPtForValidation < MIN_H_PT) {
-        return NextResponse.json(
-          { error: "Crop zone is too small. Make the rectangle bigger." },
-          { status: 400 }
-        );
-      }
-
-      // Also compute percentages for backward compatibility
-      xPct = rectPx.x / renderWidthPx;
-      yPct = rectPx.y / renderHeightPx;
-      wPct = rectPx.w / renderWidthPx;
-      hPct = rectPx.h / renderHeightPx;
-    } else {
-      // Legacy format validation
-      if (typeof xPct !== "number" || typeof yPct !== "number" || 
-          typeof wPct !== "number" || typeof hPct !== "number") {
-        return NextResponse.json(
-          { error: "xPct, yPct, wPct, hPct must be numbers" },
-          { status: 400 }
-        );
-      }
-
-      // Validate crop zone is not default sentinel (0/0/1/1)
-      const TOLERANCE = 0.01;
-      const isDefault = Math.abs(xPct) < TOLERANCE && 
-                        Math.abs(yPct) < TOLERANCE && 
-                        Math.abs(wPct - 1) < TOLERANCE && 
-                        Math.abs(hPct - 1) < TOLERANCE;
-
-      if (isDefault) {
-        return NextResponse.json(
-          { 
-            error: "Template crop not configured. Draw a rectangle first.",
-            reason: "TEMPLATE_NOT_CONFIGURED"
-          },
-          { status: 400 }
-        );
-      }
-
-      // Validate crop zone is not out of bounds
-      if (xPct < 0 || yPct < 0 || wPct <= 0 || hPct <= 0 || xPct + wPct > 1 || yPct + hPct > 1) {
-        return NextResponse.json(
-          { 
-            error: "Crop is out of bounds.",
-            reason: "INVALID_CROP"
-          },
-          { status: 400 }
-        );
-      }
-
-      // Validate crop zone is not too small
-      const MIN_W = 0.01;
-      const MIN_H = 0.01;
-      if (wPct < MIN_W || hPct < MIN_H) {
-        return NextResponse.json(
-          { 
-            error: "Crop is too small. Make the rectangle bigger.",
-            reason: "CROP_TOO_SMALL"
-          },
-          { status: 400 }
-        );
-      }
     }
 
     // Sanitize DPI: default 200, clamp 100-400
@@ -228,63 +119,126 @@ export async function POST(request: Request) {
     const { normalizeFmKey } = await import("@/lib/templates/fmProfiles");
     const normalizedFmKey = normalizeFmKey(fmKey);
     
-    // Prepare template data with both legacy percentages and new PDF points
+    console.log(`[onboarding/templates/save] Normalizing fmKey:`, {
+      rawFmKey: fmKey,
+      normalizedFmKey,
+    });
+    
+    // Points are already computed client-side using viewport.convertToPdfPoint()
+    // Validate they're finite and in correct x,y,w,h order
+    console.log(`[onboarding/templates/save] Received points from client:`, {
+      xPt,
+      yPt,
+      wPt,
+      hPt,
+      pageWidthPt,
+      pageHeightPt,
+    });
+    
+    if (!Number.isFinite(xPt) || !Number.isFinite(yPt) || !Number.isFinite(wPt) || !Number.isFinite(hPt) ||
+        !Number.isFinite(pageWidthPt) || !Number.isFinite(pageHeightPt)) {
+      return NextResponse.json(
+        { error: "Invalid PDF points: all values must be finite numbers" },
+        { status: 400 }
+      );
+    }
+
+    // Prepare template data - PDF_POINTS ONLY (points-only mode)
+    // Validate all points fields are present and finite
+    if (!Number.isFinite(xPt) || !Number.isFinite(yPt) || !Number.isFinite(wPt) || !Number.isFinite(hPt) ||
+        !Number.isFinite(pageWidthPt) || !Number.isFinite(pageHeightPt) ||
+        xPt < 0 || yPt < 0 || wPt <= 0 || hPt <= 0 ||
+        pageWidthPt <= 0 || pageHeightPt <= 0) {
+      return NextResponse.json(
+        { error: "Invalid PDF points: all values must be finite positive numbers" },
+        { status: 400 }
+      );
+    }
+
     const templateData: {
       userId: string;
       fmKey: string;
       templateId: string;
       page: number;
-      xPct: number;
-      yPct: number;
-      wPct: number;
-      hPct: number;
+      xPct: string; // Set to "" to avoid accidental fallback
+      yPct: string;
+      wPct: string;
+      hPct: string;
       dpi?: number;
-      // New PDF points fields
-      coordSystem?: string;
-      pageWidthPt?: number;
-      pageHeightPt?: number;
-      xPt?: number;
-      yPt?: number;
-      wPt?: number;
-      hPt?: number;
+      coordSystem: string;
+      pageWidthPt: number;
+      pageHeightPt: number;
+      xPt: number;
+      yPt: number;
+      wPt: number;
+      hPt: number;
     } = {
       userId: user.userId,
-      fmKey: normalizedFmKey,
+      fmKey: normalizedFmKey, // Always save normalized fmKey
       templateId: templateId || normalizedFmKey,
       page,
-      // Legacy percentages (4 decimals) - kept for backward compatibility
-      // When using PDF_POINTS, these are derived from points but not used as source of truth
-      xPct: Math.round(xPct! * 10000) / 10000, // Round to 4 decimals (legacy)
-      yPct: Math.round(yPct! * 10000) / 10000,
-      wPct: Math.round(wPct! * 10000) / 10000,
-      hPct: Math.round(hPct! * 10000) / 10000,
+      // Legacy pct columns: set to "" to avoid future accidental fallback
+      // Points are the only source of truth
+      xPct: "",
+      yPct: "",
+      wPct: "",
+      hPct: "",
       dpi: sanitizedDpi,
-    };
-
-    // Add PDF points if available (new format)
-    if (isNewFormat && pageWidthPt && pageHeightPt) {
-      const xPt = (rectPx!.x / renderWidthPx!) * pageWidthPt;
-      const wPt = (rectPx!.w / renderWidthPx!) * pageWidthPt;
-      const yPt = (rectPx!.y / renderHeightPx!) * pageHeightPt;
-      const hPt = (rectPx!.h / renderHeightPx!) * pageHeightPt;
-
-      // Store as "PDF_POINTS" in sheet (legacy compatibility)
-      // Internally we treat this as PDF_POINTS_TOP_LEFT
-      templateData.coordSystem = "PDF_POINTS";
+      // PDF points (source of truth) - saved in explicit x,y,w,h order to named columns
+      coordSystem: "PDF_POINTS",
       // Points rounded to 2 decimals (minimal rounding for accuracy)
-      templateData.pageWidthPt = Math.round(pageWidthPt * 100) / 100;
-      templateData.pageHeightPt = Math.round(pageHeightPt * 100) / 100;
-      templateData.xPt = Math.round(xPt * 100) / 100;
-      templateData.yPt = Math.round(yPt * 100) / 100;
-      templateData.wPt = Math.round(wPt * 100) / 100;
-      templateData.hPt = Math.round(hPt * 100) / 100;
-    }
+      pageWidthPt: Math.round(pageWidthPt * 100) / 100,
+      pageHeightPt: Math.round(pageHeightPt * 100) / 100,
+      // Explicit x,y,w,h order - saved to named columns (xPt, yPt, wPt, hPt)
+      xPt: Math.round(xPt * 100) / 100,
+      yPt: Math.round(yPt * 100) / 100,
+      wPt: Math.round(wPt * 100) / 100,
+      hPt: Math.round(hPt * 100) / 100,
+    };
+    
+    console.log(`[onboarding/templates/save] Computed points before saving (x,y,w,h order):`, {
+      xPt: templateData.xPt,
+      yPt: templateData.yPt,
+      wPt: templateData.wPt,
+      hPt: templateData.hPt,
+      pageWidthPt: templateData.pageWidthPt,
+      pageHeightPt: templateData.pageHeightPt,
+    });
+    
+    console.log(`[onboarding/templates/save] Saving template row (POINTS-ONLY):`, {
+      normalizedFmKey: templateData.fmKey,
+      templateId: templateData.templateId,
+      page: templateData.page,
+      coordSystem: templateData.coordSystem,
+      points: {
+        xPt: templateData.xPt,
+        yPt: templateData.yPt,
+        wPt: templateData.wPt,
+        hPt: templateData.hPt,
+        pageWidthPt: templateData.pageWidthPt,
+        pageHeightPt: templateData.pageHeightPt,
+      },
+      dpi: templateData.dpi,
+      pctFields: "set to empty string (points-only mode)",
+      spreadsheetId: mainSpreadsheetId.substring(0, 10) + "...",
+    });
+    
+    // Get the exact rowData that will be written (for logging)
+    const { getTemplateRowDataForLogging } = await import("@/lib/templates/templatesSheets");
+    const rowDataLog = await getTemplateRowDataForLogging(
+      user.googleAccessToken,
+      mainSpreadsheetId,
+      templateData
+    );
     
     await upsertTemplate(
       user.googleAccessToken,
       mainSpreadsheetId,
       templateData
     );
+    
+    console.log(`[onboarding/templates/save] Template saved successfully for normalizedFmKey="${normalizedFmKey}"`);
+    console.log(`[onboarding/templates/save] Exact rowData written to Sheets:`, rowDataLog);
 
     // Invalidate template cache for this spreadsheetId + fmKey
     const { invalidateTemplateCache } = await import("@/lib/workOrders/templateConfig");

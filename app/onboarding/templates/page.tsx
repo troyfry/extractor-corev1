@@ -116,6 +116,9 @@ export default function OnboardingTemplatesPage() {
   const [pageWidthPt, setPageWidthPt] = useState<number>(0);
   const [pageHeightPt, setPageHeightPt] = useState<number>(0);
   const [cropZone, setCropZone] = useState<CropZone | null>(null);
+  // Store the viewport used for rendering (needed for accurate pixel->PDF point conversion)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [currentViewport, setCurrentViewport] = useState<any>(null);
   const [isSelecting, setIsSelecting] = useState(false);
   const [startPos, setStartPos] = useState<{ x: number; y: number } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -126,6 +129,8 @@ export default function OnboardingTemplatesPage() {
   const [isRenderingPdf, setIsRenderingPdf] = useState(false);
   const [savedTemplate, setSavedTemplate] = useState<Template | null>(null);
   const imageContainerRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
   const [selectedPage, setSelectedPage] = useState<number>(1);
   const [pageCount, setPageCount] = useState<number>(0);
   const [coordsPage, setCoordsPage] = useState<number | null>(null);
@@ -133,6 +138,7 @@ export default function OnboardingTemplatesPage() {
   const [pdfDoc, setPdfDoc] = useState<any>(null);
   const hasInitializedFromQuery = useRef<boolean>(false);
   const [manualCoords, setManualCoords] = useState<{ xPct: string; yPct: string; wPct: string; hPct: string } | null>(null);
+  const [manualPoints, setManualPoints] = useState<{ xPt: string; yPt: string; wPt: string; hPt: string } | null>(null);
 
   // Auto-select fmKey from query parameter (will be validated after profiles load)
   useEffect(() => {
@@ -178,18 +184,25 @@ export default function OnboardingTemplatesPage() {
           savedTemplate.xPt !== undefined && savedTemplate.yPt !== undefined &&
           savedTemplate.wPt !== undefined && savedTemplate.hPt !== undefined &&
           pageWidthPt > 0 && pageHeightPt > 0) {
-        // Convert PDF points to pixels (top-left origin)
-        const xPx = (savedTemplate.xPt / savedTemplate.pageWidthPt) * imageWidth;
-        const wPx = (savedTemplate.wPt / savedTemplate.pageWidthPt) * imageWidth;
-        const yPx = (savedTemplate.yPt / savedTemplate.pageHeightPt) * imageHeight;
-        const hPx = (savedTemplate.hPt / savedTemplate.pageHeightPt) * imageHeight;
-        
-        setCropZone({
-          x: xPx,
-          y: yPx,
-          width: wPx,
-          height: hPx,
-        });
+        // Convert PDF points to CSS pixels (top-left origin)
+        // Use IMG rect dimensions (same source as pointer events)
+        try {
+          const rect = getImgRect();
+          const xCss = (savedTemplate.xPt / savedTemplate.pageWidthPt) * rect.width;
+          const wCss = (savedTemplate.wPt / savedTemplate.pageWidthPt) * rect.width;
+          const yCss = (savedTemplate.yPt / savedTemplate.pageHeightPt) * rect.height;
+          const hCss = (savedTemplate.hPt / savedTemplate.pageHeightPt) * rect.height;
+          
+          setCropZone({
+            x: xCss,
+            y: yCss,
+            width: wCss,
+            height: hCss,
+          });
+        } catch {
+          // Image not loaded yet, will retry when image loads
+          console.log("[Onboarding] Image rect not available yet for template conversion");
+        }
       } else {
         // Fallback to percentage-based conversion (legacy)
         setCropZone({
@@ -259,36 +272,55 @@ export default function OnboardingTemplatesPage() {
             await handlePageChange(template.page);
           }
           
-          // Convert template to pixel coordinates if we have an image
+          // Convert template to CSS pixel coordinates if we have an image
           // Prefer PDF points if available, otherwise fallback to percentages
-          if (previewImage && imageWidth > 0 && imageHeight > 0 && template.page === selectedPage) {
-          // If template has PDF points and we have page dimensions, use points → pixels conversion
+          if (previewImage && template.page === selectedPage) {
+          // If template has PDF points and we have page dimensions, use points → CSS pixels conversion
           const normalizedCoordSystem = normalizeCoordSystem(template.coordSystem);
           if (normalizedCoordSystem === COORD_SYSTEM_PDF_POINTS_TOP_LEFT &&
                 template.pageWidthPt && template.pageHeightPt &&
                 template.xPt !== undefined && template.yPt !== undefined &&
                 template.wPt !== undefined && template.hPt !== undefined &&
                 pageWidthPt > 0 && pageHeightPt > 0) {
-              // Convert PDF points to pixels (top-left origin)
-              const xPx = (template.xPt / template.pageWidthPt) * imageWidth;
-              const wPx = (template.wPt / template.pageWidthPt) * imageWidth;
-              const yPx = (template.yPt / template.pageHeightPt) * imageHeight;
-              const hPx = (template.hPt / template.pageHeightPt) * imageHeight;
-              
-              setCropZone({
-                x: xPx,
-                y: yPx,
-                width: wPx,
-                height: hPx,
-              });
+              // Convert PDF points to CSS pixels (top-left origin)
+              // Use IMG rect dimensions (same source as pointer events)
+              try {
+                const rect = getImgRect();
+                const xCss = (template.xPt / template.pageWidthPt) * rect.width;
+                const wCss = (template.wPt / template.pageWidthPt) * rect.width;
+                const yCss = (template.yPt / template.pageHeightPt) * rect.height;
+                const hCss = (template.hPt / template.pageHeightPt) * rect.height;
+                
+                setCropZone({
+                  x: xCss,
+                  y: yCss,
+                  width: wCss,
+                  height: hCss,
+                });
+              } catch {
+                // Image not loaded yet, will retry when image loads
+                console.log("[Onboarding] Image rect not available yet for template conversion");
+              }
             } else {
               // Fallback to percentage-based conversion (legacy)
-              setCropZone({
-                x: template.xPct * imageWidth,
-                y: template.yPct * imageHeight,
-                width: template.wPct * imageWidth,
-                height: template.hPct * imageHeight,
-              });
+              // Convert percentages to CSS pixels using IMG rect
+              try {
+                const rect = getImgRect();
+                if (imageWidth > 0 && imageHeight > 0) {
+                  // Scale percentages by image display size
+                  const scaleX = rect.width / imageWidth;
+                  const scaleY = rect.height / imageHeight;
+                  setCropZone({
+                    x: template.xPct * imageWidth * scaleX,
+                    y: template.yPct * imageHeight * scaleY,
+                    width: template.wPct * imageWidth * scaleX,
+                    height: template.hPct * imageHeight * scaleY,
+                  });
+                }
+              } catch {
+                // Image not loaded yet, will retry when image loads
+                console.log("[Onboarding] Image rect not available yet for template conversion");
+              }
             }
             setCoordsPage(template.page);
           } else {
@@ -338,6 +370,7 @@ export default function OnboardingTemplatesPage() {
       setSelectedPage(1);
       setPageCount(0);
       setPdfDoc(null);
+      setCurrentViewport(null); // Clear viewport when loading new PDF
 
     try {
       // Ensure pdf.js is loaded (uses shared helper)
@@ -385,16 +418,30 @@ export default function OnboardingTemplatesPage() {
     }
   }
 
-  function handleMouseDown(e: React.MouseEvent<HTMLDivElement>) {
-    if (!previewImage || !imageContainerRef.current) return;
+  // Helper to get image rect (single source of truth)
+  function getImgRect() {
+    const r = imgRef.current?.getBoundingClientRect();
+    if (!r) throw new Error("Image rect not available");
+    return r;
+  }
 
-    const rect = imageContainerRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+  function handlePointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (!previewImage || !currentViewport) return;
+    
+    // Prevent default to avoid text selection
+    e.preventDefault();
+    
+    // Capture pointer for stable dragging
+    overlayRef.current?.setPointerCapture(e.pointerId);
 
-    // Clamp to image bounds
-    const clampedX = Math.max(0, Math.min(x, imageWidth));
-    const clampedY = Math.max(0, Math.min(y, imageHeight));
+    // Use IMG rect (not overlay) - this is what the user visually clicks
+    const rect = getImgRect();
+    const xCss = e.clientX - rect.left;
+    const yCss = e.clientY - rect.top;
+
+    // Clamp to image bounds (CSS pixels)
+    const clampedX = Math.max(0, Math.min(xCss, rect.width));
+    const clampedY = Math.max(0, Math.min(yCss, rect.height));
 
     setIsSelecting(true);
     setStartPos({ x: clampedX, y: clampedY });
@@ -406,16 +453,17 @@ export default function OnboardingTemplatesPage() {
     });
   }
 
-  function handleMouseMove(e: React.MouseEvent<HTMLDivElement>) {
-    if (!isSelecting || !startPos || !previewImage || !imageContainerRef.current) return;
+  function handlePointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    if (!isSelecting || !startPos || !previewImage) return;
 
-    const rect = imageContainerRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    // Use IMG rect (not overlay) - this is what the user visually clicks
+    const rect = getImgRect();
+    const xCss = e.clientX - rect.left;
+    const yCss = e.clientY - rect.top;
 
-    // Clamp to image bounds
-    const clampedX = Math.max(0, Math.min(x, imageWidth));
-    const clampedY = Math.max(0, Math.min(y, imageHeight));
+    // Clamp to image bounds (CSS pixels)
+    const clampedX = Math.max(0, Math.min(xCss, rect.width));
+    const clampedY = Math.max(0, Math.min(yCss, rect.height));
 
     const width = clampedX - startPos.x;
     const height = clampedY - startPos.y;
@@ -433,13 +481,29 @@ export default function OnboardingTemplatesPage() {
     try {
       const page = await pdf.getPage(pageNum);
       
-      // Get PDF page size in points (scale 1.0 == PDF units)
-      const pdfPageViewport = page.getViewport({ scale: 1.0 });
-      setPageWidthPt(pdfPageViewport.width);
-      setPageHeightPt(pdfPageViewport.height);
+      // Get PDF page size in true PDF points (user space units)
+      // Note: getViewport({ scale: 1.0 }) gives CSS pixels (96 DPI), not PDF points (72 DPI)
+      // Use page.view to get actual PDF user-space coordinates in points
+      const [xMin, yMin, xMax, yMax] = page.view; // PDF units (points)
+      const truePageWidthPt = xMax - xMin;
+      const truePageHeightPt = yMax - yMin;
+      setPageWidthPt(truePageWidthPt);
+      setPageHeightPt(truePageHeightPt);
+      
+      // Optional sanity log to verify the fix
+      const v1 = page.getViewport({ scale: 1.0 });
+      console.log("[Onboarding] page.view (pt):", page.view, "wPt:", truePageWidthPt, "hPt:", truePageHeightPt);
+      console.log("[Onboarding] viewport scale=1 (css px):", v1.width, v1.height);
       
       // Use scale 2.0 for preview rendering (better quality)
-      const viewport = page.getViewport({ scale: 2.0 });
+      // Include page rotation if present
+      const viewport = page.getViewport({ 
+        scale: 2.0, 
+        rotation: page.rotate || 0 
+      });
+
+      // Store viewport for accurate pixel->PDF point conversion
+      setCurrentViewport(viewport);
 
       // Create canvas to render the page
       const canvas = document.createElement("canvas");
@@ -462,8 +526,19 @@ export default function OnboardingTemplatesPage() {
       const dataUrl = canvas.toDataURL("image/png");
       
       setPreviewImage(dataUrl);
-      setImageWidth(viewport.width);
-      setImageHeight(viewport.height);
+      // Use canvas dimensions (matches viewport.width/height) - ensures rectPx coordinates match render dimensions
+      setImageWidth(canvas.width);
+      setImageHeight(canvas.height);
+      
+      console.log("[Onboarding] Rendered page with viewport:", {
+        viewportWidth: viewport.width,
+        viewportHeight: viewport.height,
+        canvasWidth: canvas.width,
+        canvasHeight: canvas.height,
+        pageWidthPt: truePageWidthPt,
+        pageHeightPt: truePageHeightPt,
+        rotation: page.rotate || 0,
+      });
       
       // If we have a saved template for this page, the useEffect will convert it to pixels
       // Otherwise, cropZone will remain null for user to draw
@@ -482,7 +557,12 @@ export default function OnboardingTemplatesPage() {
     await renderPage(pdfDoc, newPage);
   }
 
-  function handleMouseUp() {
+  function handlePointerUp(e: React.PointerEvent<HTMLDivElement>) {
+    // Release pointer capture
+    if (overlayRef.current) {
+      overlayRef.current.releasePointerCapture(e.pointerId);
+    }
+
     setIsSelecting(false);
     setStartPos(null);
     // When rectangle is drawn/updated, record the current page
@@ -549,6 +629,112 @@ export default function OnboardingTemplatesPage() {
     setError(null);
   }
 
+  function calculatePoints(): { xPt: number; yPt: number; wPt: number; hPt: number } | null {
+    if (!cropZone || !currentViewport || !pageWidthPt || !pageHeightPt) return null;
+
+    // Convert cropZone (CSS px) to viewport px, then to PDF points
+    try {
+      const rect = getImgRect();
+      const scaleX = currentViewport.width / rect.width;
+      const scaleY = currentViewport.height / rect.height;
+
+      const x0 = cropZone.x * scaleX;
+      const y0 = cropZone.y * scaleY;
+      const x1 = (cropZone.x + cropZone.width) * scaleX;
+      const y1 = (cropZone.y + cropZone.height) * scaleY;
+
+      const [x0Pt, y0PtBottom] = currentViewport.convertToPdfPoint(x0, y0);
+      const [x1Pt, y1PtBottom] = currentViewport.convertToPdfPoint(x1, y1);
+
+      const xMin = Math.min(x0Pt, x1Pt);
+      const xMax = Math.max(x0Pt, x1Pt);
+      const yMinBottom = Math.min(y0PtBottom, y1PtBottom);
+      const yMaxBottom = Math.max(y0PtBottom, y1PtBottom);
+
+      const xPt = xMin;
+      const wPt = xMax - xMin;
+      const hPt = yMaxBottom - yMinBottom;
+      const yPtTopLeft = pageHeightPt - yMaxBottom;
+
+      return { xPt, yPt: yPtTopLeft, wPt, hPt };
+    } catch {
+      return null;
+    }
+  }
+
+  function handleManualPointsChange(field: "xPt" | "yPt" | "wPt" | "hPt", value: string) {
+    if (!pageWidthPt || !pageHeightPt) return;
+    
+    const currentPoints = calculatePoints();
+    const newManualPoints = manualPoints || (currentPoints ? {
+      xPt: currentPoints.xPt.toFixed(2),
+      yPt: currentPoints.yPt.toFixed(2),
+      wPt: currentPoints.wPt.toFixed(2),
+      hPt: currentPoints.hPt.toFixed(2),
+    } : null);
+    
+    if (!newManualPoints) return;
+    
+    setManualPoints({ ...newManualPoints, [field]: value });
+  }
+
+  function handleApplyManualPoints() {
+    if (!manualPoints || !pageWidthPt || !pageHeightPt) return;
+    
+    const xPt = parseFloat(manualPoints.xPt);
+    const yPt = parseFloat(manualPoints.yPt);
+    const wPt = parseFloat(manualPoints.wPt);
+    const hPt = parseFloat(manualPoints.hPt);
+
+    if (isNaN(xPt) || isNaN(yPt) || isNaN(wPt) || isNaN(hPt)) {
+      setError("All point values must be valid numbers");
+      return;
+    }
+
+    // Validate bounds
+    if (xPt < 0 || yPt < 0 || wPt <= 0 || hPt <= 0 || 
+        xPt + wPt > pageWidthPt || yPt + hPt > pageHeightPt) {
+      setError(`Point values out of bounds. Page size: ${pageWidthPt.toFixed(2)} x ${pageHeightPt.toFixed(2)} points`);
+      return;
+    }
+
+    // Convert PDF points to CSS pixels
+    try {
+      const rect = getImgRect();
+      
+      // Convert PDF points to percentages first
+      const xPct = xPt / pageWidthPt;
+      const yPct = yPt / pageHeightPt;
+      const wPct = wPt / pageWidthPt;
+      const hPct = hPt / pageHeightPt;
+
+      // Convert percentages to CSS pixels (using image display size)
+      const xCss = xPct * rect.width;
+      const yCss = yPct * rect.height;
+      const wCss = wPct * rect.width;
+      const hCss = hPct * rect.height;
+
+      // Clamp to image bounds
+      const clampedX = Math.max(0, Math.min(xCss, rect.width));
+      const clampedY = Math.max(0, Math.min(yCss, rect.height));
+      const clampedW = Math.max(0, Math.min(wCss, rect.width - clampedX));
+      const clampedH = Math.max(0, Math.min(hCss, rect.height - clampedY));
+
+      setCropZone({
+        x: clampedX,
+        y: clampedY,
+        width: clampedW,
+        height: clampedH,
+      });
+      setCoordsPage(selectedPage);
+      setManualPoints(null);
+      setError(null);
+    } catch (err) {
+      setError("Failed to convert points to pixels. Please try again.");
+      console.error("Error converting points:", err);
+    }
+  }
+
   async function handleSave() {
     // Prevent double-submit
     if (isSaving) return;
@@ -575,13 +761,22 @@ export default function OnboardingTemplatesPage() {
       return;
     }
 
-    // Validate crop zone bounds
+    // Validate crop zone bounds (cropZone is in CSS pixel space)
     if (cropZone.x < 0 || cropZone.y < 0 || cropZone.width <= 0 || cropZone.height <= 0) {
       setError("Invalid crop zone");
       return;
     }
 
-    if (cropZone.x + cropZone.width > imageWidth || cropZone.y + cropZone.height > imageHeight) {
+    if (!currentViewport) {
+      setError("Viewport not available. Please reload the PDF.");
+      return;
+    }
+
+    // Get IMG rect (CSS pixels) - same source as pointer events
+    const rect = getImgRect();
+    
+    // Validate against image bounds (CSS pixels)
+    if (cropZone.x + cropZone.width > rect.width || cropZone.y + cropZone.height > rect.height) {
       setError("Crop zone is out of bounds");
       return;
     }
@@ -590,25 +785,112 @@ export default function OnboardingTemplatesPage() {
     setError(null);
     setSuccess(null);
 
+    // Convert cropZone (CSS px) into viewport/render px
+    // Scale from IMG display size → viewport pixels
+    const scaleX = currentViewport.width / rect.width;
+    const scaleY = currentViewport.height / rect.height;
+
+    const x0 = cropZone.x * scaleX;
+    const y0 = cropZone.y * scaleY;
+    const x1 = (cropZone.x + cropZone.width) * scaleX;
+    const y1 = (cropZone.y + cropZone.height) * scaleY;
+
+    // Use the same pdf.js viewport used for rendering the preview (same scale/rotation)
+    // Convert BOTH corners using viewport.convertToPdfPoint()
+    // Note: viewport.convertToPdfPoint returns coordinates in PDF coordinate space (bottom-left origin)
+    const [x0Pt, y0PtBottom] = currentViewport.convertToPdfPoint(x0, y0);
+    const [x1Pt, y1PtBottom] = currentViewport.convertToPdfPoint(x1, y1);
+
+    // Normalize with min/max to guarantee XYWH is correct
+    const xMin = Math.min(x0Pt, x1Pt);
+    const xMax = Math.max(x0Pt, x1Pt);
+    const yMinBottom = Math.min(y0PtBottom, y1PtBottom); // Bottom edge in PDF coordinates
+    const yMaxBottom = Math.max(y0PtBottom, y1PtBottom); // Top edge in PDF coordinates
+
+    // Convert Y to TOP-LEFT points before saving: yPtTopLeft = pageHeightPt - yMax
+    const xPt = xMin;
+    const wPt = xMax - xMin;
+    const hPt = yMaxBottom - yMinBottom;
+    const yPtTopLeft = pageHeightPt - yMaxBottom; // Convert from bottom-left to top-left origin
+
+    
+
+    // Debug log with all conversion details (as requested)
+    // "Truth log" to verify mismatch is gone - these 3 should line up
+    console.log("[Onboarding Save] Crop conversion details:", {
+      imgRect: {
+        width: rect.width,
+        height: rect.height,
+      },
+      viewport: {
+        width: currentViewport.width,
+        height: currentViewport.height,
+        rotation: currentViewport.rotation || 0,
+      },
+      scale: {
+        scaleX,
+        scaleY,
+      },
+      cropZone: {
+        x: cropZone.x,
+        y: cropZone.y,
+        w: cropZone.width,
+        h: cropZone.height,
+      },
+      rectViewportPx: {
+        x0,
+        y0,
+        x1,
+        y1,
+      },
+      pdfPointsRaw: {
+        x0Pt,
+        y0PtBottom,
+        x1Pt,
+        y1PtBottom,
+      },
+      pdfPointsFinal: {
+        xPt,
+        yPtTopLeft,
+        wPt,
+        hPt,
+      },
+      pageSize: {
+        pageWidthPt,
+        pageHeightPt,
+      },
+    });
+
+    // Final payload being written to Sheets (POINTS-ONLY, no percentages)
+    const finalPayload = {
+      fmKey: selectedFmKey,
+      page: coordsPage, // Use coordsPage, not selectedPage
+      // PDF points in x,y,w,h order (top-left origin) - saved to named columns
+      xPt,
+      yPt: yPtTopLeft,
+      wPt,
+      hPt,
+      pageWidthPt,
+      pageHeightPt,
+      coordSystem: toSheetCoordSystem(COORD_SYSTEM_PDF_POINTS_TOP_LEFT),
+      // Optional: rectPx for validation/debugging (CSS pixel space)
+      rectPx: {
+        x: cropZone.x,
+        y: cropZone.y,
+        w: cropZone.width,
+        h: cropZone.height,
+      },
+      renderWidthPx: currentViewport.width,
+      renderHeightPx: currentViewport.height,
+    };
+    
+    console.log("[Onboarding Save] Final payload being written to Sheets:", finalPayload);
+
     try {
       const response = await fetch("/api/onboarding/templates/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fmKey: selectedFmKey,
-          page: coordsPage, // Use coordsPage, not selectedPage
-          rectPx: {
-            x: cropZone.x,
-            y: cropZone.y,
-            w: cropZone.width,
-            h: cropZone.height,
-          },
-          renderWidthPx: imageWidth,
-          renderHeightPx: imageHeight,
-          pageWidthPt: pageWidthPt,
-          pageHeightPt: pageHeightPt,
-          coordSystem: toSheetCoordSystem(COORD_SYSTEM_PDF_POINTS_TOP_LEFT),
-        }),
+        body: JSON.stringify(finalPayload),
       });
 
       if (!response.ok) {
@@ -632,6 +914,7 @@ export default function OnboardingTemplatesPage() {
     setStartPos(null);
     setIsSelecting(false);
     setManualCoords(null);
+    setManualPoints(null);
   }
 
   const percentages = calculatePercentages();
@@ -744,35 +1027,133 @@ export default function OnboardingTemplatesPage() {
               <div
                 ref={imageContainerRef}
                 className="relative border-2 border-slate-700 rounded-lg overflow-hidden bg-slate-800"
-                style={{ width: imageWidth, maxWidth: "100%" }}
-                onMouseDown={handleMouseDown}
-                onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseUp}
+                style={{ maxWidth: "100%" }}
               >
                 <img
+                  ref={imgRef}
                   src={previewImage}
                   alt="PDF Preview"
-                  style={{ display: "block", width: imageWidth, height: imageHeight }}
+                  style={{ display: "block", width: "100%", height: "auto" }}
                   draggable={false}
                 />
-                {cropZone && cropZone.width > 0 && cropZone.height > 0 && (
-                  <div
-                    className="absolute border-2 border-sky-500 bg-sky-500/20 pointer-events-none"
-                    style={{
-                      left: `${cropZone.x}px`,
-                      top: `${cropZone.y}px`,
-                      width: `${cropZone.width}px`,
-                      height: `${cropZone.height}px`,
-                    }}
-                  />
-                )}
+                {/* Single overlay element for pointer events - positioned exactly over preview */}
+                <div
+                  ref={overlayRef}
+                  className="absolute inset-0 cursor-crosshair"
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    width: "100%",
+                    height: "100%",
+                  }}
+                  onPointerDown={handlePointerDown}
+                  onPointerMove={handlePointerMove}
+                  onPointerUp={handlePointerUp}
+                  onPointerCancel={handlePointerUp}
+                >
+                  {/* Crop zone rectangle overlay - positioned using percentages to match overlay coordinate space */}
+                  {cropZone && cropZone.width > 0 && cropZone.height > 0 && (
+                    <div
+                      className="absolute border-2 border-sky-500 bg-sky-500/20 pointer-events-none"
+                      style={{
+                        // Draw rectangle in CSS pixels (cropZone is stored in CSS pixels)
+                        left: `${cropZone.x}px`,
+                        top: `${cropZone.y}px`,
+                        width: `${cropZone.width}px`,
+                        height: `${cropZone.height}px`,
+                      }}
+                    />
+                  )}
+                </div>
               </div>
 
-              {/* Percentages Display / Edit */}
-              {percentages && (
+              {/* PDF Points Display / Edit (Primary) */}
+              {cropZone && pageWidthPt > 0 && pageHeightPt > 0 && (
                 <div className="mt-4 p-4 bg-slate-800 rounded-lg">
-                  <div className="text-sm font-medium mb-3">Crop Zone Percentages (0.0 to 1.0):</div>
+                  <div className="text-sm font-medium mb-3">Crop Zone PDF Points (editable):</div>
+                  <div className="grid grid-cols-4 gap-4 text-sm">
+                    <div>
+                      <label className="block text-slate-400 mb-1 text-xs">xPt:</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max={pageWidthPt}
+                        value={manualPoints?.xPt ?? (calculatePoints()?.xPt.toFixed(2) ?? "0.00")}
+                        onChange={(e) => handleManualPointsChange("xPt", e.target.value)}
+                        onBlur={() => {
+                          if (manualPoints) {
+                            handleApplyManualPoints();
+                          }
+                        }}
+                        className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1 text-xs">yPt:</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max={pageHeightPt}
+                        value={manualPoints?.yPt ?? (calculatePoints()?.yPt.toFixed(2) ?? "0.00")}
+                        onChange={(e) => handleManualPointsChange("yPt", e.target.value)}
+                        onBlur={() => {
+                          if (manualPoints) {
+                            handleApplyManualPoints();
+                          }
+                        }}
+                        className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1 text-xs">wPt:</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max={pageWidthPt}
+                        value={manualPoints?.wPt ?? (calculatePoints()?.wPt.toFixed(2) ?? "0.00")}
+                        onChange={(e) => handleManualPointsChange("wPt", e.target.value)}
+                        onBlur={() => {
+                          if (manualPoints) {
+                            handleApplyManualPoints();
+                          }
+                        }}
+                        className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1 text-xs">hPt:</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max={pageHeightPt}
+                        value={manualPoints?.hPt ?? (calculatePoints()?.hPt.toFixed(2) ?? "0.00")}
+                        onChange={(e) => handleManualPointsChange("hPt", e.target.value)}
+                        onBlur={() => {
+                          if (manualPoints) {
+                            handleApplyManualPoints();
+                          }
+                        }}
+                        className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                      />
+                    </div>
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">
+                    Edit PDF point values above to adjust the crop zone. Page size: {pageWidthPt.toFixed(2)} x {pageHeightPt.toFixed(2)} points. Changes apply when you click outside the field.
+                  </p>
+                </div>
+              )}
+
+              {/* Percentages Display / Edit (Legacy - hidden by default, can be shown if needed) */}
+              {false && percentages && (
+                <div className="mt-4 p-4 bg-slate-800 rounded-lg">
+                  <div className="text-sm font-medium mb-3">Crop Zone Percentages (0.0 to 1.0) - Legacy:</div>
                   <div className="grid grid-cols-4 gap-4 text-sm">
                     <div>
                       <label className="block text-slate-400 mb-1 text-xs">xPct:</label>
@@ -873,7 +1254,6 @@ export default function OnboardingTemplatesPage() {
                 !selectedFmKey || 
                 !previewImage || 
                 !cropZone || 
-                !percentages ||
                 coordsPage === null ||
                 coordsPage !== selectedPage
               }

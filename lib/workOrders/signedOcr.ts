@@ -18,15 +18,16 @@ export type TemplateRegion = {
 export type SignedOcrConfig = {
   templateId: string;
   page: number;
-  region: TemplateRegion | null; // null when using PDF points mode
+  region: TemplateRegion | null; // null when using PDF points mode (legacy support)
   dpi?: number;
-  // PDF points fields (when using PDF_POINTS_TOP_LEFT coordinate system)
+  // PDF points fields (required when using PDF_POINTS_TOP_LEFT coordinate system)
   xPt?: number;
   yPt?: number;
   wPt?: number;
   hPt?: number;
   pageWidthPt?: number;
   pageHeightPt?: number;
+  requestId?: string; // Optional request ID for correlated logging
 };
 
 function getSignedOcrServiceBaseUrl(): string {
@@ -61,65 +62,47 @@ export async function callSignedOcrService(
   const baseUrl = getSignedOcrServiceBaseUrl();
   const endpoint = `${baseUrl}/v1/ocr/workorder-number/upload`;
 
+  // Hard guard: PDF_POINTS only - all points fields must exist
+  if (config.xPt === undefined || config.yPt === undefined || 
+      config.wPt === undefined || config.hPt === undefined ||
+      config.pageWidthPt === undefined || config.pageHeightPt === undefined) {
+    throw new Error(
+      "PDF_POINTS format required: xPt, yPt, wPt, hPt, pageWidthPt, and pageHeightPt are all required. " +
+      "Legacy percentage format is no longer supported."
+    );
+  }
+
+  // Validate points are valid numbers
+  const { xPt, yPt, wPt, hPt, pageWidthPt, pageHeightPt } = config;
+  if (!Number.isFinite(xPt) || !Number.isFinite(yPt) || !Number.isFinite(wPt) || !Number.isFinite(hPt) ||
+      !Number.isFinite(pageWidthPt) || !Number.isFinite(pageHeightPt)) {
+    throw new Error("All PDF point fields must be finite numbers");
+  }
+
+  if (wPt <= 0 || hPt <= 0 || pageWidthPt <= 0 || pageHeightPt <= 0) {
+    throw new Error("wPt, hPt, pageWidthPt, and pageHeightPt must be positive numbers");
+  }
+
+  if (config.page < 1) {
+    throw new Error("page must be >= 1 (1-based)");
+  }
+
   const formData = new FormData();
   formData.append("templateId", config.templateId);
-  formData.append("page", String(config.page));
+  formData.append("page", String(config.page)); // must be 1-based
   formData.append("dpi", String(config.dpi ?? 200));
   
-  // If PDF points are available, use them (convert to pixels based on DPI)
-  // Otherwise fall back to percentages (region must not be null)
-  if (config.xPt !== undefined && config.yPt !== undefined && 
-      config.wPt !== undefined && config.hPt !== undefined &&
-      config.pageWidthPt !== undefined && config.pageHeightPt !== undefined) {
-    // Calculate scale: dpi / 72 (PDF points are in 1/72 inch units)
-    const dpi = config.dpi ?? 200;
-    const scale = dpi / 72;
-    
-    // Rasterize page at dpi: image dimensions = page dimensions * scale
-    const imageWidthPx = config.pageWidthPt * scale;
-    const imageHeightPx = config.pageHeightPt * scale;
-    
-    // Convert points → pixels using the actual output image size
-    const xPx = (config.xPt / config.pageWidthPt) * imageWidthPx;
-    const yPx = (config.yPt / config.pageHeightPt) * imageHeightPx;
-    const wPx = (config.wPt / config.pageWidthPt) * imageWidthPx;
-    const hPx = (config.hPt / config.pageHeightPt) * imageHeightPx;
-    
-    // Send pixels to OCR service
-    formData.append("xPx", String(Math.round(xPx)));
-    formData.append("yPx", String(Math.round(yPx)));
-    formData.append("wPx", String(Math.round(wPx)));
-    formData.append("hPx", String(Math.round(hPx)));
-    formData.append("imageWidthPx", String(Math.round(imageWidthPx)));
-    formData.append("imageHeightPx", String(Math.round(imageHeightPx)));
-    formData.append("coordSystem", "PDF_POINTS_TOP_LEFT");
-    
-    console.log(`[Signed OCR] Using PDF points (converted to pixels):`, {
-      xPt: config.xPt,
-      yPt: config.yPt,
-      wPt: config.wPt,
-      hPt: config.hPt,
-      pageWidthPt: config.pageWidthPt,
-      pageHeightPt: config.pageHeightPt,
-      dpi,
-      scale,
-      imageWidthPx: Math.round(imageWidthPx),
-      imageHeightPx: Math.round(imageHeightPx),
-      xPx: Math.round(xPx),
-      yPx: Math.round(yPx),
-      wPx: Math.round(wPx),
-      hPx: Math.round(hPx),
-    });
-  } else {
-    // Legacy: use percentages (region must not be null)
-    if (!config.region) {
-      throw new Error("Region is required when PDF points are not provided");
-    }
-    formData.append("xPct", String(config.region.xPct));
-    formData.append("yPct", String(config.region.yPct));
-    formData.append("wPct", String(config.region.wPct));
-    formData.append("hPct", String(config.region.hPct));
-    formData.append("coordSystem", "PERCENTAGES");
+  // Send PDF points directly to Python (Python will handle rasterization)
+  formData.append("xPt", String(xPt));
+  formData.append("yPt", String(yPt));
+  formData.append("wPt", String(wPt));
+  formData.append("hPt", String(hPt));
+  formData.append("pageWidthPt", String(pageWidthPt));
+  formData.append("pageHeightPt", String(pageHeightPt));
+  
+  // Add requestId if provided (for correlated logging)
+  if (config.requestId) {
+    formData.append("requestId", config.requestId);
   }
   
   formData.append(
@@ -128,6 +111,22 @@ export async function callSignedOcrService(
     filename || "signed-work-order.pdf"
   );
 
+  console.log(`[Signed OCR] Calling OCR endpoint:`, endpoint);
+  console.log(`[Signed OCR] Sending PDF points to Python:`, {
+    requestId: config.requestId,
+    templateId: config.templateId,
+    page: config.page,
+    xPt,
+    yPt,
+    wPt,
+    hPt,
+    pageWidthPt,
+    pageHeightPt,
+    dpi: config.dpi ?? 200,
+    pdfSize: pdfBuffer.length,
+    filename: filename || "signed-work-order.pdf",
+  });
+
   const response = await fetch(endpoint, {
     method: "POST",
     body: formData,
@@ -135,9 +134,55 @@ export async function callSignedOcrService(
 
   if (!response.ok) {
     const text = await response.text();
-    console.error("[Signed OCR] Error response:", text);
+    
+    // Try to parse JSON error response (Python FastAPI typically returns JSON)
+    let errorMessage = text;
+    let errorDetail: unknown = null;
+    try {
+      const errorJson = JSON.parse(text);
+      // FastAPI error format: { "detail": "error message" } or { "detail": { "error": "..." } }
+      if (errorJson.detail) {
+        if (typeof errorJson.detail === "string") {
+          errorMessage = errorJson.detail;
+        } else if (errorJson.detail.error) {
+          errorMessage = errorJson.detail.error;
+          errorDetail = errorJson.detail;
+        } else {
+          errorMessage = JSON.stringify(errorJson.detail);
+          errorDetail = errorJson.detail;
+        }
+      } else {
+        errorMessage = JSON.stringify(errorJson);
+        errorDetail = errorJson;
+      }
+    } catch {
+      // Not JSON, use text as-is (truncated)
+      errorMessage = text.substring(0, 500);
+    }
+    
+    console.error("[Signed OCR] Error response from Python:", {
+      status: response.status,
+      statusText: response.statusText,
+      headers: Object.fromEntries(response.headers.entries()),
+      errorMessage,
+      errorDetail,
+      rawBody: text.substring(0, 1000), // First 1000 chars for debugging
+    });
+    console.error("[Signed OCR] Request that failed:", {
+      endpoint,
+      templateId: config.templateId,
+      page: config.page,
+      xPt,
+      yPt,
+      wPt,
+      hPt,
+      pageWidthPt,
+      pageHeightPt,
+      dpi: config.dpi ?? 200,
+    });
+    
     throw new Error(
-      `Signed OCR service failed with status ${response.status}: ${text}`
+      `Signed OCR service failed (${response.status}): ${errorMessage}`
     );
   }
 
@@ -172,6 +217,7 @@ export async function callSignedOcrService(
     rawText: data.rawText?.substring(0, 50),
     hasSnippetImageUrl: !!data.snippetImageUrl,
   });
+  console.log("[Signed OCR] Calling OCR endpoint:", endpoint);
 
   // Ensure confidence is a number
   let confidenceValue: number;

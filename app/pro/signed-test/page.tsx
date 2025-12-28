@@ -380,23 +380,23 @@ export default function SignedTestPage() {
               <h2 className="text-lg font-semibold text-white mb-4">
                 Step 1 — Select Facility Manager (FM)
               </h2>
-              <div>
-                <select
-                  value={fmKey}
-                  onChange={(e) => setFmKey(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
+                <div>
+                  <select
+                    value={fmKey}
+                    onChange={(e) => setFmKey(e.target.value)}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
                   <option value="">-- Select FM Key --</option>
-                  <option value="superclean">superclean</option>
-                  <option value="23rdgroup">23rdgroup</option>
-                </select>
+                    <option value="superclean">superclean</option>
+                    <option value="23rdgroup">23rdgroup</option>
+                  </select>
                 {fmKey && (
                   <p className="mt-2 text-sm text-gray-300">
                     You are processing signed work orders for this FM only.
                   </p>
                 )}
               </div>
-            </div>
+                </div>
 
             {/* Step 2: Source Selection */}
             {fmKey && (
@@ -435,22 +435,22 @@ export default function SignedTestPage() {
             {fmKey && sourceMode === "upload" && (
               <div className="bg-gray-800 rounded-lg border border-gray-700 p-6">
                 <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">
-                      Upload Signed PDFs
-                    </label>
-                    <input
-                      type="file"
-                      accept="application/pdf"
-                      multiple
-                      onChange={handleFileUpload}
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Upload Signed PDFs
+                  </label>
+                  <input
+                    type="file"
+                    accept="application/pdf"
+                    multiple
+                    onChange={handleFileUpload}
                       disabled={!fmKey}
                       className="block w-full text-sm text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                    />
-                    <p className="mt-1 text-xs text-gray-400">
-                      You can upload multiple PDF files at once (one work order per PDF)
-                    </p>
-                  </div>
+                  />
+                  <p className="mt-1 text-xs text-gray-400">
+                    You can upload multiple PDF files at once (one work order per PDF)
+                  </p>
+                </div>
 
                   {error && (
                     <div className="mt-4 p-3 bg-red-900/30 border border-red-700 rounded text-red-300 text-sm">
@@ -514,23 +514,23 @@ export default function SignedTestPage() {
                     </p>
                     <p className="text-xs text-gray-500 mb-1">
                       <strong>Note:</strong> Subject line does NOT matter. Emails with any subject (e.g., "paperwork", "signed docs", etc.) will be included as long as they have PDF attachments.
-                    </p>
+                  </p>
                     <p className="text-xs text-gray-500">
                       Label names are case-sensitive. Make sure the label exists in your Gmail and contains emails with PDF attachments.
                     </p>
-                  </div>
+              </div>
 
-                  {gmailError && (
-                    <div className="mt-4 p-3 bg-red-900/30 border border-red-700 rounded text-red-300 text-sm">
-                      Gmail Error: {gmailError}
-                    </div>
-                  )}
+              {gmailError && (
+                <div className="mt-4 p-3 bg-red-900/30 border border-red-700 rounded text-red-300 text-sm">
+                  Gmail Error: {gmailError}
+                </div>
+              )}
 
-                  {/* Gmail Email List */}
-                  {gmailEmails.length > 0 && (
-                    <div className="mt-6 bg-gray-800 rounded-lg p-6 border border-gray-700">
-                      <div className="space-y-4">
-                        <div className="flex items-center justify-between">
+              {/* Gmail Email List */}
+              {gmailEmails.length > 0 && (
+                <div className="mt-6 bg-gray-800 rounded-lg p-6 border border-gray-700">
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
                       <h3 className="text-lg font-semibold text-white">
                         Gmail Emails ({gmailEmails.length})
                       </h3>
@@ -671,49 +671,49 @@ export default function SignedTestPage() {
                             const isDisabled = email.attachmentCount === 0 || isMismatch;
                             
                             return (
-                              <tr
-                                key={email.id}
-                                className={`hover:bg-gray-750 ${
-                                  selectedGmailEmails.has(email.id) ? "bg-gray-700/50" : ""
+                            <tr
+                              key={email.id}
+                              className={`hover:bg-gray-750 ${
+                                selectedGmailEmails.has(email.id) ? "bg-gray-700/50" : ""
                                 } ${isMismatch ? "opacity-60" : ""}`}
-                              >
-                                <td className="px-2 py-3">
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedGmailEmails.has(email.id)}
-                                    onChange={() => {
-                                      const next = new Set(selectedGmailEmails);
-                                      if (next.has(email.id)) {
-                                        next.delete(email.id);
-                                      } else {
-                                        next.add(email.id);
-                                      }
-                                      setSelectedGmailEmails(next);
-                                    }}
+                            >
+                              <td className="px-2 py-3">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedGmailEmails.has(email.id)}
+                                  onChange={() => {
+                                    const next = new Set(selectedGmailEmails);
+                                    if (next.has(email.id)) {
+                                      next.delete(email.id);
+                                    } else {
+                                      next.add(email.id);
+                                    }
+                                    setSelectedGmailEmails(next);
+                                  }}
                                     disabled={isDisabled}
-                                    className="rounded border-gray-600 text-blue-600 focus:ring-blue-500 disabled:opacity-30"
+                                  className="rounded border-gray-600 text-blue-600 focus:ring-blue-500 disabled:opacity-30"
                                     title={isMismatch ? `This email appears to belong to FM '${likelyFm}'. Switch FM Key to process.` : undefined}
-                                  />
-                                </td>
+                                />
+                              </td>
                                 <td className="px-3 py-3 text-sm font-medium text-white">
                                   <div className="flex items-center gap-2">
                                     <span className="truncate">{email.subject || "(No subject)"}</span>
                                   </div>
-                                </td>
-                                <td className="px-3 py-3 text-sm text-gray-400">
-                                  {email.date ? new Date(email.date).toLocaleDateString() : ""}
-                                </td>
-                                <td className="px-3 py-3 text-center">
-                                  {email.attachmentCount > 0 ? (
-                                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-900/50 text-green-300">
-                                      {email.attachmentCount}
-                                    </span>
-                                  ) : (
-                                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-gray-700 text-gray-400">
-                                      0
-                                    </span>
-                                  )}
-                                </td>
+                              </td>
+                              <td className="px-3 py-3 text-sm text-gray-400">
+                                {email.date ? new Date(email.date).toLocaleDateString() : ""}
+                              </td>
+                              <td className="px-3 py-3 text-center">
+                                {email.attachmentCount > 0 ? (
+                                  <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-900/50 text-green-300">
+                                    {email.attachmentCount}
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-gray-700 text-gray-400">
+                                    0
+                                  </span>
+                                )}
+                              </td>
                                 <td className="px-3 py-3">
                                   {likelyFm ? (
                                     <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-900/50 text-blue-300">
@@ -725,16 +725,16 @@ export default function SignedTestPage() {
                                     </span>
                                   )}
                                 </td>
-                              </tr>
+                            </tr>
                             );
                           })}
                         </tbody>
                       </table>
-                      </div>
                     </div>
-                    </div>
-                  )}
-               
+                  </div>
+                </div>
+              )}
+
 
                   {gmailSummary && gmailSummary.items && gmailSummary.items.length > 0 && (
                     <div className="mt-6 space-y-4">
@@ -743,32 +743,32 @@ export default function SignedTestPage() {
                         <div className="flex gap-2 flex-wrap">
                           <p className="text-sm text-gray-300">Query: <span className="font-mono text-xs">{gmailSummary.queryUsed}</span></p>
                           <p className="text-sm text-gray-300">Scanned: {gmailSummary.scannedMessages} messages, {gmailSummary.scannedAttachments} attachments</p>
-                          {gmailSummary.results.updated > 0 && (
-                            <span className="px-2 py-1 bg-green-900 text-green-300 rounded text-xs">
-                              ✓ {gmailSummary.results.updated} Updated
-                            </span>
-                          )}
-                          {gmailSummary.results.alreadyProcessed > 0 && (
-                            <span className="px-2 py-1 bg-blue-900 text-blue-300 rounded text-xs">
-                              ✓ {gmailSummary.results.alreadyProcessed} Already Processed
-                            </span>
-                          )}
-                          {gmailSummary.results.needsReview > 0 && (
-                            <span className="px-2 py-1 bg-yellow-900 text-yellow-300 rounded text-xs">
-                              ⚠ {gmailSummary.results.needsReview} Need Review
-                            </span>
-                          )}
-                          {gmailSummary.results.blocked > 0 && (
-                            <span className="px-2 py-1 bg-orange-900 text-orange-300 rounded text-xs">
-                              🚫 {gmailSummary.results.blocked} Blocked
-                            </span>
-                          )}
-                          {gmailSummary.results.errors > 0 && (
-                            <span className="px-2 py-1 bg-red-900 text-red-300 rounded text-xs">
-                              ✗ {gmailSummary.results.errors} Errors
-                            </span>
-                          )}
-                        </div>
+                      {gmailSummary.results.updated > 0 && (
+                        <span className="px-2 py-1 bg-green-900 text-green-300 rounded text-xs">
+                          ✓ {gmailSummary.results.updated} Updated
+                        </span>
+                      )}
+                      {gmailSummary.results.alreadyProcessed > 0 && (
+                        <span className="px-2 py-1 bg-blue-900 text-blue-300 rounded text-xs">
+                          ✓ {gmailSummary.results.alreadyProcessed} Already Processed
+                        </span>
+                      )}
+                      {gmailSummary.results.needsReview > 0 && (
+                        <span className="px-2 py-1 bg-yellow-900 text-yellow-300 rounded text-xs">
+                          ⚠ {gmailSummary.results.needsReview} Need Review
+                        </span>
+                      )}
+                      {gmailSummary.results.blocked > 0 && (
+                        <span className="px-2 py-1 bg-orange-900 text-orange-300 rounded text-xs">
+                          🚫 {gmailSummary.results.blocked} Blocked
+                        </span>
+                      )}
+                      {gmailSummary.results.errors > 0 && (
+                        <span className="px-2 py-1 bg-red-900 text-red-300 rounded text-xs">
+                          ✗ {gmailSummary.results.errors} Errors
+                        </span>
+                      )}
+                    </div>
                       </div>
                       
                       <div className="space-y-2">
@@ -808,14 +808,14 @@ export default function SignedTestPage() {
                               </svg>
                               <span className="font-mono text-sm text-gray-300 truncate flex-1">{item.filename}</span>
                               <span className={`px-3 py-1 rounded text-xs font-medium flex-shrink-0 ${
-                                item.status === "UPDATED" ? "bg-green-900 text-green-300" :
-                                item.status === "ALREADY_PROCESSED" ? "bg-blue-900 text-blue-300" :
-                                item.status === "NEEDS_REVIEW" ? "bg-yellow-900 text-yellow-300" :
-                                item.status === "BLOCKED" ? "bg-orange-900 text-orange-300" :
-                                "bg-red-900 text-red-300"
-                              }`}>
-                                {item.status}
-                              </span>
+                                  item.status === "UPDATED" ? "bg-green-900 text-green-300" :
+                                  item.status === "ALREADY_PROCESSED" ? "bg-blue-900 text-blue-300" :
+                                  item.status === "NEEDS_REVIEW" ? "bg-yellow-900 text-yellow-300" :
+                                  item.status === "BLOCKED" ? "bg-orange-900 text-orange-300" :
+                                  "bg-red-900 text-red-300"
+                                }`}>
+                                  {item.status}
+                                </span>
                               {item.woNumber && (
                                 <span className="text-sm text-gray-400 font-mono flex-shrink-0">
                                   WO: {item.woNumber}
@@ -870,7 +870,7 @@ export default function SignedTestPage() {
                                     >
                                       {item.fixAction || "Fix Issue"}
                                     </button>
-                                  )}
+                              )}
 
                                   {/* Snippet Image - Show if available */}
                                   {(item.snippetImageUrl || item.snippetDriveUrl) && (
@@ -928,10 +928,10 @@ export default function SignedTestPage() {
                                             />
                                           );
                                         })()}
-                                      </div>
-                                    </div>
+                            </div>
+                        </div>
                                   )}
-                                </div>
+                      </div>
                               )}
 
                               {/* Basic Info */}
@@ -956,11 +956,11 @@ export default function SignedTestPage() {
                                       View PDF
                                     </a>
                                   </p>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                        </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
                       );
                       })}
                       </div>

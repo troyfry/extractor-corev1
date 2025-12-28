@@ -202,17 +202,17 @@ export async function POST(req: Request) {
          // Extract PDF attachment references (without downloading yet)
          const pdfRefs = extractPdfAttachments(payload);
          console.log(`[Gmail Process] Found ${pdfRefs.length} PDF attachment(s) in message ${message.id}`);
-
-         // Process each PDF attachment
+        
+        // Process each PDF attachment
          for (const pdfRef of pdfRefs) {
-           if (scannedAttachments >= maxAttachments) {
-             break;
-           }
+          if (scannedAttachments >= maxAttachments) {
+            break;
+          }
 
-           scannedAttachments++;
+          scannedAttachments++;
            const filename = pdfRef.filename || `attachment-${scannedAttachments}.pdf`;
 
-           try {
+          try {
              // Warn if filename hints at a different fmKey (visibility only, no blocking)
              const hint = guessHintFromFilename(filename);
              if (hint && hint !== effectiveFmKey) {
@@ -272,13 +272,13 @@ export async function POST(req: Request) {
               results.errors++;
             }
 
-             items.push({
-               filename,
-               messageId: message.id,
-               status,
-               woNumber: processResult.data.woNumber,
-               reason: processResult.data.reason || null,
-               signedPdfUrl: processResult.data.signedPdfUrl || null,
+            items.push({
+              filename,
+              messageId: message.id,
+              status,
+              woNumber: processResult.data.woNumber,
+              reason: processResult.data.reason || null,
+              signedPdfUrl: processResult.data.signedPdfUrl || null,
                fileHash: processResult.data.fileHash || undefined,
                filenameHint: hint && hint !== effectiveFmKey ? hint : null, // Include hint if it doesn't match
                fixHref: processResult.data.fixHref || null,
@@ -288,7 +288,7 @@ export async function POST(req: Request) {
                snippetImageUrl: processResult.data.snippetImageUrl || null,
                snippetDriveUrl: processResult.data.snippetDriveUrl || null,
                fmKey: effectiveFmKey,
-             });
+            });
 
             console.log(`[Gmail Process] Processed ${filename}: ${status}`, {
               woNumber: processResult.data.woNumber,

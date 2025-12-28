@@ -32,6 +32,7 @@ import { NEEDS_REVIEW_REASONS } from "@/lib/workOrders/reasons";
 import { getNeedsReviewUx } from "@/lib/workOrders/reviewReasons";
 import { sha256Buffer } from "@/lib/workOrders/fileHash";
 import { checkSignedPdfAlreadyProcessed } from "@/lib/workOrders/dedupe";
+import crypto from "crypto";
 
 const MAIN_SHEET_NAME =
   process.env.GOOGLE_SHEETS_MAIN_SHEET_NAME || "Sheet1";
@@ -175,7 +176,11 @@ export async function processSignedPdf(
   const { normalizeFmKey } = await import("@/lib/templates/fmProfiles");
   const normalizedFmKey = normalizeFmKey(fmKey);
 
+  // Generate requestId for correlated logging
+  const requestId = crypto.randomUUID();
+
   console.log("[Signed Processor] Starting processing:", {
+    requestId,
     rawFmKey: fmKey,
     normalizedFmKey,
     filename: originalFilename,
@@ -349,6 +354,37 @@ export async function processSignedPdf(
       wPt: Math.min(cfg.pageWidthPt! - Math.max(0, cfg.xPt! - padPt), cfg.wPt! + 2 * padPt),
       hPt: Math.min(cfg.pageHeightPt! - Math.max(0, cfg.yPt! - padPt), cfg.hPt! + 2 * padPt),
     };
+  }
+
+  function assertPointsCrop(points?: {
+    xPt?: number;
+    yPt?: number;
+    wPt?: number;
+    hPt?: number;
+    pageWidthPt?: number;
+    pageHeightPt?: number;
+    page?: number;
+  }): void {
+    if (!points) {
+      throw new Error("Missing crop points");
+    }
+    const { xPt, yPt, wPt, hPt, pageWidthPt, pageHeightPt, page } = points;
+
+    const ok =
+      [xPt, yPt, wPt, hPt, pageWidthPt, pageHeightPt, page].every(
+        (v) => typeof v === "number" && Number.isFinite(v)
+      ) &&
+      wPt! > 0 &&
+      hPt! > 0 &&
+      pageWidthPt! > 0 &&
+      pageHeightPt! > 0 &&
+      page! >= 1;
+
+    if (!ok) {
+      throw new Error(
+        "Invalid or incomplete PDF_POINTS crop (requires xPt,yPt,wPt,hPt,pageWidthPt,pageHeightPt,page>=1)."
+      );
+    }
   }
 
   function isValidWoNumber(woNumber: string | null): boolean {
@@ -606,6 +642,113 @@ export async function processSignedPdf(
   const templatePage = templateConfig.page;
   const ocrAttempts: OcrAttempt[] = [];
 
+  // Guard: assert points are valid before calling OCR (if in points mode)
+  if (pointsMode) {
+    try {
+      assertPointsCrop({
+        xPt: templateConfig.xPt,
+        yPt: templateConfig.yPt,
+        wPt: templateConfig.wPt,
+        hPt: templateConfig.hPt,
+        pageWidthPt: templateConfig.pageWidthPt,
+        pageHeightPt: templateConfig.pageHeightPt,
+        page: templatePage,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`[Signed Processor] Points validation failed:`, {
+        requestId,
+        fmKey: normalizedFmKey,
+        templateId: templateConfig.templateId,
+        error: errorMessage,
+      });
+      
+      // Return needs review result
+      const reviewId = `review_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      const createdAt = new Date().toISOString();
+      await appendSignedNeedsReviewRow(accessToken, spreadsheetId, {
+        review_id: reviewId,
+        created_at: createdAt,
+        fmKey: normalizedFmKey,
+        signed_pdf_url: signedPdfUrl,
+        preview_image_url: null,
+        raw_text: "",
+        confidence: "low",
+        reason: NEEDS_REVIEW_REASONS.INVALID_CROP,
+        manual_work_order_number: null,
+        resolved: "FALSE",
+        resolved_at: null,
+        file_hash: fileHash,
+        source: source,
+        gmail_message_id: sourceMeta?.gmailMessageId || null,
+        gmail_attachment_id: sourceMeta?.gmailAttachmentId || null,
+        gmail_subject: sourceMeta?.gmailSubject || null,
+        gmail_from: sourceMeta?.gmailFrom || null,
+        gmail_date: sourceMeta?.gmailDate || null,
+      });
+
+      const cropUx = getNeedsReviewUx(NEEDS_REVIEW_REASONS.INVALID_CROP, normalizedFmKey);
+      
+      return {
+        mode: "NEEDS_REVIEW",
+        data: {
+          fmKey: normalizedFmKey,
+          woNumber: null,
+          ocrConfidenceLabel: "low",
+          ocrConfidenceRaw: 0,
+          confidenceLabel: "low",
+          confidenceRaw: 0,
+          automationStatus: "BLOCKED",
+          automationBlocked: true,
+          automationBlockReason: NEEDS_REVIEW_REASONS.INVALID_CROP,
+          signedPdfUrl,
+          snippetImageUrl: null,
+          snippetDriveUrl: null,
+          jobExistsInSheet1: false,
+          retryAttempted: false,
+          alternatePageAttempted: false,
+          reason: NEEDS_REVIEW_REASONS.INVALID_CROP,
+          fixHref: cropUx.href || null,
+          fixAction: cropUx.actionLabel || null,
+          reasonTitle: cropUx.title,
+          reasonMessage: cropUx.message,
+          tone: cropUx.tone,
+          templateUsed: {
+            templateId: templateConfig.templateId,
+            fmKey: normalizedFmKey,
+            page: templatePage ?? null,
+            region: normalizedRegion,
+            dpi: templateConfig.dpi ?? null,
+            coordSystem: "PDF_POINTS_TOP_LEFT",
+            xPt: templateConfig.xPt ?? null,
+            yPt: templateConfig.yPt ?? null,
+            wPt: templateConfig.wPt ?? null,
+            hPt: templateConfig.hPt ?? null,
+            pageWidthPt: templateConfig.pageWidthPt ?? null,
+            pageHeightPt: templateConfig.pageHeightPt ?? null,
+          },
+          chosenPage: null,
+          attemptedPages: "",
+        },
+      };
+    }
+  }
+
+  // Log OCR attempt with requestId
+  console.log(`[Signed Processor] Calling OCR service:`, {
+    requestId,
+    fmKey: normalizedFmKey,
+    templateId: templateConfig.templateId,
+    page: templatePage,
+    pointsMode,
+    xPt: templateConfig.xPt,
+    yPt: templateConfig.yPt,
+    wPt: templateConfig.wPt,
+    hPt: templateConfig.hPt,
+    pageWidthPt: templateConfig.pageWidthPt,
+    pageHeightPt: templateConfig.pageHeightPt,
+  });
+
   const firstAttempt = await callSignedOcrService(
     pdfBuffer,
     originalFilename,
@@ -621,6 +764,7 @@ export async function processSignedPdf(
       hPt: templateConfig.hPt,
       pageWidthPt: templateConfig.pageWidthPt,
       pageHeightPt: templateConfig.pageHeightPt,
+      requestId,
     }
   );
 
@@ -656,6 +800,7 @@ export async function processSignedPdf(
           hPt: expanded.hPt,
           pageWidthPt: templateConfig.pageWidthPt,
           pageHeightPt: templateConfig.pageHeightPt,
+          requestId,
         }
       );
 
@@ -679,6 +824,7 @@ export async function processSignedPdf(
           page: templatePage,
           region: expandedRegion,
           dpi: templateConfig.dpi,
+          requestId,
         }
       );
 
@@ -730,6 +876,7 @@ export async function processSignedPdf(
           hPt: templateConfig.hPt,
           pageWidthPt: templateConfig.pageWidthPt,
           pageHeightPt: templateConfig.pageHeightPt,
+          requestId,
         }
       );
 

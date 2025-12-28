@@ -134,6 +134,9 @@ function TemplateZonesPageContent() {
   const [pdfDoc, setPdfDoc] = useState<any>(null);
   const hasInitializedFromQuery = useRef<boolean>(false);
   const [manualCoords, setManualCoords] = useState<{ xPct: string; yPct: string; wPct: string; hPct: string } | null>(null);
+  const [manualPoints, setManualPoints] = useState<{ xPt: string; yPt: string; wPt: string; hPt: string } | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [currentViewport, setCurrentViewport] = useState<any>(null);
   
   // Known working coordinates per fmKey (can be expanded)
   // These are tested coordinates that work well for each FM profile
@@ -468,10 +471,19 @@ function TemplateZonesPageContent() {
     try {
       const page = await pdf.getPage(pageNum);
       
-      // Get PDF page size in points (scale 1.0 == PDF units)
-      const pdfPageViewport = page.getViewport({ scale: 1.0 });
-      setPageWidthPt(pdfPageViewport.width);
-      setPageHeightPt(pdfPageViewport.height);
+      // Get PDF page size in true PDF points (user space units)
+      // Note: getViewport({ scale: 1.0 }) gives CSS pixels (96 DPI), not PDF points (72 DPI)
+      // Use page.view to get actual PDF user-space coordinates in points
+      const [xMin, yMin, xMax, yMax] = page.view; // PDF units (points)
+      const truePageWidthPt = xMax - xMin;
+      const truePageHeightPt = yMax - yMin;
+      setPageWidthPt(truePageWidthPt);
+      setPageHeightPt(truePageHeightPt);
+      
+      // Optional sanity log to verify the fix
+      const v1 = page.getViewport({ scale: 1.0 });
+      console.log("[Template Zones] page.view (pt):", page.view, "wPt:", truePageWidthPt, "hPt:", truePageHeightPt);
+      console.log("[Template Zones] viewport scale=1 (css px):", v1.width, v1.height);
       
       // Use scale 2.0 for preview rendering (better quality)
       const viewport = page.getViewport({ scale: 2.0 });
@@ -486,6 +498,9 @@ function TemplateZonesPageContent() {
       canvas.width = viewport.width;
       canvas.height = viewport.height;
 
+      // Store viewport for accurate pixel->PDF point conversion
+      setCurrentViewport(viewport);
+
       // Render PDF page to canvas
       const renderContext = {
         canvasContext: context,
@@ -497,8 +512,9 @@ function TemplateZonesPageContent() {
       const dataUrl = canvas.toDataURL("image/png");
       
       setPreviewImage(dataUrl);
-      setImageWidth(viewport.width);
-      setImageHeight(viewport.height);
+      // Use canvas dimensions (matches viewport.width/height) - ensures rectPx coordinates match render dimensions
+      setImageWidth(canvas.width);
+      setImageHeight(canvas.height);
       
       // If we have a saved template for this page, the useEffect will convert it to pixels
       // Otherwise, auto-apply calibrated coordinates if available (for new users)
@@ -595,6 +611,96 @@ function TemplateZonesPageContent() {
     setError(null);
   }
 
+  function calculatePoints(): { xPt: number; yPt: number; wPt: number; hPt: number } | null {
+    if (!cropZone || !currentViewport || !pageWidthPt || !pageHeightPt || !imageWidth || !imageHeight) return null;
+
+    // Convert cropZone (pixels) to viewport pixels, then to PDF points
+    try {
+      // cropZone is in imageWidth/imageHeight pixels (from viewport at scale 2.0)
+      // Convert to viewport pixels (same as imageWidth/imageHeight at scale 2.0)
+      const x0 = cropZone.x;
+      const y0 = cropZone.y;
+      const x1 = cropZone.x + cropZone.width;
+      const y1 = cropZone.y + cropZone.height;
+
+      const [x0Pt, y0PtBottom] = currentViewport.convertToPdfPoint(x0, y0);
+      const [x1Pt, y1PtBottom] = currentViewport.convertToPdfPoint(x1, y1);
+
+      const xMin = Math.min(x0Pt, x1Pt);
+      const xMax = Math.max(x0Pt, x1Pt);
+      const yMinBottom = Math.min(y0PtBottom, y1PtBottom);
+      const yMaxBottom = Math.max(y0PtBottom, y1PtBottom);
+
+      const xPt = xMin;
+      const wPt = xMax - xMin;
+      const hPt = yMaxBottom - yMinBottom;
+      const yPtTopLeft = pageHeightPt - yMaxBottom;
+
+      return { xPt, yPt: yPtTopLeft, wPt, hPt };
+    } catch {
+      return null;
+    }
+  }
+
+  function handleManualPointsChange(field: "xPt" | "yPt" | "wPt" | "hPt", value: string) {
+    if (!pageWidthPt || !pageHeightPt) return;
+    
+    const currentPoints = calculatePoints();
+    const newManualPoints = manualPoints || (currentPoints ? {
+      xPt: currentPoints.xPt.toFixed(2),
+      yPt: currentPoints.yPt.toFixed(2),
+      wPt: currentPoints.wPt.toFixed(2),
+      hPt: currentPoints.hPt.toFixed(2),
+    } : null);
+    
+    if (!newManualPoints) return;
+    
+    setManualPoints({ ...newManualPoints, [field]: value });
+  }
+
+  function handleApplyManualPoints() {
+    if (!manualPoints || !pageWidthPt || !pageHeightPt || !imageWidth || !imageHeight) return;
+    
+    const xPt = parseFloat(manualPoints.xPt);
+    const yPt = parseFloat(manualPoints.yPt);
+    const wPt = parseFloat(manualPoints.wPt);
+    const hPt = parseFloat(manualPoints.hPt);
+
+    if (isNaN(xPt) || isNaN(yPt) || isNaN(wPt) || isNaN(hPt)) {
+      setError("All point values must be valid numbers");
+      return;
+    }
+
+    // Validate bounds
+    if (xPt < 0 || yPt < 0 || wPt <= 0 || hPt <= 0 || 
+        xPt + wPt > pageWidthPt || yPt + hPt > pageHeightPt) {
+      setError(`Point values out of bounds. Page size: ${pageWidthPt.toFixed(2)} x ${pageHeightPt.toFixed(2)} points`);
+      return;
+    }
+
+    // Convert PDF points to percentages, then to pixels
+    const xPct = xPt / pageWidthPt;
+    const yPct = yPt / pageHeightPt;
+    const wPct = wPt / pageWidthPt;
+    const hPct = hPt / pageHeightPt;
+
+    // Clamp values
+    const clampedXPct = Math.max(0, Math.min(1, xPct));
+    const clampedYPct = Math.max(0, Math.min(1, yPct));
+    const clampedWPct = Math.max(0, Math.min(1 - clampedXPct, wPct));
+    const clampedHPct = Math.max(0, Math.min(1 - clampedYPct, hPct));
+
+    setCropZone({
+      x: clampedXPct * imageWidth,
+      y: clampedYPct * imageHeight,
+      width: clampedWPct * imageWidth,
+      height: clampedHPct * imageHeight,
+    });
+    setCoordsPage(selectedPage);
+    setManualPoints(null);
+    setError(null);
+  }
+
   async function handleSave() {
     // Prevent double-submit
     if (isSaving) return;
@@ -635,6 +741,20 @@ function TemplateZonesPageContent() {
     setIsSaving(true);
     setError(null);
     setSuccess(null);
+
+    // Debug log to verify rectPx matches render dimensions
+    console.log("[Template Zones Save] Debug coordinates:", {
+      rectPx: {
+        x: cropZone.x,
+        y: cropZone.y,
+        w: cropZone.width,
+        h: cropZone.height,
+      },
+      renderWidthPx: imageWidth,
+      renderHeightPx: imageHeight,
+      pageWidthPt: pageWidthPt,
+      pageHeightPt: pageHeightPt,
+    });
 
     try {
       const response = await fetch("/api/onboarding/templates/save", {
@@ -678,6 +798,8 @@ function TemplateZonesPageContent() {
     setStartPos(null);
     setIsSelecting(false);
     setManualCoords(null);
+    setManualPoints(null);
+    setCurrentViewport(null);
   }
 
   function handleApplyCalibratedCoords() {
@@ -842,10 +964,90 @@ function TemplateZonesPageContent() {
                   )}
                 </div>
 
-                {/* Percentages Display / Edit */}
-                {percentages && (
+                {/* PDF Points Display / Edit (Primary) */}
+                {cropZone && pageWidthPt > 0 && pageHeightPt > 0 && (
                   <div className="mt-4 p-4 bg-slate-800 rounded-lg">
-                    <div className="text-sm font-medium mb-3">Crop Zone Percentages (0.0 to 1.0):</div>
+                    <div className="text-sm font-medium mb-3">Crop Zone PDF Points (editable):</div>
+                    <div className="grid grid-cols-4 gap-4 text-sm">
+                      <div>
+                        <label className="block text-slate-400 mb-1 text-xs">xPt:</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          max={pageWidthPt}
+                          value={manualPoints?.xPt ?? (calculatePoints()?.xPt.toFixed(2) ?? "0.00")}
+                          onChange={(e) => handleManualPointsChange("xPt", e.target.value)}
+                          onBlur={() => {
+                            if (manualPoints) {
+                              handleApplyManualPoints();
+                            }
+                          }}
+                          className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 mb-1 text-xs">yPt:</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          max={pageHeightPt}
+                          value={manualPoints?.yPt ?? (calculatePoints()?.yPt.toFixed(2) ?? "0.00")}
+                          onChange={(e) => handleManualPointsChange("yPt", e.target.value)}
+                          onBlur={() => {
+                            if (manualPoints) {
+                              handleApplyManualPoints();
+                            }
+                          }}
+                          className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 mb-1 text-xs">wPt:</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          max={pageWidthPt}
+                          value={manualPoints?.wPt ?? (calculatePoints()?.wPt.toFixed(2) ?? "0.00")}
+                          onChange={(e) => handleManualPointsChange("wPt", e.target.value)}
+                          onBlur={() => {
+                            if (manualPoints) {
+                              handleApplyManualPoints();
+                            }
+                          }}
+                          className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 mb-1 text-xs">hPt:</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          max={pageHeightPt}
+                          value={manualPoints?.hPt ?? (calculatePoints()?.hPt.toFixed(2) ?? "0.00")}
+                          onChange={(e) => handleManualPointsChange("hPt", e.target.value)}
+                          onBlur={() => {
+                            if (manualPoints) {
+                              handleApplyManualPoints();
+                            }
+                          }}
+                          className="w-full px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        />
+                      </div>
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Edit PDF point values above to adjust the crop zone. Page size: {pageWidthPt.toFixed(2)} x {pageHeightPt.toFixed(2)} points. Changes apply when you click outside the field.
+                    </p>
+                  </div>
+                )}
+
+                {/* Percentages Display / Edit (Legacy - hidden by default) */}
+                {false && percentages && (
+                  <div className="mt-4 p-4 bg-slate-800 rounded-lg">
+                    <div className="text-sm font-medium mb-3">Crop Zone Percentages (0.0 to 1.0) - Legacy:</div>
                     <div className="grid grid-cols-4 gap-4 text-sm">
                       <div>
                         <label className="block text-slate-400 mb-1 text-xs">xPct:</label>
