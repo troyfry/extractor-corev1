@@ -901,6 +901,8 @@ export default function OnboardingTemplatesPage() {
       setSuccess("Template saved successfully!");
       // Reload the template to update savedTemplate state
       await loadExistingTemplate();
+      
+      // Don't auto-redirect - let user add more templates or click "Go to Dashboard" when ready
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save template");
     } finally {
@@ -1271,10 +1273,18 @@ export default function OnboardingTemplatesPage() {
             )}
             {savedTemplate && (
               <button
-                onClick={() => router.push("/onboarding/done")}
+                onClick={async () => {
+                  // Mark onboarding complete when user explicitly clicks to finish
+                  try {
+                    await fetch("/api/onboarding/complete", { method: "POST" });
+                  } catch (e) {
+                    console.error("Failed to mark onboarding complete:", e);
+                  }
+                  router.push("/pro");
+                }}
                 className="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-medium transition-colors"
               >
-                Continue to Next Step →
+                Go to Dashboard →
               </button>
             )}
           </div>

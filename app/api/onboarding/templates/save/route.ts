@@ -246,6 +246,9 @@ export async function POST(request: Request) {
 
     const apiCalls = getApiCallCount();
     console.log(`[onboarding/templates/save] Sheets API calls: ${apiCalls}`);
+    
+    // Template saved successfully - don't mark onboarding complete here
+    // User can add multiple templates, then click "Go to Dashboard" when ready
     return NextResponse.json({
       success: true,
     });

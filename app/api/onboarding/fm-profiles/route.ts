@@ -126,10 +126,21 @@ export async function POST(request: Request) {
 
     const apiCalls = getApiCallCount();
     console.log(`[onboarding/fm-profiles] Sheets API calls: ${apiCalls}`);
-    return NextResponse.json({
+    
+    // Mark FM profiles step as ready
+    const response = NextResponse.json({
       success: true,
       saved: profilesToSave.length,
     });
+    
+    response.cookies.set("fmProfilesReady", "true", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 30 * 24 * 60 * 60, // 30 days
+    });
+    
+    return response;
   } catch (error) {
     console.error("Error saving FM profiles:", error);
     const message = error instanceof Error ? error.message : "Internal server error";

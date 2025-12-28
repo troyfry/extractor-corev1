@@ -44,11 +44,46 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
-    const { openaiKey } = body;
+    const { openaiKey, skip } = body;
 
-    if (!openaiKey || typeof openaiKey !== "string") {
+    // Handle skip option or empty key (treat as skip)
+    if (skip === true || !openaiKey || (typeof openaiKey === "string" && !openaiKey.trim())) {
+      // Get the main spreadsheet ID from cookie (set during Google step)
+      const cookieStore = await cookies();
+      const mainSpreadsheetId = cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
+
+      if (mainSpreadsheetId) {
+        // Ensure Users sheet exists
+        await ensureUsersSheet(user.googleAccessToken, mainSpreadsheetId, { allowEnsure: true });
+
+        // Get existing user row
+        const userRow = await getUserRowById(user.googleAccessToken, mainSpreadsheetId, user.userId);
+        if (userRow) {
+          // Store blank key (user skipped)
+          await upsertUserRow(user.googleAccessToken, mainSpreadsheetId, {
+            ...userRow,
+            openaiKeyEncrypted: "", // Store blank to indicate skipped
+          }, { allowEnsure: true });
+        }
+      }
+
+      const response = NextResponse.json({ success: true, skipped: true });
+      
+      // Mark as skipped (treats skip as complete for flow purposes)
+      response.cookies.set("openaiReady", "skipped", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        maxAge: 30 * 24 * 60 * 60, // 30 days
+      });
+
+      return response;
+    }
+
+    // Validate OpenAI key format
+    if (typeof openaiKey !== "string") {
       return NextResponse.json(
-        { error: "openaiKey is required" },
+        { error: "openaiKey must be a string" },
         { status: 400 }
       );
     }
@@ -102,7 +137,17 @@ export async function POST(request: Request) {
       openaiKeyEncrypted: encryptedKey,
     }, { allowEnsure: true });
 
-    return NextResponse.json({ success: true });
+    // Mark OpenAI step as ready (AI enabled)
+    const response = NextResponse.json({ success: true });
+    
+    response.cookies.set("openaiReady", "true", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 30 * 24 * 60 * 60, // 30 days
+    });
+
+    return response;
   } catch (error) {
     console.error("Error saving OpenAI key:", error);
     const message = error instanceof Error ? error.message : "Internal server error";
