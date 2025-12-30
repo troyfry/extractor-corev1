@@ -71,6 +71,26 @@ function getLikelyFmFromSubject(subject: string): string | null {
   return suggestFmKeyFromSubject(subject);
 }
 
+/**
+ * Map status values to user-friendly labels for display in badges/pills
+ */
+function getStatusLabel(status: string): string {
+  switch (status) {
+    case "UPDATED":
+      return "✓ Updated";
+    case "ALREADY_PROCESSED":
+      return "✓ Already Processed";
+    case "NEEDS_REVIEW":
+      return "⚠ Verification";
+    case "BLOCKED":
+      return "⚠ Blocked";
+    case "ERROR":
+      return "✗ Error";
+    default:
+      return status;
+  }
+}
+
 export default function SignedTestPage() {
   const [fmKey, setFmKey] = useState("");
   const [files, setFiles] = useState<FileInfo[]>([]);
@@ -755,7 +775,7 @@ export default function SignedTestPage() {
                       )}
                       {gmailSummary.results.needsReview > 0 && (
                         <span className="px-2 py-1 bg-yellow-900 text-yellow-300 rounded text-xs">
-                          ⚠ {gmailSummary.results.needsReview} Need Review
+                          ⚠ {gmailSummary.results.needsReview} Verification
                         </span>
                       )}
                       {gmailSummary.results.blocked > 0 && (
@@ -814,7 +834,7 @@ export default function SignedTestPage() {
                                   item.status === "BLOCKED" ? "bg-orange-900 text-orange-300" :
                                   "bg-red-900 text-red-300"
                                 }`}>
-                                  {item.status}
+                                  {getStatusLabel(item.status)}
                                 </span>
                               {item.woNumber && (
                                 <span className="text-sm text-gray-400 font-mono flex-shrink-0">
@@ -826,24 +846,24 @@ export default function SignedTestPage() {
                           
                           {isExpanded && (
                             <div className="px-4 pb-4 space-y-3">
-                              {/* Needs Review / Blocked Section */}
+                              {/* Verification / Blocked Section */}
                               {(item.status === "NEEDS_REVIEW" || item.status === "BLOCKED") && (
                                 <div className="space-y-4">
                                   {/* Reason Explanation */}
                                   {(item.reasonTitle || item.reason) && (
                                     <div className="p-4 bg-yellow-900/20 border border-yellow-700 rounded">
                                       <h4 className="text-md font-semibold text-yellow-300 mb-2">
-                                        {item.reasonTitle || "Needs Review"}
+                                        {item.reasonTitle || "Verification"}
                                       </h4>
                                       <p className="text-sm text-yellow-200/80">
                                         {item.reasonMessage || 
                                          (item.reason ? reasonCopy[item.reason]?.body : null) ||
-                                         "This work order requires manual review."}
+                                         "This work order requires verification."}
                                       </p>
                                     </div>
                                   )}
 
-                                  {/* Fix Button */}
+                                  {/* Verify Button */}
                                   {item.fixHref && (
                                     <button
                                       onClick={() => {
@@ -868,7 +888,7 @@ export default function SignedTestPage() {
                                       }}
                                       className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium transition-colors"
                                     >
-                                      {item.fixAction || "Fix Issue"}
+                                      {item.fixAction || "Verify"}
                                     </button>
                               )}
 
@@ -882,34 +902,70 @@ export default function SignedTestPage() {
                                       <div className="bg-gray-950 rounded border border-gray-800 p-2">
                                         {(() => {
                                           // Prefer Drive URL, but fall back to base64 if Drive upload failed
-                                          const snippetUrl = item.snippetDriveUrl || item.snippetImageUrl;
+                                          const snippetDriveUrl = item.snippetDriveUrl;
+                                          const snippetImageUrl = item.snippetImageUrl;
                                           
-                                          if (!snippetUrl) {
+                                          // Determine the best URL to use
+                                          let directImageUrl: string | null = null;
+                                          let sourceType: "drive" | "base64" | null = null;
+                                          
+                                          // Try Drive URL first if available
+                                          if (snippetDriveUrl) {
+                                            // Handle base64 data URLs (shouldn't happen for Drive URL, but check anyway)
+                                            if (snippetDriveUrl.startsWith("data:image")) {
+                                              directImageUrl = snippetDriveUrl;
+                                              sourceType = "base64";
+                                          }
+                                          // Handle Google Drive URLs - convert to direct image link
+                                            else if (snippetDriveUrl.includes("drive.google.com")) {
+                                            // Try to extract file ID from various Google Drive URL formats
+                                              const fileIdMatch = snippetDriveUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || 
+                                                                snippetDriveUrl.match(/id=([a-zA-Z0-9_-]+)/) ||
+                                                                snippetDriveUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+                                              
+                                            if (fileIdMatch) {
+                                              const fileId = fileIdMatch[1];
+                                                // Try multiple Drive image URL formats for better compatibility
+                                                // Format 1: Thumbnail API (requires public access)
+                                                // Format 2: Direct file access (if publicly shared)
+                                                // Format 3: Use webContentLink if available (from upload response)
+                                                // For now, try thumbnail first, fallback to base64 on error
+                                              directImageUrl = `https://drive.google.com/thumbnail?id=${fileId}&sz=w400`;
+                                                sourceType = "drive";
+                                              } else {
+                                                // Drive URL format not recognized, fall back to base64 if available
+                                                console.warn("Could not extract file ID from Drive URL:", snippetDriveUrl);
+                                                if (snippetImageUrl && snippetImageUrl.startsWith("data:image")) {
+                                                  directImageUrl = snippetImageUrl;
+                                                  sourceType = "base64";
+                                                }
+                                              }
+                                            } else if (snippetDriveUrl.startsWith("http")) {
+                                              // Not a Drive URL, use as-is (might be a direct image URL or webContentLink)
+                                              directImageUrl = snippetDriveUrl;
+                                              sourceType = "drive";
+                                            } else {
+                                              // Invalid URL format, fall back to base64
+                                              console.warn("Invalid snippet URL format:", snippetDriveUrl);
+                                              if (snippetImageUrl && snippetImageUrl.startsWith("data:image")) {
+                                                directImageUrl = snippetImageUrl;
+                                                sourceType = "base64";
+                                              }
+                                            }
+                                          }
+                                          
+                                          // Fall back to base64 if Drive URL wasn't available or failed
+                                          if (!directImageUrl && snippetImageUrl && snippetImageUrl.startsWith("data:image")) {
+                                            directImageUrl = snippetImageUrl;
+                                            sourceType = "base64";
+                                          }
+                                          
+                                          if (!directImageUrl) {
                                             return (
                                               <p className="text-gray-500 text-sm p-4 text-center">
                                                 No snippet image available
                                               </p>
                                             );
-                                          }
-                                          
-                                          let directImageUrl = snippetUrl;
-                                          
-                                          // Handle base64 data URLs - use directly
-                                          if (snippetUrl.startsWith("data:image")) {
-                                            directImageUrl = snippetUrl;
-                                          }
-                                          // Handle Google Drive URLs - convert to direct image link
-                                          else if (snippetUrl.includes("drive.google.com")) {
-                                            // Try to extract file ID from various Google Drive URL formats
-                                            const fileIdMatch = snippetUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || 
-                                                              snippetUrl.match(/id=([a-zA-Z0-9_-]+)/) ||
-                                                              snippetUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-                                              
-                                            if (fileIdMatch) {
-                                              const fileId = fileIdMatch[1];
-                                              // Use the thumbnail format which is more reliable for public images
-                                              directImageUrl = `https://drive.google.com/thumbnail?id=${fileId}&sz=w400`;
-                                            }
                                           }
                                           
                                           return (
@@ -919,11 +975,44 @@ export default function SignedTestPage() {
                                               className="max-w-full h-auto rounded object-contain mx-auto block"
                                               style={{ maxHeight: "200px", maxWidth: "300px" }}
                                               onError={(e) => {
-                                                console.error("Failed to load snippet image:", {
-                                                  original: snippetUrl,
-                                                  converted: directImageUrl,
+                                                const errorInfo = {
+                                                  driveUrl: snippetDriveUrl || null,
+                                                  base64Url: snippetImageUrl ? (snippetImageUrl.substring(0, 50) + "...") : null,
+                                                  attemptedUrl: directImageUrl || null,
+                                                  sourceType: sourceType || null,
+                                                  hasDriveUrl: !!snippetDriveUrl,
+                                                  hasBase64Url: !!snippetImageUrl,
+                                                  driveUrlLength: snippetDriveUrl?.length || 0,
+                                                  base64UrlLength: snippetImageUrl?.length || 0,
+                                                };
+                                                console.error("Failed to load snippet image:", errorInfo);
+                                                
+                                                // If we tried Drive URL and it failed, try base64 fallback
+                                                if (sourceType === "drive" && snippetImageUrl && snippetImageUrl.startsWith("data:image")) {
+                                                  console.log("Trying base64 fallback URL");
+                                                  e.currentTarget.src = snippetImageUrl;
+                                                  return;
+                                                }
+                                                
+                                                // Try original Drive URL as last resort (if we converted it)
+                                                if (sourceType === "drive" && snippetDriveUrl && e.currentTarget.src !== snippetDriveUrl) {
+                                                  console.log("Trying original Drive URL");
+                                                  e.currentTarget.src = snippetDriveUrl;
+                                                  return;
+                                                }
+                                                
+                                                // Hide broken image if all attempts fail
+                                                e.currentTarget.style.display = "none";
+                                                const parent = e.currentTarget.parentElement;
+                                                if (parent) {
+                                                  parent.innerHTML = '<p class="text-gray-500 text-sm p-4 text-center">Image unavailable. Check console for details.</p>';
+                                                }
+                                              }}
+                                              onLoad={() => {
+                                                console.log("Successfully loaded snippet image:", {
+                                                  url: directImageUrl?.substring(0, 100),
+                                                  source: sourceType,
                                                 });
-                                                (e.target as HTMLImageElement).style.display = "none";
                                               }}
                                             />
                                           );
@@ -996,7 +1085,7 @@ export default function SignedTestPage() {
                       )}
                       {Array.from(responses.values()).filter(r => r.mode === "NEEDS_REVIEW").length > 0 && (
                         <span className="px-2 py-1 bg-yellow-900 text-yellow-300 rounded text-xs">
-                          ⚠ {Array.from(responses.values()).filter(r => r.mode === "NEEDS_REVIEW").length} Need Review
+                          ⚠ {Array.from(responses.values()).filter(r => r.mode === "NEEDS_REVIEW").length} Verification
                         </span>
                       )}
                     </div>
@@ -1172,7 +1261,7 @@ export default function SignedTestPage() {
                             ? "✓ Updated" 
                             : response.mode === "ALREADY_PROCESSED"
                             ? "✓ Already Processed"
-                            : "⚠ Needs Review"}
+                            : "⚠ Verification"}
                         </span>
                         {response.data?.woNumber && (
                           <span className="text-sm text-gray-400 font-mono">
@@ -1211,14 +1300,14 @@ export default function SignedTestPage() {
                           </div>
                         )}
 
-                        {/* Needs Review Section */}
+                        {/* Verification Section */}
                         {response.mode === "NEEDS_REVIEW" && (
                           <div className="space-y-4">
                             {/* Reason Explanation */}
                             {(response.data?.reasonTitle || response.data?.reason) && (
                               <div className="p-4 bg-yellow-900/20 border border-yellow-700 rounded">
                                 <h4 className="text-md font-semibold text-yellow-300 mb-2">
-                                  {response.data?.reasonTitle || "Needs Review"}
+                                  {response.data?.reasonTitle || "Verification"}
                                 </h4>
                                 <p className="text-sm text-yellow-200/80">
                                   {response.data?.reasonMessage || 
@@ -1228,7 +1317,7 @@ export default function SignedTestPage() {
                               </div>
                             )}
 
-                            {/* Fix Button */}
+                            {/* Verify Button */}
                             {response.data?.fixHref && (
                               <button
                                 onClick={() => {
@@ -1237,7 +1326,7 @@ export default function SignedTestPage() {
                                 }}
                                 className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium transition-colors"
                               >
-                                {response.data.fixAction || "Fix Issue"}
+                                {response.data.fixAction || "Verify"}
                               </button>
                             )}
 
@@ -1251,34 +1340,59 @@ export default function SignedTestPage() {
                                 <div className="bg-gray-950 rounded border border-gray-800 p-2">
                         {(() => {
                           // Prefer Drive URL, but fall back to base64 if Drive upload failed
-                          const snippetUrl = response.data.snippetDriveUrl || response.data.snippetImageUrl;
+                          const snippetDriveUrl = response.data.snippetDriveUrl;
+                          const snippetImageUrl = response.data.snippetImageUrl;
                           
-                          if (!snippetUrl) {
-                            return (
-                              <p className="text-gray-500 text-sm p-4 text-center">
-                                No snippet image available
-                              </p>
-                            );
-                          }
+                          // Determine the best URL to use
+                          let directImageUrl: string | null = null;
+                          let sourceType: "drive" | "base64" | null = null;
                           
-                          let directImageUrl = snippetUrl;
-                          
-                          // Handle base64 data URLs - use directly
-                          if (snippetUrl.startsWith("data:image")) {
-                            directImageUrl = snippetUrl;
+                          // Try Drive URL first if available
+                          if (snippetDriveUrl) {
+                            // Handle base64 data URLs (shouldn't happen for Drive URL, but check anyway)
+                            if (snippetDriveUrl.startsWith("data:image")) {
+                              directImageUrl = snippetDriveUrl;
+                              sourceType = "base64";
                           }
                           // Handle Google Drive URLs - convert to direct image link
-                          else if (snippetUrl.includes("drive.google.com")) {
+                            else if (snippetDriveUrl.includes("drive.google.com")) {
                             // Try to extract file ID from various Google Drive URL formats
-                            const fileIdMatch = snippetUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || 
-                                              snippetUrl.match(/id=([a-zA-Z0-9_-]+)/) ||
-                                              snippetUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+                              const fileIdMatch = snippetDriveUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || 
+                                                snippetDriveUrl.match(/id=([a-zA-Z0-9_-]+)/) ||
+                                                snippetDriveUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
                             
                             if (fileIdMatch) {
                               const fileId = fileIdMatch[1];
                               // Use the thumbnail format which is more reliable for public images
                               directImageUrl = `https://drive.google.com/thumbnail?id=${fileId}&sz=w400`;
+                                sourceType = "drive";
+                              } else {
+                                // Drive URL format not recognized, fall back to base64 if available
+                                console.warn("Could not extract file ID from Drive URL:", snippetDriveUrl);
+                                if (snippetImageUrl && snippetImageUrl.startsWith("data:image")) {
+                                  directImageUrl = snippetImageUrl;
+                                  sourceType = "base64";
+                                }
+                              }
+                            } else {
+                              // Not a Drive URL, use as-is (might be a direct image URL)
+                              directImageUrl = snippetDriveUrl;
+                              sourceType = "drive";
                             }
+                          }
+                          
+                          // Fall back to base64 if Drive URL wasn't available or failed
+                          if (!directImageUrl && snippetImageUrl && snippetImageUrl.startsWith("data:image")) {
+                            directImageUrl = snippetImageUrl;
+                            sourceType = "base64";
+                          }
+                          
+                          if (!directImageUrl) {
+                            return (
+                              <p className="text-gray-500 text-sm p-4 text-center">
+                                No snippet image available
+                              </p>
+                            );
                           }
                           
                           return (
@@ -1289,23 +1403,24 @@ export default function SignedTestPage() {
                               style={{ maxHeight: "200px", maxWidth: "300px" }}
                               onError={(e) => {
                                 console.error("Failed to load snippet image:", {
-                                  original: snippetUrl,
-                                  converted: directImageUrl,
+                                  driveUrl: snippetDriveUrl,
+                                  base64Url: snippetImageUrl ? (snippetImageUrl.substring(0, 50) + "...") : null,
+                                  attemptedUrl: directImageUrl,
+                                  sourceType,
                                   woNumber: response.data?.woNumber,
-                                  hasDriveUrl: !!response.data.snippetDriveUrl,
-                                  hasBase64Url: !!response.data.snippetImageUrl,
                                 });
                                 
                                 // If we tried Drive URL and it failed, try base64 fallback
-                                if (directImageUrl !== snippetUrl && response.data.snippetImageUrl && response.data.snippetImageUrl.startsWith("data:image")) {
+                                if (sourceType === "drive" && snippetImageUrl && snippetImageUrl.startsWith("data:image")) {
                                   console.log("Trying base64 fallback URL");
-                                  e.currentTarget.src = response.data.snippetImageUrl;
+                                  e.currentTarget.src = snippetImageUrl;
                                   return;
                                 }
                                 
-                                // Try original URL as last resort
-                                if (e.currentTarget.src !== snippetUrl && snippetUrl) {
-                                  e.currentTarget.src = snippetUrl;
+                                // Try original Drive URL as last resort (if we converted it)
+                                if (sourceType === "drive" && snippetDriveUrl && e.currentTarget.src !== snippetDriveUrl) {
+                                  console.log("Trying original Drive URL");
+                                  e.currentTarget.src = snippetDriveUrl;
                                   return;
                                 }
                                 
@@ -1319,8 +1434,8 @@ export default function SignedTestPage() {
                               onLoad={() => {
                                 console.log("Successfully loaded snippet image:", {
                                   woNumber: response.data?.woNumber,
-                                  url: directImageUrl,
-                                  source: directImageUrl.startsWith("data:") ? "base64" : "drive",
+                                  url: directImageUrl?.substring(0, 100),
+                                  source: sourceType,
                                 });
                               }}
                             />
@@ -1462,7 +1577,7 @@ export default function SignedTestPage() {
                             </div>
                             {response.data.automationBlocked && response.data.automationBlockReason && (
                               <p className="text-sm text-red-300 mt-2">
-                                {response.data.automationBlockReason === "no_matching_job_row"
+                                {response.data.automationBlockReason === "NO_MATCHING_JOB_ROW"
                                   ? "No matching job in Sheet1"
                                   : response.data.automationBlockReason === "TEMPLATE_NOT_FOUND"
                                   ? "Template not found"
@@ -1483,7 +1598,7 @@ export default function SignedTestPage() {
                                 }}
                                 className="mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium transition-colors text-sm"
                               >
-                                {response.data.fixAction || "Fix template"}
+                                {response.data.fixAction || "Verify template"}
                               </button>
                             )}
                           </div>
@@ -1523,19 +1638,19 @@ export default function SignedTestPage() {
         </div>
       </div>
 
-      {/* Fix Modal */}
+      {/* Verify Modal */}
       {showFixModal && selectedFixResponse && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-gray-800 rounded-lg border border-gray-700 p-6 max-w-md w-full mx-4">
-            <h2 className="text-xl font-bold text-white mb-4">Fix Template</h2>
+            <h2 className="text-xl font-bold text-white mb-4">Verify Template</h2>
 
             <div className="space-y-4">
               <div>
                 <div className="text-sm font-semibold text-gray-200 mb-1">
-                  {selectedFixResponse.response.data?.reasonTitle || "Fix Required"}
+                  {selectedFixResponse.response.data?.reasonTitle || "Verification Required"}
                 </div>
                 <div className="text-sm text-gray-400 mb-3">
-                  {selectedFixResponse.response.data?.reasonMessage || "This item needs to be fixed."}
+                  {selectedFixResponse.response.data?.reasonMessage || "This item needs verification."}
                 </div>
               </div>
 

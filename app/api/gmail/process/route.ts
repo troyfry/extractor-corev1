@@ -192,7 +192,7 @@ function parseAiResponse(
         .join(" | ");
 
       return {
-        workOrderNumber: wo.work_order_number || null, // null if missing - routes to "Needs Review"
+        workOrderNumber: wo.work_order_number || null, // null if missing - routes to "Verification"
         timestampExtracted: now,
         scheduledDate: wo.scheduled_date || now,
         serviceAddress: wo.service_address || null,
@@ -506,9 +506,9 @@ ${pdfText}`;
           workOrderNumber = extractWorkOrderNumberFromText(pdfAttachment.filename);
         }
         
-        // If still not found, set to null (will route to "Needs Review" sheet)
+        // If still not found, set to null (will route to "Verification" sheet)
         if (!workOrderNumber) {
-          console.warn(`[Gmail Process] Could not extract work order number from email subject ("${email.subject}") or PDF filename ("${pdfAttachment.filename}"). Will route to "Needs Review" sheet.`);
+          console.warn(`[Gmail Process] Could not extract work order number from email subject ("${email.subject}") or PDF filename ("${pdfAttachment.filename}"). Will route to "Verification" sheet.`);
         } else {
           console.log(`[Gmail Process] Rule-based parser extracted work order number: ${workOrderNumber}`);
         }
@@ -516,7 +516,7 @@ ${pdfText}`;
         const now = new Date().toISOString();
         
         parsedWorkOrders = [{
-          workOrderNumber, // Can be null - will route to "Needs Review"
+          workOrderNumber, // Can be null - will route to "Verification"
           timestampExtracted: now,
           scheduledDate: now,
           serviceAddress: null,

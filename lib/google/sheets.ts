@@ -7,7 +7,7 @@
  * Sheet Structure:
  * - Sheet1: Job process tracking (status, PDFs, signatures, workflow state)
  * - Work_Orders: Detailed work order information (dates, addresses, costs, job details)
- * - Needs Review: Failed email PDF extractions
+ * - Verification: Failed email PDF extractions
  * - Needs_Review_Signed: Signed work orders that couldn't be auto-matched
  */
 
@@ -82,6 +82,18 @@ export const WORK_ORDER_REQUIRED_COLUMNS = [
   "source",
   "last_updated_at",
   "file_hash",
+  // Phase 3: Decision metadata
+  "signed_decision_state",
+  "signed_trust_score",
+  "signed_decision_reasons",
+  "signed_extraction_method",
+  "signed_ocr_confidence_raw",
+  "signed_pass_agreement",
+  "signed_candidates",
+  // Phase 3: Verified by human
+  "wo_verified",
+  "wo_verified_at",
+  "wo_verified_value",
 ] as const;
 
 /**
@@ -141,6 +153,18 @@ export type WorkOrderRecord = {
   last_updated_at: string; // ISO string
   file_hash?: string | null; // Hash of the PDF file for deduplication
   file_hash_created_at?: string | null; // Timestamp when file_hash was computed
+  // Phase 3: Decision metadata
+  signed_decision_state?: "AUTO_CONFIRMED" | "QUICK_CHECK" | "NEEDS_ATTENTION" | null;
+  signed_trust_score?: number | null;
+  signed_decision_reasons?: string | null; // Pipe-separated
+  signed_extraction_method?: "DIGITAL_TEXT" | "OCR" | null;
+  signed_ocr_confidence_raw?: number | null; // 0..1
+  signed_pass_agreement?: "TRUE" | "FALSE" | null;
+  signed_candidates?: string | null; // Pipe-separated
+  // Phase 3: Verified by human
+  wo_verified?: "TRUE" | "FALSE" | null;
+  wo_verified_at?: string | null; // ISO string
+  wo_verified_value?: string | null;
 };
 
 /**

@@ -63,7 +63,7 @@ export default function NeedsReviewPage() {
       setError(null);
       const response = await fetch("/api/signed/needs-review");
       if (!response.ok) {
-        throw new Error("Failed to load needs review items");
+        throw new Error("Failed to load verification items");
       }
       const data = await response.json();
       setItems(data.items || []);
@@ -138,7 +138,7 @@ export default function NeedsReviewPage() {
           setShowModal(false);
           loadItems(); // Refresh list
         }, 1500);
-      } else if (data.mode === "NEEDS_REVIEW" && data.data?.reason === "no_matching_job_row") {
+      } else if (data.mode === "NEEDS_REVIEW" && data.data?.reason === "NO_MATCHING_JOB_ROW") {
         setResolveError(
           "No matching job found in Sheet1. Add this work order to Sheet1 first, then you can resolve it."
         );
@@ -159,7 +159,7 @@ export default function NeedsReviewPage() {
         <div className="p-8">
           <div className="text-center py-12">
             <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div>
-            <p className="mt-4 text-sm text-gray-400">Loading needs review items...</p>
+            <p className="mt-4 text-sm text-gray-400">Loading verification items...</p>
           </div>
         </div>
       </AppShell>
@@ -170,7 +170,7 @@ export default function NeedsReviewPage() {
     <AppShell>
       <MainNavigation />
       <div className="p-8">
-        <h1 className="text-2xl font-bold text-white mb-6">Needs Review - Signed Work Orders</h1>
+        <h1 className="text-2xl font-bold text-white mb-6">Verification - Signed Work Orders</h1>
 
         {error && (
           <div className="mb-4 p-4 bg-red-900/30 border border-red-700 rounded text-red-300">
@@ -180,7 +180,7 @@ export default function NeedsReviewPage() {
 
         {items.length === 0 ? (
           <div className="p-8 bg-gray-800 rounded border border-gray-700 text-center">
-            <p className="text-gray-400">No items need review.</p>
+            <p className="text-gray-400">No items need verification.</p>
           </div>
         ) : (
           <>
@@ -255,7 +255,7 @@ export default function NeedsReviewPage() {
                   <th className="text-left p-3 text-sm font-semibold text-gray-300">FM Key</th>
                   <th className="text-left p-3 text-sm font-semibold text-gray-300">Reason</th>
                   <th className="text-left p-3 text-sm font-semibold text-gray-300">Next Step</th>
-                  <th className="text-left p-3 text-sm font-semibold text-gray-300">Fix</th>
+                  <th className="text-left p-3 text-sm font-semibold text-gray-300">Verify</th>
                   <th className="text-left p-3 text-sm font-semibold text-gray-300">Evidence</th>
                   <th className="text-left p-3 text-sm font-semibold text-gray-300">WO #</th>
                   <th className="text-left p-3 text-sm font-semibold text-gray-300">Confidence</th>
@@ -296,14 +296,14 @@ export default function NeedsReviewPage() {
                               onClick={() => handleFixClick(item)}
                               className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-medium transition-colors"
                             >
-                              {ux.actionLabel || "Fix"}
+                              {ux.actionLabel || "Verify"}
                             </button>
                           )}
                           <button
                             onClick={() => handleResolveClick(item)}
                             className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-medium transition-colors"
                           >
-                            Resolve
+                            Confirm
                           </button>
                         </div>
                       </td>
@@ -365,7 +365,7 @@ export default function NeedsReviewPage() {
         {showFixModal && selectedFixItem && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
             <div className="bg-gray-800 rounded-lg border border-gray-700 p-6 max-w-md w-full mx-4">
-              <h2 className="text-xl font-bold text-white mb-4">Fix Template</h2>
+              <h2 className="text-xl font-bold text-white mb-4">Verify Template</h2>
 
               <div className="space-y-4">
                 <div>
@@ -415,7 +415,7 @@ export default function NeedsReviewPage() {
         {showModal && selectedItem && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
             <div className="bg-gray-800 rounded-lg border border-gray-700 p-6 max-w-md w-full mx-4">
-              <h2 className="text-xl font-bold text-white mb-4">Resolve Work Order</h2>
+              <h2 className="text-xl font-bold text-white mb-4">Confirm Work Order</h2>
 
               <div className="space-y-4">
                 <div>
@@ -469,7 +469,7 @@ export default function NeedsReviewPage() {
                     disabled={resolvingId !== null || !woNumber.trim()}
                     className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded"
                   >
-                    {resolvingId ? "Resolving..." : "Resolve"}
+                    {resolvingId ? "Confirming..." : "Confirm"}
                   </button>
                 </div>
               </div>

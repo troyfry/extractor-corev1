@@ -547,6 +547,8 @@ export default function OnboardingTemplatesPage() {
       console.error("[PDF Render] Error:", err);
       setError(`Failed to render PDF page ${pageNum}: ${errorMessage}`);
       setPreviewImage(null);
+      setPageWidthPt(0);
+      setPageHeightPt(0);
     }
   }
 
@@ -756,7 +758,8 @@ export default function OnboardingTemplatesPage() {
     }
 
     // Validate we have page dimensions in points
-    if (!pageWidthPt || !pageHeightPt || pageWidthPt <= 0 || pageHeightPt <= 0) {
+    if (!pageWidthPt || !pageHeightPt || pageWidthPt <= 0 || pageHeightPt <= 0 || 
+        !Number.isFinite(pageWidthPt) || !Number.isFinite(pageHeightPt)) {
       setError("PDF page dimensions not available. Please reload the PDF.");
       return;
     }
@@ -862,6 +865,13 @@ export default function OnboardingTemplatesPage() {
     });
 
     // Final payload being written to Sheets (POINTS-ONLY, no percentages)
+    // Ensure all required fields are present and finite numbers
+    if (!Number.isFinite(pageWidthPt) || !Number.isFinite(pageHeightPt)) {
+      setError("PDF page dimensions are invalid. Please reload the PDF.");
+      setIsSaving(false);
+      return;
+    }
+    
     const finalPayload = {
       fmKey: selectedFmKey,
       page: coordsPage, // Use coordsPage, not selectedPage
@@ -870,8 +880,8 @@ export default function OnboardingTemplatesPage() {
       yPt: yPtTopLeft,
       wPt,
       hPt,
-      pageWidthPt,
-      pageHeightPt,
+      pageWidthPt: Number(pageWidthPt), // Ensure it's a number
+      pageHeightPt: Number(pageHeightPt), // Ensure it's a number
       coordSystem: toSheetCoordSystem(COORD_SYSTEM_PDF_POINTS_TOP_LEFT),
       // Optional: rectPx for validation/debugging (CSS pixel space)
       rectPx: {
@@ -901,6 +911,8 @@ export default function OnboardingTemplatesPage() {
       setSuccess("Template saved successfully!");
       // Reload the template to update savedTemplate state
       await loadExistingTemplate();
+      
+      // Don't auto-redirect - let user add more templates or click "Go to Dashboard" when ready
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save template");
     } finally {
@@ -1271,10 +1283,18 @@ export default function OnboardingTemplatesPage() {
             )}
             {savedTemplate && (
               <button
-                onClick={() => router.push("/onboarding/done")}
+                onClick={async () => {
+                  // Mark onboarding complete when user explicitly clicks to finish
+                  try {
+                    await fetch("/api/onboarding/complete", { method: "POST" });
+                  } catch (e) {
+                    console.error("Failed to mark onboarding complete:", e);
+                  }
+                  router.push("/pro");
+                }}
                 className="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-medium transition-colors"
               >
-                Continue to Next Step →
+                Go to Dashboard →
               </button>
             )}
           </div>

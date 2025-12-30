@@ -14,7 +14,7 @@
  * This is a simplified version without database-specific fields like id, userId, createdAt.
  */
 export type ParsedWorkOrder = {
-  workOrderNumber: string | null; // Can be null if not found - routes to "Needs Review" sheet
+  workOrderNumber: string | null; // Can be null if not found - routes to "Verification" sheet
   scheduledDate: string | null;
   customerName: string | null;
   serviceAddress: string | null;

@@ -1,24 +1,30 @@
 /**
  * Layout for onboarding pages.
  * 
- * This layout checks if onboarding is already completed or if spreadsheet is set, and redirects to /pro if so.
- * This prevents users from accessing onboarding pages after setup is done.
+ * Implements resume logic: determines the correct next step from cookies and redirects if needed.
+ * This prevents "random route access" from causing loops.
  * 
- * NOTE: Uses lightweight checks (cookie/session only) to avoid Sheets API quota issues.
+ * Resume rules:
+ * - If onboardingCompleted=true → redirect to /pro
+ * - Else if no workspaceReady → allow /onboarding/google (correct step)
+ * - Else if workspaceReady=true and openaiReady!=true and openaiReady!=skipped → redirect to /onboarding/openai
+ * - Else if fmProfilesReady!=true → redirect to /onboarding/fm-profiles
+ * - Else → redirect to /onboarding/templates
+ * 
+ * NOTE: Uses lightweight checks (cookie-only) to avoid Sheets API quota issues.
  */
 
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
-import { cookies } from "next/headers";
-import { auth } from "@/auth";
+import { cookies, headers } from "next/headers";
+import { OnboardingHeader } from "@/app/components/onboarding/OnboardingHeader";
 
 export default async function OnboardingLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  // Lightweight check: only check cookie and session (no Sheets API calls)
+  // Lightweight check: only check cookies (no Sheets API calls)
   const user = await getCurrentUser();
   
   if (!user || !user.userId) {
@@ -26,17 +32,58 @@ export default async function OnboardingLayout({
     return <>{children}</>;
   }
 
-  // Check onboardingCompleted cookie first (most reliable indicator)
   const cookieStore = await cookies();
-  const cookieOnboardingCompleted = cookieStore.get("onboardingCompleted")?.value;
+  const headersList = await headers();
   
+  // Get current pathname from headers (set by middleware)
+  const currentPathname = headersList.get("x-pathname") || "";
+  
+  // Resume logic: decide next step from cookies
+  const cookieOnboardingCompleted = cookieStore.get("onboardingCompleted")?.value;
+  const cookieWorkspaceReady = cookieStore.get("workspaceReady")?.value;
+  const cookieOpenaiReady = cookieStore.get("openaiReady")?.value;
+  const cookieFmProfilesReady = cookieStore.get("fmProfilesReady")?.value;
+  
+  // Rule 1: Full onboarding completed → redirect to /pro
   if (cookieOnboardingCompleted === "true") {
-    // Onboarding is completed, redirect to /pro
-    redirect("/pro");
+    if (!currentPathname.includes("/pro")) {
+      redirect("/pro");
+    }
+  }
+  // Rule 2: No workspace → go to /onboarding/google
+  else if (!cookieWorkspaceReady || cookieWorkspaceReady !== "true") {
+    // Only redirect if not already on /onboarding/google
+    if (currentPathname !== "/onboarding/google") {
+      redirect("/onboarding/google");
+    }
+  }
+  // Rule 3: Workspace ready but OpenAI not ready/skipped → go to /onboarding/openai
+  else if (cookieOpenaiReady !== "true" && cookieOpenaiReady !== "skipped") {
+    // Only redirect if not already on /onboarding/openai
+    if (currentPathname !== "/onboarding/openai") {
+      redirect("/onboarding/openai");
+    }
+  }
+  // Rule 4: FM profiles not ready → go to /onboarding/fm-profiles
+  else if (!cookieFmProfilesReady || cookieFmProfilesReady !== "true") {
+    // Only redirect if not already on /onboarding/fm-profiles
+    if (currentPathname !== "/onboarding/fm-profiles") {
+      redirect("/onboarding/fm-profiles");
+    }
+  }
+  // Rule 5: All ready → go to /onboarding/templates
+  else {
+    // Only redirect if not already on /onboarding/templates
+    if (currentPathname !== "/onboarding/templates") {
+      redirect("/onboarding/templates");
+    }
   }
 
-  // If onboardingCompleted cookie is not set, allow access to onboarding pages
-  // Even if googleSheetsSpreadsheetId is set (user might be mid-onboarding)
-  return <>{children}</>;
+  // Allow onboarding pages to render (if we get here, user is on the correct step)
+  return (
+    <>
+      <OnboardingHeader />
+      {children}
+    </>
+  );
 }
-

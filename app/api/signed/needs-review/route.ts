@@ -83,7 +83,7 @@ export async function GET() {
   } catch (error) {
     console.error("Error in GET /api/signed/needs-review", error);
     return NextResponse.json(
-      { error: "Failed to fetch needs review items." },
+      { error: "Failed to fetch verification items." },
       { status: 500 }
     );
   }

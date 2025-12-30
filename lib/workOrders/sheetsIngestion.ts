@@ -32,7 +32,7 @@ export function generateJobId(issuer: string | null, woNumber: string | null): s
   const normalizedWoNumber = normalizeForJobId(woNumber || "missing");
   
   if (!woNumber || woNumber.trim() === "") {
-    // Missing wo_number - will go to "Needs Review" sheet
+    // Missing wo_number - will go to "Verification" sheet
     return `needs_review:${Date.now()}`;
   }
   
@@ -49,7 +49,7 @@ export function generateJobId(issuer: string | null, woNumber: string | null): s
  * @param issuerKey Issuer key derived from email sender domain (for stable jobId)
  * @param pdfBuffer Optional PDF buffer to upload to Drive
  * @param pdfFilename Optional PDF filename
- * @param sheetName Sheet name (default: "Sheet1" or "Needs Review")
+ * @param sheetName Sheet name (default: "Sheet1" or "Verification")
  */
 export async function writeWorkOrderToSheets(
   parsedWorkOrder: ParsedWorkOrder,
@@ -66,7 +66,7 @@ export async function writeWorkOrderToSheets(
   // Determine which sheet to use
   const targetSheetName = woNumber && woNumber.trim() !== ""
     ? (sheetName || "Sheet1")
-    : "Needs Review";
+    : "Verification";
 
   // Ensure columns exist in the target sheet
   await ensureColumnsExist(accessToken, spreadsheetId, targetSheetName);
@@ -143,8 +143,8 @@ export async function writeWorkOrdersToSheets(
   pdfBuffers?: Buffer[],
   pdfFilenames?: string[]
 ): Promise<void> {
-  // Ensure "Needs Review" sheet exists
-  await ensureColumnsExist(accessToken, spreadsheetId, "Needs Review");
+  // Ensure "Verification" sheet exists
+  await ensureColumnsExist(accessToken, spreadsheetId, "Verification");
 
   // Write each work order
   for (let i = 0; i < parsedWorkOrders.length; i++) {

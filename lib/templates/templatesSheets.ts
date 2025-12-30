@@ -327,6 +327,62 @@ export async function getTemplateByFmKey(
 }
 
 /**
+ * Convert a template input to a Template type, ensuring percentage values are numbers.
+ */
+function convertToTemplate(
+  template: {
+    userId: string;
+    fmKey: string;
+    templateId?: string;
+    page: number;
+    xPct: string | number;
+    yPct: string | number;
+    wPct: string | number;
+    hPct: string | number;
+    dpi?: number;
+    coordSystem?: string;
+    pageWidthPt?: number;
+    pageHeightPt?: number;
+    xPt?: number;
+    yPt?: number;
+    wPt?: number;
+    hPt?: number;
+  },
+  normalizedFmKey: string,
+  templateId: string,
+  updated_at: string
+): Template {
+  const toNumber = (val: string | number): number => {
+    if (typeof val === "number") return val;
+    if (typeof val === "string") {
+      const trimmed = val.trim();
+      return trimmed !== "" ? parseFloat(trimmed) || 0 : 0;
+    }
+    return 0;
+  };
+
+  return {
+    userId: template.userId,
+    fmKey: normalizedFmKey,
+    templateId,
+    page: template.page,
+    xPct: toNumber(template.xPct),
+    yPct: toNumber(template.yPct),
+    wPct: toNumber(template.wPct),
+    hPct: toNumber(template.hPct),
+    dpi: template.dpi,
+    coordSystem: template.coordSystem,
+    pageWidthPt: template.pageWidthPt,
+    pageHeightPt: template.pageHeightPt,
+    xPt: template.xPt,
+    yPt: template.yPt,
+    wPt: template.wPt,
+    hPt: template.hPt,
+    updated_at,
+  };
+}
+
+/**
  * Upsert a template (insert or update).
  * Templates are shared per spreadsheet - one row per (spreadsheetId + fmKey).
  * userId is stored for audit purposes but not used for uniqueness.
@@ -375,12 +431,12 @@ export async function upsertTemplate(
     if (rows.length === 0) {
       // No data, just append
       // Always save normalized fmKey to ensure consistency
-      await appendTemplateRow(sheets, spreadsheetId, sheetName, {
-        ...template,
-        fmKey: normalizedFmKey, // Ensure normalized fmKey is saved
-        templateId,
-        updated_at: new Date().toISOString(),
-      });
+      await appendTemplateRow(
+        sheets,
+        spreadsheetId,
+        sheetName,
+        convertToTemplate(template, normalizedFmKey, templateId, new Date().toISOString())
+      );
       return;
     }
 
@@ -399,12 +455,12 @@ export async function upsertTemplate(
     if (fmKeyColIndex === -1) {
       // Required column not found, just append
       // Always save normalized fmKey to ensure consistency
-      await appendTemplateRow(sheets, spreadsheetId, sheetName, {
-        ...template,
-        fmKey: normalizedFmKey, // Ensure normalized fmKey is saved
-        templateId,
-        updated_at: new Date().toISOString(),
-      });
+      await appendTemplateRow(
+        sheets,
+        spreadsheetId,
+        sheetName,
+        convertToTemplate(template, normalizedFmKey, templateId, new Date().toISOString())
+      );
       return;
     }
 
@@ -448,21 +504,22 @@ export async function upsertTemplate(
     if (existingRowIndex === -1) {
       // Row doesn't exist, append it
       // Always save normalized fmKey to ensure consistency
-      await appendTemplateRow(sheets, spreadsheetId, sheetName, {
-        ...template,
-        fmKey: normalizedFmKey, // Ensure normalized fmKey is saved
-        templateId,
-        updated_at: new Date().toISOString(),
-      });
+      await appendTemplateRow(
+        sheets,
+        spreadsheetId,
+        sheetName,
+        convertToTemplate(template, normalizedFmKey, templateId, new Date().toISOString())
+      );
     } else {
       // Row exists, update it
       // Always save normalized fmKey to ensure consistency
-      await updateTemplateRow(sheets, spreadsheetId, sheetName, existingRowIndex, {
-        ...template,
-        fmKey: normalizedFmKey, // Ensure normalized fmKey is saved
-        templateId,
-        updated_at: new Date().toISOString(),
-      });
+      await updateTemplateRow(
+        sheets,
+        spreadsheetId,
+        sheetName,
+        existingRowIndex,
+        convertToTemplate(template, normalizedFmKey, templateId, new Date().toISOString())
+      );
     }
   } catch (error) {
     console.error(`[Templates] Error upserting template:`, error);
@@ -497,10 +554,10 @@ async function appendTemplateRow(
     fmKey: template.fmKey,
     templateId: template.templateId,
     page: String(template.page),
-    xPct: template.xPct === "" ? "" : String(template.xPct),
-    yPct: template.yPct === "" ? "" : String(template.yPct),
-    wPct: template.wPct === "" ? "" : String(template.wPct),
-    hPct: template.hPct === "" ? "" : String(template.hPct),
+    xPct: String(template.xPct),
+    yPct: String(template.yPct),
+    wPct: String(template.wPct),
+    hPct: String(template.hPct),
     dpi: template.dpi !== undefined ? String(template.dpi) : "",
     coordSystem: template.coordSystem || "",
     pageWidthPt: template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "",
@@ -574,10 +631,10 @@ async function updateTemplateRow(
     fmKey: template.fmKey,
     templateId: template.templateId,
     page: String(template.page),
-    xPct: template.xPct === "" ? "" : String(template.xPct),
-    yPct: template.yPct === "" ? "" : String(template.yPct),
-    wPct: template.wPct === "" ? "" : String(template.wPct),
-    hPct: template.hPct === "" ? "" : String(template.hPct),
+    xPct: String(template.xPct),
+    yPct: String(template.yPct),
+    wPct: String(template.wPct),
+    hPct: String(template.hPct),
     dpi: template.dpi !== undefined ? String(template.dpi) : "",
     coordSystem: template.coordSystem || "",
     pageWidthPt: template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "",

@@ -1,43 +1,119 @@
 /**
- * API route for saving Google Sheets and Drive configuration during onboarding.
+ * API route for creating and setting up Google Workspace during onboarding.
+ * 
+ * Creates a new Google Drive folder and Google Sheets spreadsheet based on provided names.
+ * Sets up required tabs, headers, and configuration.
  * 
  * POST /api/onboarding/google
- * Body: { sheetId: string, driveFolderId?: string }
+ * Body: { sheetName: string, folderName?: string }
+ * Returns: { folderId: string, spreadsheetId: string, folderUrl: string, sheetUrl: string }
  */
 
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { upsertUserRow, resetApiCallCount, getApiCallCount } from "@/lib/onboarding/usersSheet";
+import { getOrCreateFolder } from "@/lib/google/drive";
+import { createSheetsClient } from "@/lib/google/sheets";
 import { cookies } from "next/headers";
-import { auth } from "@/auth";
+import { checkRateLimit } from "@/lib/onboarding/rateLimit";
 
 export const runtime = "nodejs";
 
 /**
- * Extract spreadsheet ID from a Google Sheets URL or return as-is if already an ID.
+ * Write headers to Work_Orders sheet (idempotent - skips if headers already exist).
+ * Note: Tab name is "Work_Orders" (with underscore) to match codebase convention.
+ * UI copy may say "Work Orders" but the actual tab name uses underscore.
  */
-function extractSpreadsheetId(input: string): string | null {
-  if (!input || typeof input !== "string") {
-    return null;
+async function writeWorkOrdersHeaders(
+  sheets: ReturnType<typeof createSheetsClient>,
+  spreadsheetId: string
+): Promise<void> {
+  const headers = [
+    "work_order_number",
+    "scheduled_date",
+    "created_at",
+    "timestamp_extracted",
+    "customer_name",
+    "vendor_name",
+    "service_address",
+    "job_type",
+    "job_description",
+    "amount",
+    "currency",
+    "notes",
+    "priority",
+    "calendar_event_link",
+    "work_order_pdf_link",
+    "user_id",
+    "job_id",
+  ];
+
+  // Check if headers already exist (idempotent) - read just A1 for faster check
+  try {
+    const existingResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "Work_Orders!A1",
+    });
+    
+    const existingCell = existingResponse.data.values?.[0]?.[0];
+    if (existingCell === "work_order_number") {
+      console.log(`[Setup Workspace] Work_Orders headers already exist, skipping write`);
+      return;
+    }
+  } catch {
+    // If read fails (empty sheet or tab doesn't exist), proceed to write
+    console.log(`[Setup Workspace] Could not read existing headers, proceeding to write`);
   }
 
-  const trimmed = input.trim();
-  if (!trimmed) {
-    return null;
-  }
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: "Work_Orders!A1",
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [headers],
+    },
+  });
 
-  // If it looks like a URL, extract the ID
-  const urlMatch = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  if (urlMatch) {
-    return urlMatch[1];
-  }
+  console.log(`[Setup Workspace] ✅ Wrote headers to Work_Orders sheet`);
+}
 
-  // If it's just an ID (alphanumeric, dashes, underscores), return as-is
-  if (/^[a-zA-Z0-9-_]+$/.test(trimmed)) {
-    return trimmed;
+/**
+ * Write config to Config tab (idempotent - overwrites existing config cleanly).
+ * Writes header row and all config rows in a single update call.
+ */
+async function writeConfig(
+  sheets: ReturnType<typeof createSheetsClient>,
+  spreadsheetId: string,
+  config: {
+    version: string;
+    folderName: string;
+    folderId: string;
+    sheetName: string;
+    spreadsheetId: string;
+    createdAt: string;
   }
+): Promise<void> {
+  // Write header row + all config rows in a single update (overwrites cleanly)
+  const configData = [
+    ["key", "value"], // Header row
+    ["version", config.version],
+    ["folderName", config.folderName],
+    ["folderId", config.folderId],
+    ["sheetName", config.sheetName],
+    ["spreadsheetId", config.spreadsheetId],
+    ["createdAt", config.createdAt],
+  ];
 
-  return null;
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: "Config!A1",
+    valueInputOption: "RAW",
+    requestBody: {
+      values: configData,
+    },
+  });
+
+  console.log(`[Setup Workspace] ✅ Wrote config to Config tab`);
 }
 
 export async function POST(request: Request) {
@@ -55,131 +131,181 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = await request.json();
-    const { sheetId: rawSheetId, driveFolderId } = body;
-
-    if (!rawSheetId) {
+    // Rate limiting: prevent spam calls
+    const rateLimitKey = `google:${user.userId}`;
+    if (!checkRateLimit(rateLimitKey)) {
       return NextResponse.json(
-        { error: "sheetId is required" },
-        { status: 400 }
+        { error: "Too many requests. Please wait a moment and try again." },
+        { status: 429 }
       );
     }
 
-    // Extract spreadsheet ID from URL if needed
-    const sheetId = extractSpreadsheetId(rawSheetId);
-    if (!sheetId) {
-      return NextResponse.json(
-        { error: "Invalid spreadsheet ID format. Please provide a valid Google Sheets ID or URL." },
-        { status: 400 }
-      );
-    }
+    // Short-circuit: prevent duplicate spreadsheets if workspace already ready (idempotent)
+    const cookieStore = await cookies();
+    const workspaceReady = cookieStore.get("workspaceReady")?.value;
+    const existingSpreadsheetId = cookieStore.get("googleSheetsSpreadsheetId")?.value;
+    const existingFolderId = cookieStore.get("googleDriveFolderId")?.value;
 
-    // Validate that the spreadsheet exists and user has access
-    try {
-      const { createSheetsClient } = await import("@/lib/google/sheets");
-      const sheets = createSheetsClient(user.googleAccessToken);
-      
-      // Try to access the spreadsheet to verify it exists and user has access
-      await sheets.spreadsheets.get({
-        spreadsheetId: sheetId,
+    if (workspaceReady === "true" && existingSpreadsheetId) {
+      return NextResponse.json({
+        folderId: existingFolderId || "",
+        spreadsheetId: existingSpreadsheetId,
+        folderUrl: existingFolderId ? `https://drive.google.com/drive/folders/${existingFolderId}` : "",
+        sheetUrl: `https://docs.google.com/spreadsheets/d/${existingSpreadsheetId}/edit`,
+        resumed: true,
       });
-    } catch (validationError: unknown) {
-      console.error("Error validating spreadsheet access:", validationError);
-      
-      // Provide helpful error messages based on the error type
-      const errorCode = (validationError as { code?: number })?.code;
-      const errorStatus = (validationError as { status?: number })?.status;
-      if (errorCode === 404 || errorStatus === 404) {
-        return NextResponse.json(
-          {
-            error: "Spreadsheet not found. Please check that:\n" +
-              "1. The spreadsheet ID is correct\n" +
-              "2. The spreadsheet exists and hasn't been deleted",
-          },
-          { status: 400 }
-        );
-      }
-      
-      if (errorCode === 403 || errorStatus === 403) {
-        return NextResponse.json(
-          {
-            error: "Access denied. Please check that:\n" +
-              "1. The spreadsheet is shared with your Google account\n" +
-              "2. You have edit access to the spreadsheet\n" +
-              "3. You're signed in with the correct Google account",
-          },
-          { status: 403 }
-        );
-      }
-      
-      // Generic error
+    }
+
+    const body = await request.json();
+    const { sheetName, folderName } = body;
+
+    if (!sheetName || typeof sheetName !== "string" || !sheetName.trim()) {
       return NextResponse.json(
-        {
-          error: "Cannot access this spreadsheet. Please verify:\n" +
-            "1. The spreadsheet ID is correct\n" +
-            "2. The spreadsheet is shared with your Google account\n" +
-            "3. You have edit access to the spreadsheet",
-        },
+        { error: "sheetName is required" },
         { status: 400 }
       );
     }
 
-    // The provided sheetId is the main spreadsheet where Users sheet will be stored
-    // Use this spreadsheet for storing the Users sheet
-    const mainSpreadsheetId = sheetId;
+    const finalFolderName = (folderName && typeof folderName === "string" && folderName.trim()) 
+      ? folderName.trim() 
+      : "Work Orders";
+    const finalSheetName = sheetName.trim();
 
-    // Upsert user row with sheetId and driveFolderId
-    // Note: sheetId in Users sheet refers to the spreadsheet for jobs (same as mainSpreadsheetId in this case)
-    // mainSpreadsheetId is where the Users sheet itself is stored
+    console.log(`[Setup Workspace] Setting up workspace: folder="${finalFolderName}", sheet="${finalSheetName}"`);
+
+    // Step 1: Find or create Drive folder
+    console.log(`[Setup Workspace] Finding/creating folder: "${finalFolderName}"`);
+    const folderId = await getOrCreateFolder(user.googleAccessToken, finalFolderName);
+    const folderUrl = `https://drive.google.com/drive/folders/${folderId}`;
+    console.log(`[Setup Workspace] ✅ Folder ready: ${folderId}`);
+
+    // Step 2: Create new spreadsheet
+    console.log(`[Setup Workspace] Creating spreadsheet: "${finalSheetName}"`);
+    const sheets = createSheetsClient(user.googleAccessToken);
+    const createResponse = await sheets.spreadsheets.create({
+      requestBody: {
+        properties: {
+          title: finalSheetName,
+        },
+      },
+    });
+
+    const spreadsheetId = createResponse.data.spreadsheetId;
+    if (!spreadsheetId) {
+      throw new Error("Failed to create spreadsheet");
+    }
+
+    const sheetUrl = createResponse.data.spreadsheetUrl || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+    console.log(`[Setup Workspace] ✅ Spreadsheet created: ${spreadsheetId}`);
+
+    // Step 3: Ensure required tabs exist (optimized - single get call, batch create)
+    // Tab names match codebase convention: Work_Orders uses underscore (UI may show "Work Orders" but tab is "Work_Orders")
+    const requiredTabs = ["Work_Orders", "Verification", "Signatures", "Config", "Needs_Review_Signed"];
+    
+    // Get spreadsheet metadata once to check existing tabs
+    const spreadsheetResponse = await sheets.spreadsheets.get({
+      spreadsheetId,
+    });
+    
+    // Build Set of existing tab titles
+    const existingTabs = new Set(
+      spreadsheetResponse.data.sheets?.map(s => s.properties?.title).filter(Boolean) || []
+    );
+    
+    // Compute missing tabs
+    const missingTabs = requiredTabs.filter(tabName => !existingTabs.has(tabName));
+    
+    // Create all missing tabs in a single batch update
+    if (missingTabs.length > 0) {
+      console.log(`[Setup Workspace] Creating ${missingTabs.length} missing tab(s): ${missingTabs.join(", ")}`);
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: missingTabs.map(tabName => ({
+            addSheet: {
+              properties: {
+                title: tabName,
+              },
+            },
+          })),
+        },
+      });
+      console.log(`[Setup Workspace] ✅ Created ${missingTabs.length} tab(s)`);
+    } else {
+      console.log(`[Setup Workspace] All required tabs already exist`);
+    }
+    
+    // Note: Templates, FM_Profiles, and Users tabs are created on-demand when needed
+
+    // Step 4: Write headers to Work_Orders sheet (idempotent)
+    await writeWorkOrdersHeaders(sheets, spreadsheetId);
+
+    // Step 5: Write config to Config tab
+    const createdAt = new Date().toISOString();
+    await writeConfig(sheets, spreadsheetId, {
+      version: "v1",
+      folderName: finalFolderName,
+      folderId,
+      sheetName: finalSheetName,
+      spreadsheetId,
+      createdAt,
+    });
+
+    // Step 6: Store in Users sheet and cookies
+    // mainSpreadsheetId = workspace spreadsheet ID (where Users sheet is stored)
+    // sheetId = work orders spreadsheet ID (same as workspace spreadsheet for now)
+    // Note: If later you split "Users sheet" into a central admin sheet, update mainSpreadsheetId here
+    const mainSpreadsheetId = spreadsheetId;
     await upsertUserRow(user.googleAccessToken, mainSpreadsheetId, {
       userId: user.userId,
       email: user.email || "",
-      sheetId: sheetId,
-      mainSpreadsheetId: mainSpreadsheetId, // Store where Users sheet is located
-      driveFolderId: driveFolderId || "",
+      sheetId: spreadsheetId, // Work orders spreadsheet (same as workspace for now)
+      mainSpreadsheetId: mainSpreadsheetId, // Workspace spreadsheet (where Users sheet is stored)
+      driveFolderId: folderId,
       onboardingCompleted: "FALSE",
       openaiKeyEncrypted: "",
-      createdAt: new Date().toISOString(),
+      createdAt,
     }, { allowEnsure: true });
 
     // Store spreadsheet ID in cookie for session persistence
-    const cookieStore = await cookies();
-    const response = NextResponse.json({ success: true });
+    const response = NextResponse.json({
+      folderId,
+      spreadsheetId,
+      folderUrl,
+      sheetUrl,
+    });
     response.cookies.set("googleSheetsSpreadsheetId", mainSpreadsheetId, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       maxAge: 30 * 24 * 60 * 60, // 30 days
     });
-
-    // Also update session/JWT token with spreadsheet ID immediately
-    // This ensures the spreadsheet ID persists across logins
-    // The JWT callback will read from cookies on next request, but we can also trigger an update
-    // Note: The cookie is the primary storage, and JWT callback reads from it
+    
+    // Store folder ID in cookie for proper resume
+    response.cookies.set("googleDriveFolderId", folderId, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 30 * 24 * 60 * 60, // 30 days
+    });
+    
+    // Stage 1: Mark workspace as ready (folder + sheet created)
+    response.cookies.set("workspaceReady", "true", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 30 * 24 * 60 * 60, // 30 days
+    });
 
     const apiCalls = getApiCallCount();
-    console.log(`[onboarding/google] Sheets API calls: ${apiCalls}`);
+    console.log(`[Setup Workspace] ✅ Complete. Sheets API calls: ${apiCalls}`);
     return response;
   } catch (error) {
-    console.error("Error saving Google settings:", error);
-    
-    // If it's already a validation error we handled, re-throw it
-    if (error instanceof Error && error.message.includes("Spreadsheet") || 
-        error instanceof Error && error.message.includes("Access denied") ||
-        error instanceof Error && error.message.includes("Cannot access")) {
-      throw error;
-    }
-    
-    // For other errors, provide a generic message
+    console.error("Error setting up workspace:", error);
     const message = error instanceof Error ? error.message : "Internal server error";
     return NextResponse.json(
-      { 
-        error: message.includes("Requested entity was not found") 
-          ? "Spreadsheet not found. Please verify the spreadsheet ID is correct and the spreadsheet exists."
-          : message 
-      },
+      { error: message },
       { status: 500 }
     );
   }
 }
-

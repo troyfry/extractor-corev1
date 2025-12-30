@@ -4,15 +4,18 @@ export type NeedsReviewReason =
   | "CROP_TOO_SMALL"
   | "LOW_CONFIDENCE_AFTER_RETRY"
   | "PAGE_MISMATCH"
+  | "TEMPLATE_PAGE_SIZE_MISMATCH"
   | "FMKEY_MISSING"
   | "FMKEY_MISMATCH"
   | "TEMPLATE_NOT_FOUND"
   | "TEMPLATE_STALE_OR_WRONG_DOC"
   | "INVALID_WORK_ORDER_NUMBER"
-  | "no_work_order_number"
-  | "no_matching_job_row"
-  | "update_failed"
-  | "low_confidence"
+  | "NO_WORK_ORDER_NUMBER"
+  | "NO_MATCHING_JOB_ROW"
+  | "UPDATE_FAILED"
+  | "LOW_CONFIDENCE"
+  | "QUICK_CHECK_RECOMMENDED"
+  | "NEEDS_ATTENTION"
   | "MANUALLY_RESOLVED"
   | string;
 
@@ -33,28 +36,28 @@ export function getNeedsReviewUx(reason: NeedsReviewReason, fmKey?: string): Nee
     TEMPLATE_NOT_CONFIGURED: {
       title: "Template not configured",
       message: "No crop zone is saved for this FM template. Draw a rectangle and save it.",
-      actionLabel: "Fix template",
+      actionLabel: "Update template",
       href: templatesLink,
       tone: "warning",
     },
     INVALID_CROP: {
       title: "Invalid crop zone",
       message: "The saved crop is off-page or out of bounds. Re-draw and save the rectangle.",
-      actionLabel: "Fix template",
+      actionLabel: "Update template",
       href: templatesLink,
       tone: "warning",
     },
     CROP_TOO_SMALL: {
       title: "Crop zone too small",
       message: "The rectangle is too small to reliably read. Make it bigger and save.",
-      actionLabel: "Fix template",
+      actionLabel: "Update template",
       href: templatesLink,
       tone: "warning",
     },
     PAGE_MISMATCH: {
-      title: "Page mismatch",
+      title: "Work order may be on another page",
       message: "The work order number may be on a different page than the template expects. Confirm the correct page and re-save the template.",
-      actionLabel: "Fix template page",
+      actionLabel: "Update template page",
       href: templatesLink,
       tone: "warning",
     },
@@ -66,11 +69,11 @@ export function getNeedsReviewUx(reason: NeedsReviewReason, fmKey?: string): Nee
       tone: "danger",
     },
     FMKEY_MISMATCH: {
-      title: "FM template mismatch",
-      message: "This signed PDF doesn't match the selected FM profile. Switch fmKey and reprocess, or resolve manually.",
-      actionLabel: "Reprocess with correct FM",
+      title: "Issuer mismatch — please confirm",
+      message: "This signed PDF doesn't match the selected issuer profile. Switch issuer and reprocess, or confirm manually.",
+      actionLabel: "Reprocess with correct issuer",
       href: "/pro/signed/upload",
-      tone: "danger",
+      tone: "warning",
     },
     TEMPLATE_NOT_FOUND: {
       title: "Template not found",
@@ -87,46 +90,60 @@ export function getNeedsReviewUx(reason: NeedsReviewReason, fmKey?: string): Nee
       tone: "warning",
     },
     LOW_CONFIDENCE_AFTER_RETRY: {
-      title: "Low confidence (after retry)",
-      message: "OCR tried twice but the result wasn't reliable. Enter the WO number manually to resolve.",
+      title: "Document quality — please verify",
+      message: "After multiple attempts, the extraction wasn't reliable. Please verify the work order number or enter it manually.",
       actionLabel: "Enter WO manually",
       href: "", // UI will open modal
       tone: "info",
     },
     INVALID_WORK_ORDER_NUMBER: {
-      title: "Invalid work order number",
-      message: "OCR read something, but it doesn't look like a real WO number. Enter WO manually or adjust template crop.",
+      title: "Work order number looks unusual — please confirm",
+      message: "The extracted number looks unusual. Please verify it's correct or enter it manually.",
       actionLabel: "Enter WO manually",
       href: "", // UI will open modal
       tone: "warning",
     },
-    no_work_order_number: {
-      title: "No work order number found",
-      message: "OCR didn't find a usable work order number. Enter it manually to resolve.",
+    NO_WORK_ORDER_NUMBER: {
+      title: "Work order number not detected",
+      message: "Work order number not detected in the document. Enter it manually to confirm.",
       actionLabel: "Enter WO manually",
       href: "",
       tone: "info",
     },
-    low_confidence: {
-      title: "Low confidence",
-      message: "OCR result isn't reliable. Enter the WO number manually to resolve.",
+    LOW_CONFIDENCE: {
+      title: "Document quality — please verify",
+      message: "The document quality makes extraction uncertain. Please verify the work order number or enter it manually.",
       actionLabel: "Enter WO manually",
       href: "",
       tone: "info",
     },
-    no_matching_job_row: {
+    NO_MATCHING_JOB_ROW: {
       title: "WO not found in Sheet1",
       message: "This signed work order can't be matched because the original job row isn't in Sheet1. Upload/extract the original work order first, then resolve.",
       actionLabel: "Go to extractor",
       href: "/pro",
       tone: "danger",
     },
-    update_failed: {
-      title: "Update failed",
-      message: "We found the job row but the update didn't apply. Try again or resolve manually.",
-      actionLabel: "Retry / Resolve",
+    UPDATE_FAILED: {
+      title: "Could not update the matching job row — please verify",
+      message: "We found the job row but the update didn't apply. Try again or confirm manually.",
+      actionLabel: "Retry / Confirm",
       href: "",
-      tone: "danger",
+      tone: "warning",
+    },
+    QUICK_CHECK_RECOMMENDED: {
+      title: "Verification (Recommended)",
+      message: "The work order was extracted with moderate confidence. Please verify the number is correct.",
+      actionLabel: "Verify WO number",
+      href: "",
+      tone: "info",
+    },
+    NEEDS_ATTENTION: {
+      title: "Verification (Required)",
+      message: "The work order extraction has issues that require verification. Check the extracted number or enter it manually.",
+      actionLabel: "Verify / Enter WO manually",
+      href: "",
+      tone: "warning",
     },
     MANUALLY_RESOLVED: {
       title: "Resolved manually",
@@ -138,9 +155,9 @@ export function getNeedsReviewUx(reason: NeedsReviewReason, fmKey?: string): Nee
   };
 
   return map[reason] || {
-    title: "Needs review",
-    message: "This item needs manual review.",
-    actionLabel: "Review",
+    title: "Verification",
+    message: "This item needs verification.",
+    actionLabel: "Verify",
     href: "",
     tone: "info",
   };

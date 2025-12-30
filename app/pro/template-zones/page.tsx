@@ -418,6 +418,8 @@ function TemplateZonesPageContent() {
       setError(`Failed to render PDF: ${errorMessage}`);
       setPreviewImage(null);
       setCropZone(null);
+      setPageWidthPt(0);
+      setPageHeightPt(0);
     } finally {
       setIsRenderingPdf(false);
     }
@@ -534,6 +536,8 @@ function TemplateZonesPageContent() {
       console.error("[PDF Render] Error:", err);
       setError(`Failed to render PDF page ${pageNum}: ${errorMessage}`);
       setPreviewImage(null);
+      setPageWidthPt(0);
+      setPageHeightPt(0);
     }
   }
 
@@ -722,8 +726,16 @@ function TemplateZonesPageContent() {
     }
 
     // Validate we have page dimensions in points
-    if (!pageWidthPt || !pageHeightPt || pageWidthPt <= 0 || pageHeightPt <= 0) {
+    if (!pageWidthPt || !pageHeightPt || pageWidthPt <= 0 || pageHeightPt <= 0 ||
+        !Number.isFinite(pageWidthPt) || !Number.isFinite(pageHeightPt)) {
       setError("PDF page dimensions not available. Please reload the PDF.");
+      return;
+    }
+    
+    // Calculate PDF points from crop zone
+    const points = calculatePoints();
+    if (!points) {
+      setError("Failed to calculate PDF points. Please redraw the rectangle.");
       return;
     }
 
@@ -756,6 +768,13 @@ function TemplateZonesPageContent() {
       pageHeightPt: pageHeightPt,
     });
 
+    // Ensure all required fields are present and finite numbers
+    if (!Number.isFinite(pageWidthPt) || !Number.isFinite(pageHeightPt)) {
+      setError("PDF page dimensions are invalid. Please reload the PDF.");
+      setIsSaving(false);
+      return;
+    }
+
     try {
       const response = await fetch("/api/onboarding/templates/save", {
         method: "POST",
@@ -763,6 +782,15 @@ function TemplateZonesPageContent() {
         body: JSON.stringify({
           fmKey: selectedFmKey,
           page: coordsPage, // Use coordsPage, not selectedPage
+          // PDF points in x,y,w,h order (top-left origin)
+          xPt: points.xPt,
+          yPt: points.yPt,
+          wPt: points.wPt,
+          hPt: points.hPt,
+          pageWidthPt: Number(pageWidthPt), // Ensure it's a number
+          pageHeightPt: Number(pageHeightPt), // Ensure it's a number
+          coordSystem: toSheetCoordSystem(COORD_SYSTEM_PDF_POINTS_TOP_LEFT),
+          // Optional: rectPx for validation/debugging (CSS pixel space)
           rectPx: {
             x: cropZone.x,
             y: cropZone.y,
@@ -771,9 +799,6 @@ function TemplateZonesPageContent() {
           },
           renderWidthPx: imageWidth,
           renderHeightPx: imageHeight,
-          pageWidthPt: pageWidthPt,
-          pageHeightPt: pageHeightPt,
-          coordSystem: toSheetCoordSystem(COORD_SYSTEM_PDF_POINTS_TOP_LEFT),
         }),
       });
 

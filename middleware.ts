@@ -41,6 +41,15 @@ export default auth(async (req) => {
     return NextResponse.next();
   }
 
+  // For ALL other API routes: do NOT redirect to /auth/signin.
+  // Return 401 JSON so fetch() callers don't get stuck in redirect loops.
+  if (pathname.startsWith("/api")) {
+    if (!isAuthenticated || !userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    return NextResponse.next();
+  }
+
   // Allow access to auth pages (sign-in page)
   if (pathname.startsWith("/auth")) {
     return NextResponse.next();
@@ -71,20 +80,25 @@ export default auth(async (req) => {
     // If not authenticated, redirect to sign-in
     if (!isAuthenticated || !userId) {
       const signInUrl = new URL("/auth/signin", req.url);
-      signInUrl.searchParams.set("callbackUrl", pathname);
+      const callbackUrl = req.nextUrl.pathname + req.nextUrl.search;
+      signInUrl.searchParams.set("callbackUrl", callbackUrl);
       return NextResponse.redirect(signInUrl);
     }
 
     // Allow access to onboarding pages - they will check status themselves
     // (Middleware runs in Edge runtime and can't use Google Sheets APIs)
-    return NextResponse.next();
+    // Add pathname header so layout can check current page to avoid redirect loops
+    const response = NextResponse.next();
+    response.headers.set("x-pathname", pathname);
+    return response;
   }
 
   // Protect all other routes (require authentication)
   if (!isAuthenticated || !userId) {
     // Redirect to sign-in page
     const signInUrl = new URL("/auth/signin", req.url);
-    signInUrl.searchParams.set("callbackUrl", pathname);
+    const callbackUrl = req.nextUrl.pathname + req.nextUrl.search;
+    signInUrl.searchParams.set("callbackUrl", callbackUrl);
     return NextResponse.redirect(signInUrl);
   }
 

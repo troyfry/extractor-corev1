@@ -1,5 +1,5 @@
 /**
- * Constants for "Needs Review" reasons in signed work order processing.
+ * Constants for "Verification" reasons in signed work order processing.
  * 
  * These reasons are used when a signed PDF cannot be automatically processed
  * and requires manual review.
@@ -11,13 +11,16 @@ export const NEEDS_REVIEW_REASONS = {
   INVALID_CROP: "INVALID_CROP",
   CROP_TOO_SMALL: "CROP_TOO_SMALL",
   PAGE_MISMATCH: "PAGE_MISMATCH",
+  TEMPLATE_PAGE_SIZE_MISMATCH: "TEMPLATE_PAGE_SIZE_MISMATCH",
   LOW_CONFIDENCE_AFTER_RETRY: "LOW_CONFIDENCE_AFTER_RETRY",
   INVALID_WORK_ORDER_NUMBER: "INVALID_WORK_ORDER_NUMBER",
   FMKEY_MISMATCH: "FMKEY_MISMATCH",
-  NO_WORK_ORDER_NUMBER: "no_work_order_number",
-  NO_MATCHING_JOB_ROW: "no_matching_job_row",
-  UPDATE_FAILED: "update_failed",
-  LOW_CONFIDENCE: "low_confidence",
+  NO_WORK_ORDER_NUMBER: "NO_WORK_ORDER_NUMBER",
+  NO_MATCHING_JOB_ROW: "NO_MATCHING_JOB_ROW",
+  UPDATE_FAILED: "UPDATE_FAILED",
+  LOW_CONFIDENCE: "LOW_CONFIDENCE",
+  QUICK_CHECK_RECOMMENDED: "QUICK_CHECK_RECOMMENDED",
+  NEEDS_ATTENTION: "NEEDS_ATTENTION",
 } as const;
 
 export type NeedsReviewReason =

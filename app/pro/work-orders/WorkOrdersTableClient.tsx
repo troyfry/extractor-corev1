@@ -23,7 +23,7 @@ type Props = {
   jobs: WorkOrderRow[];
 };
 
-const FILTERS = ["All", "Signed", "Unsigned", "Needs Review"] as const;
+const FILTERS = ["All", "Signed", "Unsigned", "Verification"] as const;
 type Filter = (typeof FILTERS)[number];
 
 /**
@@ -34,7 +34,7 @@ function parseFilter(param: string | null): Filter {
   const normalized = param.toLowerCase();
   if (normalized === "signed") return "Signed";
   if (normalized === "unsigned") return "Unsigned";
-  if (normalized === "review" || normalized === "needs-review") return "Needs Review";
+  if (normalized === "review" || normalized === "needs-review") return "Verification";
   return "All";
 }
 
@@ -43,7 +43,7 @@ function parseFilter(param: string | null): Filter {
  */
 function filterToParam(filter: Filter): string {
   if (filter === "All") return "all";
-  if (filter === "Needs Review") return "review";
+  if (filter === "Verification") return "review";
   return filter.toLowerCase();
 }
 
@@ -101,7 +101,7 @@ export function WorkOrdersTableClient({ jobs }: Props) {
       result = result.filter(
         (job) => !(job.status || "").toLowerCase().includes("signed")
       );
-    } else if (filter === "Needs Review") {
+    } else if (filter === "Verification") {
       result = result.filter((job) =>
         (job.status || "").toLowerCase().includes("review")
       );

@@ -23,6 +23,12 @@ import {
   type TemplateConfig,
 } from "@/lib/workOrders/templateConfig";
 import {
+  decideSignedWorkOrder,
+  extractCandidatesFromText,
+  type DecisionResult,
+} from "@/lib/workOrders/signedDecisionEngine";
+import { extractTextFromPdfBuffer } from "@/lib/workOrders/aiParser";
+import {
   uploadPdfToDrive,
   getOrCreateFolder,
 } from "@/lib/google/drive";
@@ -139,6 +145,13 @@ export interface ProcessSignedPdfResponse {
         wPx: number | null;
         hPx: number | null;
       };
+    };
+    decision?: {
+      state: "AUTO_CONFIRMED" | "QUICK_CHECK" | "NEEDS_ATTENTION";
+      bestCandidate?: string;
+      normalizedCandidates: string[];
+      trustScore: number;
+      reasons: Array<"NO_CANDIDATE" | "MULTIPLE_CANDIDATES" | "FORMAT_MISMATCH" | "LOW_CONFIDENCE" | "PASS_AGREEMENT" | "SEQ_OUTLIER" | "OK_FORMAT" | "DIGITAL_TEXT_STRONG">;
     };
   };
 }
@@ -600,12 +613,94 @@ export async function processSignedPdf(
   // Sanitize DPI
   templateConfig.dpi = sanitizeDpi(templateConfig.dpi);
 
-  // Get PDF page count
+  // Get PDF page count and extract digital text
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const pdfParse = require("pdf-parse");
   const parseFn = typeof pdfParse === "function" ? pdfParse : pdfParse.default ?? pdfParse;
   const pdfData = await parseFn(pdfBuffer);
   const pageCount = pdfData.numpages || 1;
+
+  /**
+   * Get actual PDF page dimensions in points using MuPDF.
+   * Returns dimensions from PDF user space (72 DPI points).
+   * Same pattern as renderPdfPage.ts.
+   */
+  async function getActualPdfPageDimensionsPt(
+    pdfBuffer: Buffer,
+    pageNumber: number
+  ): Promise<{ pageWidthPt: number; pageHeightPt: number } | null> {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // @ts-expect-error - mupdf module exists at runtime but has no type declarations
+      const mupdfModule: any = await import("mupdf");
+      
+      // Most WASM bundles export an async init function as default.
+      const init = mupdfModule.default || mupdfModule;
+      let mupdf: any;
+      if (typeof init === "function") {
+        const result = init();
+        mupdf = result instanceof Promise ? await result : result;
+      } else {
+        mupdf = init;
+      }
+      
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const Document = (mupdf as any).Document;
+      if (!Document || typeof (Document as any).openDocument !== "function") {
+        return null;
+      }
+      
+      const pdfUint8Array = new Uint8Array(pdfBuffer);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const doc = (Document as any).openDocument(pdfUint8Array, "application/pdf");
+      if (!doc) return null;
+      
+      const docPageCount = doc.countPages();
+      if (pageNumber < 1 || pageNumber > docPageCount) return null;
+      
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pdfPage = doc.loadPage(pageNumber - 1);
+      if (!pdfPage) return null;
+      
+      // Get page dimensions in points (PDF user space, 72 DPI)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rect = (pdfPage as any).getBounds();
+      const pageWidthPt = Math.ceil(rect.x1 - rect.x0);
+      const pageHeightPt = Math.ceil(rect.y1 - rect.y0);
+      
+      return { pageWidthPt, pageHeightPt };
+    } catch (error) {
+      console.warn(`[Signed Processor] Failed to get actual PDF page dimensions:`, {
+        requestId,
+        page: pageNumber,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  // Step 1: Attempt digital text extraction first
+  // Build template rule (use expectedDigits = 7 as default, can be made configurable)
+  const expectedDigits = 7; // TODO: Get from template config if available
+  
+  let digitalText: string = "";
+  let digitalCandidates: string[] = [];
+  let digitalExtractionMethod: "DIGITAL_TEXT" | "OCR" = "OCR"; // Default to OCR if digital fails
+  
+  try {
+    digitalText = await extractTextFromPdfBuffer(pdfBuffer);
+    if (digitalText && digitalText.trim().length > 0) {
+      // Extract candidates from digital text
+      digitalCandidates = extractCandidatesFromText(digitalText, expectedDigits);
+    }
+  } catch (error) {
+    // Digital text extraction failed (scanned PDF, etc.) - will fall back to OCR
+    console.log(`[Signed Processor] Digital text extraction failed, will use OCR:`, {
+      requestId,
+      fmKey: normalizedFmKey,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   // Type for OCR attempt tracking
   type OcrAttempt = {
@@ -640,7 +735,71 @@ export async function processSignedPdf(
 
   // Attempt OCR on template.page
   const templatePage = templateConfig.page;
-  const ocrAttempts: OcrAttempt[] = [];
+
+  // Get actual PDF page dimensions for template page
+  const actualTemplatePageDims = await getActualPdfPageDimensionsPt(pdfBuffer, templatePage);
+  const effectivePageWidthPt = actualTemplatePageDims?.pageWidthPt ?? templateConfig.pageWidthPt;
+  const effectivePageHeightPt = actualTemplatePageDims?.pageHeightPt ?? templateConfig.pageHeightPt;
+
+  // Log dimension comparison
+  if (actualTemplatePageDims && templateConfig.pageWidthPt && templateConfig.pageHeightPt) {
+    const widthDiff = Math.abs(actualTemplatePageDims.pageWidthPt - templateConfig.pageWidthPt);
+    const heightDiff = Math.abs(actualTemplatePageDims.pageHeightPt - templateConfig.pageHeightPt);
+    console.log(`[Signed Processor] Page dimension comparison:`, {
+      requestId,
+      fmKey: normalizedFmKey,
+      page: templatePage,
+      templateDimensions: {
+        pageWidthPt: templateConfig.pageWidthPt,
+        pageHeightPt: templateConfig.pageHeightPt,
+      },
+      actualPdfDimensions: {
+        pageWidthPt: actualTemplatePageDims.pageWidthPt,
+        pageHeightPt: actualTemplatePageDims.pageHeightPt,
+      },
+      differences: {
+        widthDiff,
+        heightDiff,
+        widthDiffPercent: ((widthDiff / templateConfig.pageWidthPt) * 100).toFixed(1) + "%",
+        heightDiffPercent: ((heightDiff / templateConfig.pageHeightPt) * 100).toFixed(1) + "%",
+      },
+    });
+  }
+
+  // Guard: Check for page dimension mismatch (tolerance: 2pt)
+  const DIMENSION_TOLERANCE_PT = 2.0;
+  let pageSizeMismatch = false;
+  if (
+    actualTemplatePageDims &&
+    templateConfig.pageWidthPt &&
+    templateConfig.pageHeightPt
+  ) {
+    const widthDiff = Math.abs(actualTemplatePageDims.pageWidthPt - templateConfig.pageWidthPt);
+    const heightDiff = Math.abs(actualTemplatePageDims.pageHeightPt - templateConfig.pageHeightPt);
+    
+    if (widthDiff > DIMENSION_TOLERANCE_PT || heightDiff > DIMENSION_TOLERANCE_PT) {
+      pageSizeMismatch = true;
+      console.warn(`[Signed Processor] Page dimension mismatch detected:`, {
+        requestId,
+        fmKey: normalizedFmKey,
+        page: templatePage,
+        templateDimensions: {
+          pageWidthPt: templateConfig.pageWidthPt,
+          pageHeightPt: templateConfig.pageHeightPt,
+        },
+        actualPdfDimensions: {
+          pageWidthPt: actualTemplatePageDims.pageWidthPt,
+          pageHeightPt: actualTemplatePageDims.pageHeightPt,
+        },
+        differences: {
+          widthDiff,
+          heightDiff,
+        },
+        tolerance: DIMENSION_TOLERANCE_PT,
+        action: "Forcing NEEDS_REVIEW with TEMPLATE_PAGE_SIZE_MISMATCH",
+      });
+    }
+  }
 
   // Guard: assert points are valid before calling OCR (if in points mode)
   if (pointsMode) {
@@ -663,7 +822,7 @@ export async function processSignedPdf(
         error: errorMessage,
       });
       
-      // Return needs review result
+      // Return verification result
       const reviewId = `review_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
       const createdAt = new Date().toISOString();
       await appendSignedNeedsReviewRow(accessToken, spreadsheetId, {
@@ -734,6 +893,164 @@ export async function processSignedPdf(
     }
   }
 
+  // Guard: Check for page size mismatch - force Verification if detected
+  if (pageSizeMismatch) {
+    // Generate a fallback snippet for Verification
+    let fallbackSnippetUrl: string | null = null;
+    try {
+      const { renderPdfPageToPng } = await import("@/lib/pdf/renderPdfPage");
+      const rendered = await renderPdfPageToPng(pdfBuffer, templatePage);
+      if (rendered.pngBase64) {
+        // Upload snippet to Drive
+        const snippetBuffer = Buffer.from(rendered.pngBase64, "base64");
+        const snippetFilename = `snippet_${fileHash.substring(0, 8)}_${templatePage}.png`;
+        fallbackSnippetUrl = await uploadSnippetImageToDrive({
+          accessToken,
+          fileName: snippetFilename,
+          pngBuffer: snippetBuffer,
+        });
+      }
+    } catch (snippetError) {
+      console.warn(`[Signed Processor] Failed to generate fallback snippet for page size mismatch:`, {
+        requestId,
+        error: snippetError instanceof Error ? snippetError.message : String(snippetError),
+      });
+    }
+
+    const reviewId = `review_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const createdAt = new Date().toISOString();
+    await appendSignedNeedsReviewRow(accessToken, spreadsheetId, {
+      review_id: reviewId,
+      created_at: createdAt,
+      fmKey: normalizedFmKey,
+      signed_pdf_url: signedPdfUrl,
+      preview_image_url: fallbackSnippetUrl,
+      raw_text: digitalText || "",
+      confidence: "low",
+      reason: NEEDS_REVIEW_REASONS.TEMPLATE_PAGE_SIZE_MISMATCH,
+      manual_work_order_number: null,
+      resolved: "FALSE",
+      resolved_at: null,
+      file_hash: fileHash,
+      source: source,
+      gmail_message_id: sourceMeta?.gmailMessageId || null,
+      gmail_attachment_id: sourceMeta?.gmailAttachmentId || null,
+      gmail_subject: sourceMeta?.gmailSubject || null,
+      gmail_from: sourceMeta?.gmailFrom || null,
+      gmail_date: sourceMeta?.gmailDate || null,
+    });
+
+    const pageSizeUx = getNeedsReviewUx(NEEDS_REVIEW_REASONS.TEMPLATE_PAGE_SIZE_MISMATCH, normalizedFmKey);
+    
+    return {
+      mode: "NEEDS_REVIEW",
+      data: {
+        fmKey: normalizedFmKey,
+        woNumber: null,
+        ocrConfidenceLabel: "low",
+        ocrConfidenceRaw: 0,
+        confidenceLabel: "low",
+        confidenceRaw: 0,
+        automationStatus: "BLOCKED",
+        automationBlocked: true,
+        automationBlockReason: NEEDS_REVIEW_REASONS.TEMPLATE_PAGE_SIZE_MISMATCH,
+        signedPdfUrl,
+        snippetImageUrl: fallbackSnippetUrl,
+        snippetDriveUrl: fallbackSnippetUrl,
+        jobExistsInSheet1: false,
+        retryAttempted: false,
+        alternatePageAttempted: false,
+        reason: NEEDS_REVIEW_REASONS.TEMPLATE_PAGE_SIZE_MISMATCH,
+        fixHref: pageSizeUx.href || null,
+        fixAction: pageSizeUx.actionLabel || null,
+        reasonTitle: pageSizeUx.title,
+        reasonMessage: pageSizeUx.message,
+        tone: pageSizeUx.tone,
+        templateUsed: {
+          templateId: templateConfig.templateId,
+          fmKey: normalizedFmKey,
+          page: templatePage ?? null,
+          region: normalizedRegion,
+          dpi: templateConfig.dpi ?? null,
+          coordSystem: "PDF_POINTS_TOP_LEFT",
+          xPt: templateConfig.xPt ?? null,
+          yPt: templateConfig.yPt ?? null,
+          wPt: templateConfig.wPt ?? null,
+          hPt: templateConfig.hPt ?? null,
+          pageWidthPt: templateConfig.pageWidthPt ?? null,
+          pageHeightPt: templateConfig.pageHeightPt ?? null,
+        },
+        chosenPage: null,
+        attemptedPages: "",
+      },
+    };
+  }
+
+  // Only call OCR if digital text extraction yielded no valid candidates
+  // Normalize and validate digital candidates
+  const normalizedDigitalCandidates = digitalCandidates
+    .map(c => c.replace(/\D/g, ""))
+    .filter(Boolean);
+
+  const validDigitalCandidates = normalizedDigitalCandidates.filter(n =>
+    n.length === expectedDigits
+  );
+
+  // THIS is the only "digital works" indicator:
+  const shouldSkipOcr = validDigitalCandidates.length > 0;
+  
+  if (shouldSkipOcr) {
+    digitalExtractionMethod = "DIGITAL_TEXT";
+    console.log(`[Signed Processor] Digital text extraction found valid candidate(s):`, {
+      requestId,
+      fmKey: normalizedFmKey,
+      candidates: validDigitalCandidates,
+    });
+  }
+  
+  let ocrResult = {
+    woNumber: null as string | null,
+    rawText: "",
+    confidenceRaw: 0,
+    snippetImageUrl: null as string | null,
+  };
+  let ocrAttempts: OcrAttempt[] = [];
+  let retryAttempted = false;
+  let alternatePageAttempted = false;
+  let bestAttempt: OcrAttempt | null = null;
+  let bestAttemptIndex = -1;
+  let attemptedPages = "";
+  let chosenPage: number | null = null;
+  
+  if (shouldSkipOcr) {
+    console.log(`[Signed Processor] Skipping OCR - digital text extraction found valid candidates:`, {
+      requestId,
+      fmKey: normalizedFmKey,
+      candidates: validDigitalCandidates,
+    });
+    
+    // Create a synthetic OCR attempt from digital text for compatibility
+    const normalizedDigitalWo = validDigitalCandidates[0] ?? null;
+    bestAttempt = {
+      page: templatePage,
+      confidence: 1.0, // Digital text is considered high confidence
+      woNumber: normalizedDigitalWo,
+      rawText: digitalText,
+      snippetImageUrl: null,
+      region: templateConfig.region,
+      retryAttempted: false,
+    };
+    ocrAttempts = [bestAttempt];
+    bestAttemptIndex = 0;
+    ocrResult = {
+      woNumber: normalizedDigitalWo,
+      rawText: digitalText,
+      confidenceRaw: 1.0,
+      snippetImageUrl: null,
+    };
+    attemptedPages = String(templatePage);
+    chosenPage = templatePage;
+  } else {
   // Log OCR attempt with requestId
   console.log(`[Signed Processor] Calling OCR service:`, {
     requestId,
@@ -745,8 +1062,8 @@ export async function processSignedPdf(
     yPt: templateConfig.yPt,
     wPt: templateConfig.wPt,
     hPt: templateConfig.hPt,
-    pageWidthPt: templateConfig.pageWidthPt,
-    pageHeightPt: templateConfig.pageHeightPt,
+      pageWidthPt: effectivePageWidthPt,
+      pageHeightPt: effectivePageHeightPt,
   });
 
   const firstAttempt = await callSignedOcrService(
@@ -762,11 +1079,21 @@ export async function processSignedPdf(
       yPt: templateConfig.yPt,
       wPt: templateConfig.wPt,
       hPt: templateConfig.hPt,
-      pageWidthPt: templateConfig.pageWidthPt,
-      pageHeightPt: templateConfig.pageHeightPt,
+      pageWidthPt: effectivePageWidthPt,
+      pageHeightPt: effectivePageHeightPt,
       requestId,
     }
   );
+
+  // Diagnostic logging after OCR call
+  console.log(`[Signed Processor] OCR first attempt result:`, {
+    requestId,
+    fmKey: normalizedFmKey,
+    snippetImageUrlLength: firstAttempt.snippetImageUrl?.length ?? 0,
+    rawTextLength: firstAttempt.rawText?.length ?? 0,
+    woNumber: firstAttempt.woNumber ?? null,
+    confidenceRaw: firstAttempt.confidenceRaw ?? null,
+  });
 
   ocrAttempts.push({
     page: templatePage,
@@ -804,6 +1131,16 @@ export async function processSignedPdf(
         }
       );
 
+      // Diagnostic logging after OCR retry call
+      console.log(`[Signed Processor] OCR retry attempt result:`, {
+        requestId,
+        fmKey: normalizedFmKey,
+        snippetImageUrlLength: retryAttempt.snippetImageUrl?.length ?? 0,
+        rawTextLength: retryAttempt.rawText?.length ?? 0,
+        woNumber: retryAttempt.woNumber ?? null,
+        confidenceRaw: retryAttempt.confidenceRaw ?? null,
+      });
+
       ocrAttempts.push({
         page: templatePage,
         confidence: retryAttempt.confidenceRaw ?? 0,
@@ -828,6 +1165,16 @@ export async function processSignedPdf(
         }
       );
 
+      // Diagnostic logging after OCR retry call (legacy mode)
+      console.log(`[Signed Processor] OCR retry attempt result (legacy):`, {
+        requestId,
+        fmKey: normalizedFmKey,
+        snippetImageUrlLength: retryAttempt.snippetImageUrl?.length ?? 0,
+        rawTextLength: retryAttempt.rawText?.length ?? 0,
+        woNumber: retryAttempt.woNumber ?? null,
+        confidenceRaw: retryAttempt.confidenceRaw ?? null,
+      });
+
       ocrAttempts.push({
         page: templatePage,
         confidence: retryAttempt.confidenceRaw ?? 0,
@@ -845,7 +1192,6 @@ export async function processSignedPdf(
   const shouldTryAlternatePage = pageCount >= 2 && 
     (!isValidWoNumber(bestSoFar.woNumber) || bestSoFar.confidence < 0.55);
 
-  let alternatePageAttempted = false;
   if (shouldTryAlternatePage) {
     let alternatePage: number | null = null;
     
@@ -880,6 +1226,17 @@ export async function processSignedPdf(
         }
       );
 
+      // Diagnostic logging after OCR alternate page call
+      console.log(`[Signed Processor] OCR alternate page attempt result:`, {
+        requestId,
+        fmKey: normalizedFmKey,
+        page: alternatePage,
+        snippetImageUrlLength: alternateAttempt.snippetImageUrl?.length ?? 0,
+        rawTextLength: alternateAttempt.rawText?.length ?? 0,
+        woNumber: alternateAttempt.woNumber ?? null,
+        confidenceRaw: alternateAttempt.confidenceRaw ?? null,
+      });
+
       ocrAttempts.push({
         page: alternatePage,
         confidence: alternateAttempt.confidenceRaw ?? 0,
@@ -889,28 +1246,34 @@ export async function processSignedPdf(
         region: templateConfig.region,
         retryAttempted: false,
       });
-    }
   }
+    
+    alternatePageAttempted = ocrAttempts.some(a => a.page !== templatePage);
+    retryAttempted = ocrAttempts.some(a => a.retryAttempted);
 
   // Pick the best attempt overall
-  const bestAttempt = pickBestAttempt(ocrAttempts);
-  const bestAttemptIndex = ocrAttempts.findIndex(a => 
-    a.page === bestAttempt.page && 
-    a.confidence === bestAttempt.confidence &&
-    a.woNumber === bestAttempt.woNumber
+    bestAttempt = pickBestAttempt(ocrAttempts);
+    bestAttemptIndex = ocrAttempts.findIndex(a => 
+      a.page === bestAttempt!.page && 
+      a.confidence === bestAttempt!.confidence &&
+      a.woNumber === bestAttempt!.woNumber
   );
   
-  const ocrResult = {
+    ocrResult = {
     woNumber: bestAttempt.woNumber,
     rawText: bestAttempt.rawText,
     confidenceRaw: bestAttempt.confidence,
     snippetImageUrl: bestAttempt.snippetImageUrl,
   };
 
-  const retryAttempted = ocrAttempts.some(a => a.retryAttempted);
+    attemptedPages = Array.from(new Set(ocrAttempts.map(a => a.page))).sort().join(",");
+    chosenPage = bestAttempt.page;
+    }
+  }
 
   // Normalize confidence & label
   const finalConfidenceRaw = ocrResult.confidenceRaw ?? 0;
+  const ocrConfidenceRaw = finalConfidenceRaw; // For decision engine
   let confidenceLabel: "low" | "medium" | "high";
 
   if (finalConfidenceRaw >= 0.9) {
@@ -922,11 +1285,10 @@ export async function processSignedPdf(
   }
 
   const woNumber = ocrResult.woNumber ?? null;
-  const rawText = ocrResult.rawText || "";
+  const rawText = ocrResult.rawText || digitalText || "";
   const snippetImageUrl = ocrResult.snippetImageUrl;
 
   // Separate OCR confidence from effective confidence
-  const ocrConfidenceRaw = finalConfidenceRaw;
   const extractedValid = isValidWoNumber(woNumber);
   
   const effectiveConfidenceRaw = extractedValid ? ocrConfidenceRaw : 0;
@@ -954,8 +1316,112 @@ export async function processSignedPdf(
     validatedWoNumber = null;
   }
 
-  const attemptedPages = Array.from(new Set(ocrAttempts.map(a => a.page))).sort().join(",");
-  const chosenPage = bestAttempt.page;
+  // Build decision input and call decision engine
+  // Determine which extraction method was actually used
+  // Use shouldSkipOcr directly - if we skipped OCR, we definitely used digital extraction
+  // This is the single source of truth for whether digital extraction was used
+  const usedDigital = shouldSkipOcr;
+  const decisionExtractionMethod: "DIGITAL_TEXT" | "OCR" = usedDigital ? "DIGITAL_TEXT" : "OCR";
+  
+  const decisionRawText = usedDigital ? digitalText : ocrResult.rawText;
+  // Use validDigitalCandidates (already validated) to ensure consistency with shouldSkipOcr logic
+  const decisionCandidates = usedDigital
+    ? validDigitalCandidates
+    : (ocrResult.woNumber ? [ocrResult.woNumber] : []);
+  
+  // Determine pass agreement (OCR pass1 == pass2 if we have multiple valid attempts with same WO)
+  // Normalize to digits-only before validating to catch cases like "WO 1234567" vs "1234567 "
+  const ocrWoNumbers = ocrAttempts
+    .map(a => a.woNumber ? a.woNumber.replace(/\D/g, "") : "")
+    .filter(n => n && n.length === expectedDigits);
+
+  const uniqueOcrWos = Array.from(new Set(ocrWoNumbers));
+  // Pass agreement: at least 2 valid OCR reads that agree
+  const passAgreement = uniqueOcrWos.length === 1 && ocrWoNumbers.length >= 2;
+  
+  const decisionResult: DecisionResult = decideSignedWorkOrder({
+    rawText: decisionRawText,
+    candidates: decisionCandidates.length > 0 ? decisionCandidates : undefined,
+    templateRule: {
+      expectedDigits,
+    },
+    signals: {
+      extractionMethod: decisionExtractionMethod,
+      confidenceRaw: decisionExtractionMethod === "OCR" ? ocrConfidenceRaw : undefined,
+      passAgreement: decisionExtractionMethod === "OCR" ? passAgreement : undefined,
+      lastKnownWo: undefined,
+    },
+  });
+
+  // Structured logging
+  console.log("[Signed Decision]", {
+    fmKey: normalizedFmKey,
+    filename: originalFilename,
+    method: decisionExtractionMethod,
+    state: decisionResult.state,
+    bestCandidate: decisionResult.bestCandidate,
+    trustScore: decisionResult.trustScore,
+    reasons: decisionResult.reasons,
+    candidates: decisionResult.normalizedCandidates,
+  });
+
+  // Force snippet generation for review cases even if we skipped OCR
+  // AUTO_CONFIRMED + digital → skip OCR
+  // QUICK_CHECK or NEEDS_ATTENTION → call OCR anyway so you get snippet
+  if (shouldSkipOcr && decisionResult.state !== "AUTO_CONFIRMED" && !ocrResult.snippetImageUrl) {
+    try {
+      console.log(`[Signed Processor] Forcing OCR call for snippet generation (review case):`, {
+        requestId,
+        fmKey: normalizedFmKey,
+        state: decisionResult.state,
+      });
+      
+      const snippetPage = chosenPage ?? templatePage;
+      const actualSnippetPageDims = await getActualPdfPageDimensionsPt(pdfBuffer, snippetPage);
+      const snippetPageWidthPt = actualSnippetPageDims?.pageWidthPt ?? effectivePageWidthPt;
+      const snippetPageHeightPt = actualSnippetPageDims?.pageHeightPt ?? effectivePageHeightPt;
+      
+      const snippetAttempt = await callSignedOcrService(
+        pdfBuffer,
+        originalFilename,
+        {
+          templateId: templateConfig.templateId,
+          page: snippetPage,
+          region: pointsMode ? null : templateConfig.region,
+          dpi: templateConfig.dpi,
+          xPt: templateConfig.xPt,
+          yPt: templateConfig.yPt,
+          wPt: templateConfig.wPt,
+          hPt: templateConfig.hPt,
+          pageWidthPt: snippetPageWidthPt,
+          pageHeightPt: snippetPageHeightPt,
+          requestId,
+        }
+      );
+
+      // Diagnostic logging after forced OCR call
+      console.log(`[Signed Processor] Forced OCR snippet result:`, {
+        requestId,
+        fmKey: normalizedFmKey,
+        snippetImageUrlLength: snippetAttempt.snippetImageUrl?.length ?? 0,
+        rawTextLength: snippetAttempt.rawText?.length ?? 0,
+        woNumber: snippetAttempt.woNumber ?? null,
+        confidenceRaw: snippetAttempt.confidenceRaw ?? null,
+      });
+
+      // Update ocrResult with snippet (ignore WO result, we already have it from digital)
+      if (snippetAttempt.snippetImageUrl) {
+        ocrResult.snippetImageUrl = snippetAttempt.snippetImageUrl;
+      }
+    } catch (err) {
+      console.error(`[Signed Processor] Error generating snippet for review:`, {
+        requestId,
+        fmKey: normalizedFmKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      // Continue without snippet - we'll use null
+    }
+  }
 
   // Upload snippet to Drive if present
   let snippetDriveUrl: string | null = null;
@@ -983,8 +1449,18 @@ export async function processSignedPdf(
     }
   }
 
-  // Use validated WO number
-  const effectiveWoNumber = (woNumberOverride || validatedWoNumber || "").trim();
+  // Use decision engine's best candidate when state is AUTO_CONFIRMED or QUICK_CHECK
+  // This ensures we use the engine's deterministic choice, especially in multi-candidate auto-resolve cases
+  const engineWo = decisionResult.bestCandidate ? decisionResult.bestCandidate : null;
+  
+  // Priority: manual override > decision engine (only for AUTO_CONFIRMED or QUICK_CHECK) > validated OCR/digital > empty
+  // Only use engine's best candidate when state is AUTO_CONFIRMED or QUICK_CHECK (not NEEDS_ATTENTION)
+  const effectiveWoNumber = (
+    woNumberOverride ||
+    (decisionResult.state === "AUTO_CONFIRMED" || decisionResult.state === "QUICK_CHECK" ? engineWo : null) ||
+    validatedWoNumber ||
+    ""
+  ).trim();
   const nowIso = new Date().toISOString();
 
   const isHighConfidence = effectiveConfidenceLabel === "high";
@@ -1081,8 +1557,23 @@ export async function processSignedPdf(
     );
   }
 
-  // Determine mode
-  const mode = jobUpdated ? "UPDATED" : "NEEDS_REVIEW";
+  // Determine mode based on decision engine state
+  // AUTO_CONFIRMED → attempt update; if update fails, Verification reason = UPDATE_FAILED
+  // QUICK_CHECK → Verification (Quick Check queue)
+  // NEEDS_ATTENTION → Verification
+  let mode: "UPDATED" | "NEEDS_REVIEW" = "NEEDS_REVIEW";
+  
+  if (decisionResult.state === "AUTO_CONFIRMED") {
+    // Proceed with existing update logic
+    mode = jobUpdated ? "UPDATED" : "NEEDS_REVIEW";
+  } else {
+    // QUICK_CHECK or NEEDS_ATTENTION -> review
+    mode = "NEEDS_REVIEW";
+  }
+
+  // Calculate verification reason (used for both sheet write and response)
+  // Move to outer scope so it can be reused for responseReason
+  let finalNeedsReviewReason: string | null = null;
 
   // Fallback: append to Needs_Review_Signed if job wasn't updated
   if (mode === "NEEDS_REVIEW") {
@@ -1092,7 +1583,17 @@ export async function processSignedPdf(
        cropValidationReason === NEEDS_REVIEW_REASONS.INVALID_CROP ||
        cropValidationReason === NEEDS_REVIEW_REASONS.CROP_TOO_SMALL);
     
-    const reason =
+    // Decision-first reason mapping (prepend decision-based reasons)
+    // BUT: prioritize NO_MATCHING_JOB_ROW over decision engine's NO_CANDIDATE when we have a WO number
+    // Only use decision engine's NEEDS_ATTENTION if there's no work order number extracted
+    const decisionReason =
+      decisionResult.state === "QUICK_CHECK"
+        ? NEEDS_REVIEW_REASONS.QUICK_CHECK_RECOMMENDED
+        : decisionResult.state === "NEEDS_ATTENTION" && !effectiveWoNumber
+        ? NEEDS_REVIEW_REASONS.NEEDS_ATTENTION
+        : null;
+    
+    finalNeedsReviewReason =
       manualReason ||
       (hasHighPriorityReason
         ? cropValidationReason
@@ -1108,12 +1609,89 @@ export async function processSignedPdf(
         ? NEEDS_REVIEW_REASONS.NO_WORK_ORDER_NUMBER
         : !jobExistsInSheet1
         ? NEEDS_REVIEW_REASONS.NO_MATCHING_JOB_ROW
+        : decisionReason
+        ? decisionReason
         : isMediumOrHighConfidence
         ? NEEDS_REVIEW_REASONS.UPDATE_FAILED
         : NEEDS_REVIEW_REASONS.LOW_CONFIDENCE);
+    
+    const reason = finalNeedsReviewReason;
 
     const reviewId = `review_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     const createdAt = new Date().toISOString();
+    
+    // Phase 3: Build dedupe key for idempotency
+    const reviewDedupeKey = `${fileHash}:${normalizedFmKey}:${decisionResult.bestCandidate ?? "none"}`;
+    
+    // Phase 3: Format decision fields for storage
+    const decisionReasonsStr = decisionResult.reasons.join("|");
+    const normalizedCandidatesStr = decisionResult.normalizedCandidates.join("|");
+    const ocrPassAgreementStr = passAgreement ? "TRUE" : (decisionExtractionMethod === "OCR" ? "FALSE" : null);
+    
+    // Ensure snippet is available for review (generate if missing)
+    if (!snippetDriveUrl) {
+      try {
+        const attempt = await callSignedOcrService(
+          pdfBuffer,
+          originalFilename,
+          {
+            templateId: templateConfig.templateId,
+            page: chosenPage ?? templatePage,
+            region: pointsMode ? null : templateConfig.region,
+            dpi: templateConfig.dpi,
+            xPt: templateConfig.xPt,
+            yPt: templateConfig.yPt,
+            wPt: templateConfig.wPt,
+            hPt: templateConfig.hPt,
+            pageWidthPt: templateConfig.pageWidthPt,
+            pageHeightPt: templateConfig.pageHeightPt,
+            requestId,
+          }
+        );
+
+        if (attempt.snippetImageUrl) {
+          const [, base64Part] = attempt.snippetImageUrl.split(",", 2);
+          if (base64Part) {
+            const pngBuffer = Buffer.from(base64Part, "base64");
+            const fileNameParts = [
+              "snippet",
+              normalizedFmKey || "unknown",
+              decisionResult.bestCandidate || "no-wo",
+              Date.now().toString(),
+            ];
+            const fileName = fileNameParts.join("-") + ".png";
+
+            snippetDriveUrl = await uploadSnippetImageToDrive({
+              accessToken,
+              fileName,
+              pngBuffer,
+            });
+            
+            if (snippetDriveUrl) {
+              console.log(`[Signed Processor] Generated snippet for review:`, {
+                requestId,
+                fmKey: normalizedFmKey,
+                fileName,
+                driveUrl: snippetDriveUrl,
+              });
+            } else {
+              console.warn(`[Signed Processor] Failed to upload snippet to Drive (check GOOGLE_DRIVE_SNIPPETS_FOLDER_ID):`, {
+                requestId,
+                fmKey: normalizedFmKey,
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[Signed Processor] Error generating snippet for review:`, {
+          requestId,
+          fmKey: normalizedFmKey,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        // Continue without snippet - we'll use null
+      }
+    }
+    
     await appendSignedNeedsReviewRow(accessToken, spreadsheetId, {
       review_id: reviewId,
       created_at: createdAt,
@@ -1133,6 +1711,17 @@ export async function processSignedPdf(
       gmail_subject: sourceMeta?.gmailSubject || null,
       gmail_from: sourceMeta?.gmailFrom || null,
       gmail_date: sourceMeta?.gmailDate || null,
+      // Phase 3: Decision metadata
+      decision_state: decisionResult.state,
+      trust_score: decisionResult.trustScore,
+      decision_reasons: decisionReasonsStr,
+      normalized_candidates: normalizedCandidatesStr,
+      extraction_method: decisionExtractionMethod,
+      ocr_pass_agreement: ocrPassAgreementStr,
+      ocr_confidence_raw: decisionExtractionMethod === "OCR" ? ocrConfidenceRaw : null,
+      chosen_candidate: decisionResult.bestCandidate ?? null,
+      // Phase 3: Idempotency
+      review_dedupe_key: reviewDedupeKey,
     });
   }
 
@@ -1148,6 +1737,11 @@ export async function processSignedPdf(
         WORK_ORDERS_SHEET_NAME,
         jobId
       );
+
+      // Phase 3: Format decision fields for storage (reuse same logic as Verification)
+      const decisionReasonsStr = decisionResult.reasons.join("|");
+      const normalizedCandidatesStr = decisionResult.normalizedCandidates.join("|");
+      const ocrPassAgreementStr = passAgreement ? "TRUE" : (decisionExtractionMethod === "OCR" ? "FALSE" : null);
 
       const mergedWorkOrder: WorkOrderRecord = {
         jobId,
@@ -1174,6 +1768,14 @@ export async function processSignedPdf(
         source: existingWorkOrder?.source ?? "signed_upload",
         last_updated_at: nowIso,
         file_hash: fileHash,
+        // Phase 3: Decision metadata
+        signed_decision_state: decisionResult.state,
+        signed_trust_score: decisionResult.trustScore,
+        signed_decision_reasons: decisionReasonsStr,
+        signed_extraction_method: decisionExtractionMethod,
+        signed_ocr_confidence_raw: decisionExtractionMethod === "OCR" ? ocrConfidenceRaw : null,
+        signed_pass_agreement: ocrPassAgreementStr,
+        signed_candidates: normalizedCandidatesStr,
       };
 
       await writeWorkOrderRecord(
@@ -1187,34 +1789,8 @@ export async function processSignedPdf(
     }
   }
 
-  // Get UX mapping for the reason
-  const cropValidationReason = cropValidationResult?.reason;
-  const hasHighPriorityReason = cropValidationReason && 
-    (cropValidationReason === NEEDS_REVIEW_REASONS.TEMPLATE_NOT_CONFIGURED ||
-     cropValidationReason === NEEDS_REVIEW_REASONS.INVALID_CROP ||
-     cropValidationReason === NEEDS_REVIEW_REASONS.CROP_TOO_SMALL);
-  
-  const responseReason = 
-    mode === "NEEDS_REVIEW"
-      ? (manualReason ||
-         (hasHighPriorityReason
-           ? cropValidationReason
-           : fmKeyMismatch
-           ? NEEDS_REVIEW_REASONS.FMKEY_MISMATCH
-           : !extractedValid && woNumber
-           ? NEEDS_REVIEW_REASONS.INVALID_WORK_ORDER_NUMBER
-           : alternatePageAttempted && !isValidWoNumber(effectiveWoNumber) && pageCount >= 2
-           ? NEEDS_REVIEW_REASONS.PAGE_MISMATCH
-           : effectiveConfidenceLabel === "low" && retryAttempted && extractedValid
-           ? NEEDS_REVIEW_REASONS.LOW_CONFIDENCE_AFTER_RETRY
-           : !effectiveWoNumber
-           ? NEEDS_REVIEW_REASONS.NO_WORK_ORDER_NUMBER
-           : !jobExistsInSheet1
-           ? NEEDS_REVIEW_REASONS.NO_MATCHING_JOB_ROW
-           : isMediumOrHighConfidence
-           ? NEEDS_REVIEW_REASONS.UPDATE_FAILED
-           : NEEDS_REVIEW_REASONS.LOW_CONFIDENCE))
-      : undefined;
+  // Use the same reason we wrote to the sheet for response consistency
+  const responseReason = mode === "NEEDS_REVIEW" ? finalNeedsReviewReason : undefined;
 
   const ux = responseReason ? getNeedsReviewUx(responseReason, normalizedFmKey) : null;
 
@@ -1358,10 +1934,10 @@ export async function processSignedPdf(
         pageWidthPt: templateConfig.pageWidthPt ?? null,
         pageHeightPt: templateConfig.pageHeightPt ?? null,
       },
-      chosenPage: bestAttempt.page,
+      chosenPage: bestAttempt?.page ?? templatePage,
       attemptedPages,
-      chosenConfidence: bestAttempt.confidence,
-      chosenExtractedWorkOrderNumber: bestAttempt.woNumber,
+      chosenConfidence: bestAttempt?.confidence ?? 0,
+      chosenExtractedWorkOrderNumber: bestAttempt?.woNumber ?? null,
       chosenAttemptIndex: bestAttemptIndex >= 0 ? bestAttemptIndex : 0,
       attempts: ocrAttempts.map(a => ({
         page: a.page,
@@ -1371,6 +1947,13 @@ export async function processSignedPdf(
         retryAttempted: a.retryAttempted,
       })),
       debug,
+      decision: {
+        state: decisionResult.state,
+        bestCandidate: decisionResult.bestCandidate,
+        normalizedCandidates: decisionResult.normalizedCandidates,
+        trustScore: decisionResult.trustScore,
+        reasons: decisionResult.reasons,
+      },
     },
   };
 }

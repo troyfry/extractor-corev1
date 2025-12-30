@@ -1,7 +1,7 @@
 # Testing Guide: Gmail Processing Updates
 
 This guide covers how to test the recent changes to `/api/gmail/process`:
-1. **No fake UNKNOWN work order numbers** - Missing WO# routes to "Needs Review"
+1. **No fake UNKNOWN work order numbers** - Missing WO# routes to "Verification"
 2. **Label not removed if 0 work orders extracted**
 3. **Stable issuerKey from email sender domain**
 
@@ -24,9 +24,9 @@ This guide covers how to test the recent changes to `/api/gmail/process`:
 
 ## Test Scenarios
 
-### 1. Test: Missing Work Order Number → Routes to "Needs Review"
+### 1. Test: Missing Work Order Number → Routes to "Verification"
 
-**Goal**: Verify that work orders without WO# go to "Needs Review" sheet, not main sheet.
+**Goal**: Verify that work orders without WO# go to "Verification" sheet, not main sheet.
 
 **Steps**:
 1. Find or create a Gmail email with a PDF that has **no work order number** in:
@@ -36,7 +36,7 @@ This guide covers how to test the recent changes to `/api/gmail/process`:
 2. Apply your Gmail label to the email
 3. Process the email via UI or API
 4. Check Google Sheets:
-   - ✅ Should appear in **"Needs Review"** sheet/tab
+   - ✅ Should appear in **"Verification"** sheet/tab
    - ✅ `wo_number` column should be empty or "MISSING"
    - ✅ `jobId` should start with `needs_review:`
    - ❌ Should NOT appear in main "Sheet1"
@@ -54,9 +54,9 @@ curl -X POST http://localhost:3000/api/gmail/process \
 
 **Expected Logs**:
 ```
-[Gmail Process] Could not extract work order number from email subject ("...") or PDF filename ("..."). Will route to "Needs Review" sheet.
+[Gmail Process] Could not extract work order number from email subject ("...") or PDF filename ("..."). Will route to "Verification" sheet.
 [Gmail Process] Extracted issuerKey from sender: sender@example.com -> example.com
-[Sheets Ingestion] Wrote work order to Needs Review: needs_review:...
+[Sheets Ingestion] Wrote work order to Verification: needs_review:...
 ```
 
 ---
@@ -243,7 +243,7 @@ example_com:wo123,example.com,wo123,...
 
 ⚠️ **Warning (Expected)**:
 ```
-[Gmail Process] Could not extract work order number ... Will route to "Needs Review" sheet.
+[Gmail Process] Could not extract work order number ... Will route to "Verification" sheet.
 ```
 
 ❌ **Error (Expected for 0 work orders)**:
@@ -266,13 +266,13 @@ example_com:wo123,example.com,wo123,...
 
 **Check Sheet Routing**:
 - Main sheet ("Sheet1") - Work orders with valid WO#
-- "Needs Review" sheet - Work orders without WO#
+- "Verification" sheet - Work orders without WO#
 
 ---
 
 ## Quick Test Checklist
 
-- [ ] Missing WO# → Routes to "Needs Review" sheet
+- [ ] Missing WO# → Routes to "Verification" sheet
 - [ ] Zero work orders → Label NOT removed
 - [ ] IssuerKey extracted from email sender domain
 - [ ] Re-processing same email → UPSERT (no duplicates)

@@ -23,6 +23,22 @@ export const SIGNED_NEEDS_REVIEW_COLUMNS = [
   "gmail_subject",
   "gmail_from",
   "gmail_date",
+  // Phase 3: Decision metadata
+  "decision_state",
+  "trust_score",
+  "decision_reasons",
+  "normalized_candidates",
+  "extraction_method",
+  "ocr_pass_agreement",
+  "ocr_confidence_raw",
+  "chosen_candidate",
+  // Phase 3: Verified by human
+  "wo_verified",
+  "wo_verified_at",
+  "wo_verified_value",
+  "wo_verified_by",
+  // Phase 3: Idempotency
+  "review_dedupe_key",
 ] as const;
 
 export type SignedNeedsReviewRecord = {
@@ -45,6 +61,22 @@ export type SignedNeedsReviewRecord = {
   gmail_subject?: string | null;
   gmail_from?: string | null;
   gmail_date?: string | null;
+  // Phase 3: Decision metadata
+  decision_state?: "AUTO_CONFIRMED" | "QUICK_CHECK" | "NEEDS_ATTENTION" | null;
+  trust_score?: number | null;
+  decision_reasons?: string | null; // Pipe-separated: "OK_FORMAT|DIGITAL_TEXT_STRONG"
+  normalized_candidates?: string | null; // Pipe-separated: "1234567|1234568"
+  extraction_method?: "DIGITAL_TEXT" | "OCR" | null;
+  ocr_pass_agreement?: "TRUE" | "FALSE" | null;
+  ocr_confidence_raw?: number | null; // 0..1
+  chosen_candidate?: string | null;
+  // Phase 3: Verified by human
+  wo_verified?: "TRUE" | "FALSE" | null;
+  wo_verified_at?: string | null; // ISO string
+  wo_verified_value?: string | null;
+  wo_verified_by?: string | null;
+  // Phase 3: Idempotency
+  review_dedupe_key?: string | null;
 };
 
 /**
@@ -95,7 +127,44 @@ export async function ensureSignedNeedsReviewColumnsExist(
 }
 
 /**
+ * Check if a Needs_Review_Signed row with the given dedupe key already exists.
+ * Returns true if a duplicate exists, false otherwise.
+ */
+export async function findSignedNeedsReviewByDedupeKey(
+  accessToken: string,
+  spreadsheetId: string,
+  dedupeKey: string
+): Promise<boolean> {
+  const sheetName = SIGNED_NEEDS_REVIEW_SHEET_NAME;
+  
+  try {
+    const headerMeta = await getSheetHeadersCached(accessToken, spreadsheetId, sheetName);
+    const dedupeKeyLetter = headerMeta.colLetterByLower["review_dedupe_key"];
+    
+    if (!dedupeKeyLetter) {
+      // Column doesn't exist yet, so no duplicates possible
+      return false;
+    }
+    
+    const rowIndex = await findRowIndexByColumnValue(
+      accessToken,
+      spreadsheetId,
+      sheetName,
+      dedupeKeyLetter,
+      dedupeKey
+    );
+    
+    return rowIndex !== -1;
+  } catch (error) {
+    // If lookup fails, allow append (fail open)
+    console.warn("[Signed Sheets] Error checking for duplicate dedupe key:", error);
+    return false;
+  }
+}
+
+/**
  * Append a row to the Needs_Review_Signed sheet.
+ * Phase 3: Includes idempotency check to prevent duplicates.
  */
 export async function appendSignedNeedsReviewRow(
   accessToken: string,
@@ -107,6 +176,19 @@ export async function appendSignedNeedsReviewRow(
 
   // Make sure headers/columns exist first
   await ensureSignedNeedsReviewColumnsExist(accessToken, spreadsheetId);
+  
+  // Phase 3: Idempotency check - skip if duplicate exists
+  if (record.review_dedupe_key) {
+    const exists = await findSignedNeedsReviewByDedupeKey(
+      accessToken,
+      spreadsheetId,
+      record.review_dedupe_key
+    );
+    if (exists) {
+      console.log("[Signed Sheets] Skipping append - duplicate dedupe key found:", record.review_dedupe_key);
+      return;
+    }
+  }
 
   // Fetch headers to align fields to columns
   const headerResponse = await sheets.spreadsheets.values.get({
@@ -139,6 +221,22 @@ export async function appendSignedNeedsReviewRow(
     gmail_subject: record.gmail_subject || null,
     gmail_from: record.gmail_from || null,
     gmail_date: record.gmail_date || null,
+    // Phase 3: Decision metadata
+    decision_state: record.decision_state || null,
+    trust_score: record.trust_score != null ? String(record.trust_score) : null,
+    decision_reasons: record.decision_reasons || null,
+    normalized_candidates: record.normalized_candidates || null,
+    extraction_method: record.extraction_method || null,
+    ocr_pass_agreement: record.ocr_pass_agreement || null,
+    ocr_confidence_raw: record.ocr_confidence_raw != null ? String(record.ocr_confidence_raw) : null,
+    chosen_candidate: record.chosen_candidate || null,
+    // Phase 3: Verified by human
+    wo_verified: record.wo_verified || null,
+    wo_verified_at: record.wo_verified_at || null,
+    wo_verified_value: record.wo_verified_value || null,
+    wo_verified_by: record.wo_verified_by || null,
+    // Phase 3: Idempotency
+    review_dedupe_key: record.review_dedupe_key || null,
   };
 
   for (const [key, value] of Object.entries(toMap)) {
