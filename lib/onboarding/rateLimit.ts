@@ -6,7 +6,12 @@
  * a more robust solution like Redis or a proper rate limiting library.
  */
 
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+type RateLimitEntry = {
+  count: number;
+  resetAt: number;
+};
+
+const rateLimitMap = new Map<string, RateLimitEntry>();
 
 // Rate limit: 5 requests per 60 seconds per key
 const MAX_REQUESTS = 5;
@@ -51,5 +56,14 @@ export function clearRateLimit(key: string): void {
  */
 export function clearAllRateLimits(): void {
   rateLimitMap.clear();
+}
+
+/**
+ * Get remaining time until rate limit resets (in ms).
+ */
+export function getRateLimitResetTime(key: string): number {
+  const entry = rateLimitMap.get(key);
+  if (!entry) return 0;
+  return Math.max(0, entry.resetAt - Date.now());
 }
 

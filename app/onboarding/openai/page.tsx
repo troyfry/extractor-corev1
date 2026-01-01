@@ -28,6 +28,32 @@ export default function OnboardingOpenAIPage() {
         throw new Error(data.error || "Failed to save OpenAI key");
       }
 
+      setIsSubmitting(false);
+      router.push("/onboarding/fm-profiles");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An error occurred");
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSkip = async () => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/onboarding/openai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skip: true }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to skip OpenAI step");
+      }
+
+      setIsSubmitting(false);
       router.push("/onboarding/fm-profiles");
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
@@ -83,6 +109,14 @@ export default function OnboardingOpenAIPage() {
               className="px-6 py-3 bg-sky-600 hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
             >
               {isSubmitting ? "Saving..." : "Save & Continue →"}
+            </button>
+            <button
+              type="button"
+              onClick={handleSkip}
+              disabled={isSubmitting}
+              className="px-6 py-3 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+            >
+              {isSubmitting ? "Skipping..." : "Skip (use basic extraction)"}
             </button>
           </div>
         </form>

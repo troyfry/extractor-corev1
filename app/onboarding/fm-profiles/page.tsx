@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { useSession, signIn } from "next-auth/react";
 
 type FmProfile = {
   fmKey: string;
@@ -11,11 +12,19 @@ type FmProfile = {
 
 export default function OnboardingFmProfilesPage() {
   const router = useRouter();
+  const { status } = useSession();
   const [profiles, setProfiles] = useState<FmProfile[]>([
     { fmKey: "", senderDomains: "", subjectKeywords: "" },
   ]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Gate all API calls on auth status
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    // Any GET requests for loading data would go here
+    // Currently no GET requests, but this prevents future issues
+  }, [status]);
 
   const addProfile = () => {
     setProfiles([...profiles, { fmKey: "", senderDomains: "", subjectKeywords: "" }]);
@@ -37,6 +46,13 @@ export default function OnboardingFmProfilesPage() {
     e.preventDefault();
     // Prevent double-submit
     if (isSubmitting) return;
+    
+    // Gate on auth status
+    if (status !== "authenticated") {
+      setError("You need to sign in to continue onboarding.");
+      return;
+    }
+    
     setIsSubmitting(true);
     setError(null);
 
@@ -73,12 +89,41 @@ export default function OnboardingFmProfilesPage() {
         throw new Error(data.error || "Failed to save FM profiles");
       }
 
+      setIsSubmitting(false);
       router.push("/onboarding/templates");
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
       setIsSubmitting(false);
     }
   };
+
+  // Show loading state while checking auth
+  if (status === "loading") {
+    return (
+      <div className="min-h-screen bg-slate-900 text-slate-50 p-8">
+        <div className="max-w-4xl mx-auto">
+          <div className="text-slate-200">Loading…</div>
+        </div>
+      </div>
+    );
+  }
+
+  // Show sign-in prompt if not authenticated
+  if (status !== "authenticated") {
+    return (
+      <div className="min-h-screen bg-slate-900 text-slate-50 p-8">
+        <div className="max-w-4xl mx-auto">
+          <p className="mb-4 text-slate-200">You need to sign in to continue onboarding.</p>
+          <button
+            onClick={() => signIn(undefined, { callbackUrl: "/onboarding/fm-profiles" })}
+            className="px-6 py-3 bg-sky-600 hover:bg-sky-700 text-white rounded-lg font-medium transition-colors"
+          >
+            Sign in
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-50 p-8">

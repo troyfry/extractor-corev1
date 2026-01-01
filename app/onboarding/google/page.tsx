@@ -6,7 +6,11 @@ import { useRouter } from "next/navigation";
 export default function OnboardingGooglePage() {
   const router = useRouter();
   const [folderName, setFolderName] = useState("Work Orders");
+<<<<<<< HEAD
   const [sheetName, setSheetName] = useState("Work Order Workspace");
+=======
+  const [sheetName, setSheetName] = useState("Work Order Tracker");
+>>>>>>> 130b402b3cadf523754935529ded88e48e20acab
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{
@@ -31,7 +35,11 @@ export default function OnboardingGooglePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           folderName: folderName.trim() || "Work Orders",
+<<<<<<< HEAD
           sheetName: sheetName.trim() || "Work Order Workspace",
+=======
+          sheetName: sheetName.trim() || "Work Order Tracker",
+>>>>>>> 130b402b3cadf523754935529ded88e48e20acab
         }),
       });
 
@@ -45,10 +53,16 @@ export default function OnboardingGooglePage() {
       setIsSubmitting(false);
       
       // Auto-continue after a brief delay to show success
+<<<<<<< HEAD
       // Note: OpenAI setup is now optional - skip to FM profiles
       // Note: Using setTimeout for UX; component unmount will cancel navigation
       setTimeout(() => {
         router.push("/onboarding/fm-profiles");
+=======
+      // Note: Using setTimeout for UX; component unmount will cancel navigation
+      setTimeout(() => {
+        router.push("/onboarding/openai");
+>>>>>>> 130b402b3cadf523754935529ded88e48e20acab
       }, 2000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
@@ -91,12 +105,20 @@ export default function OnboardingGooglePage() {
               type="text"
               value={sheetName}
               onChange={(e) => setSheetName(e.target.value)}
+<<<<<<< HEAD
               placeholder="Work Order Workspace"
+=======
+              placeholder="Work Order Tracker"
+>>>>>>> 130b402b3cadf523754935529ded88e48e20acab
               className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-500"
               required
             />
             <p className="mt-2 text-sm text-slate-400">
+<<<<<<< HEAD
               We&apos;ll create a new Google Sheets spreadsheet with this name. It will include tabs for Work Orders, Verification, Signatures, and Config.
+=======
+              We&apos;ll create a new Google Sheets spreadsheet with this name. It will include tabs for Work Orders, Needs Review, Signatures, and Config.
+>>>>>>> 130b402b3cadf523754935529ded88e48e20acab
             </p>
           </div>
 

@@ -136,6 +136,7 @@ export async function POST(request: Request) {
       success: true,
       saved: profilesToSave.length,
     });
+    
     response.cookies.set("fmProfilesReady", "true", {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",

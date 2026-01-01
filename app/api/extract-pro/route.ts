@@ -497,8 +497,26 @@ CRITICAL:
           let workOrderPdfUrl: string | null = null;
           if (pdfBuffer && pdfFilename) {
             try {
-              const { getOrCreateFolder, uploadPdfToDrive } = await import("@/lib/google/drive");
-              const folderId = await getOrCreateFolder(accessToken, "Work Orders");
+              const { uploadPdfToDrive } = await import("@/lib/google/drive");
+              const { loadWorkspaceConfig } = await import("@/lib/google/workspaceConfig");
+              
+              // Get folderId from Config tab (preferred), fallback to creating "Work Orders" folder
+              let folderId: string | null = null;
+              if (spreadsheetId) {
+                try {
+                  const config = await loadWorkspaceConfig(accessToken, spreadsheetId);
+                  folderId = config?.folderId || null;
+                } catch (configError) {
+                  console.warn("[extract-pro] Could not load workspace config, will create folder:", configError);
+                }
+              }
+              
+              // Fallback: create folder if config not available
+              if (!folderId) {
+                const { getOrCreateFolder } = await import("@/lib/google/drive");
+                folderId = await getOrCreateFolder(accessToken, "Work Orders");
+              }
+              
               const driveResult = await uploadPdfToDrive(
                 accessToken,
                 pdfBuffer,

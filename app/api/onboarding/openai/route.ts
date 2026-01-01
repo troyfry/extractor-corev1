@@ -11,6 +11,9 @@
 
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
+import { getUserRowById, upsertUserRow, ensureUsersSheet } from "@/lib/onboarding/usersSheet";
+import { encryptSecret } from "@/lib/onboarding/crypto";
+import { cookies } from "next/headers";
 import OpenAI from "openai";
 
 export const runtime = "nodejs";
@@ -45,11 +48,46 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
-    const { openaiKey } = body;
+    const { openaiKey, skip } = body;
 
-    if (!openaiKey || typeof openaiKey !== "string") {
+    // Handle skip option or empty key (treat as skip)
+    if (skip === true || !openaiKey || (typeof openaiKey === "string" && !openaiKey.trim())) {
+      // Get the main spreadsheet ID from cookie (set during Google step)
+      const cookieStore = await cookies();
+      const mainSpreadsheetId = cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
+
+      if (mainSpreadsheetId) {
+        // Ensure Users sheet exists
+        await ensureUsersSheet(user.googleAccessToken, mainSpreadsheetId, { allowEnsure: true });
+
+        // Get existing user row
+        const userRow = await getUserRowById(user.googleAccessToken, mainSpreadsheetId, user.userId);
+        if (userRow) {
+          // Store blank key (user skipped)
+          await upsertUserRow(user.googleAccessToken, mainSpreadsheetId, {
+            ...userRow,
+            openaiKeyEncrypted: "", // Store blank to indicate skipped
+          }, { allowEnsure: true });
+        }
+      }
+
+      const response = NextResponse.json({ success: true, skipped: true });
+      
+      // Mark as skipped (treats skip as complete for flow purposes)
+      response.cookies.set("openaiReady", "skipped", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        maxAge: 30 * 24 * 60 * 60, // 30 days
+      });
+
+      return response;
+    }
+
+    // Validate OpenAI key format
+    if (typeof openaiKey !== "string") {
       return NextResponse.json(
-        { error: "openaiKey is required" },
+        { error: "openaiKey must be a string" },
         { status: 400 }
       );
     }

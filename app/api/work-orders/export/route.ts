@@ -4,12 +4,14 @@
  * GET /api/work-orders/export
  *   Response: CSV file with work orders for the authenticated user
  * 
- * Returns a CSV file containing all work orders for the current user.
- * CSV is built server-side for security.
+ * DEPRECATED: Work orders are now stored in Google Sheets, not the database.
+ * This endpoint is deprecated and will return an empty CSV.
+ * Users should export directly from Google Sheets.
+ * 
+ * TODO: Implement reading from Google Sheets if export functionality is needed.
  */
 
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { workOrderRepo } from "@/lib/workOrders/repository";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -42,10 +44,10 @@ export async function GET() {
     }
     const userId = user.userId;
 
-    // NOTE: Work orders are stored in Google Sheets, not DB
-    // This endpoint should read from Google Sheets instead
-    // For now, returning empty array as work orders are managed in Sheets
-    const workOrders = await workOrderRepo.listForUser(userId);
+    // DEPRECATED: Work orders are now stored in Google Sheets, not the database.
+    // This endpoint is deprecated. Users should export directly from Google Sheets.
+    // Returning empty CSV with headers only.
+    const workOrders: any[] = [];
 
     // Build CSV headers
     const headers = [

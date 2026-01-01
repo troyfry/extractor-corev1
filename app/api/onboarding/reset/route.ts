@@ -6,12 +6,19 @@
  */
 
 import { NextResponse } from "next/server";
+import { getCurrentUser } from "@/lib/auth/currentUser";
 import { cookies } from "next/headers";
 
 export const runtime = "nodejs";
 
 export async function POST() {
   try {
+    // Require authentication
+    const user = await getCurrentUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const response = NextResponse.json({ success: true });
     const cookieStore = await cookies();
     
@@ -28,10 +35,11 @@ export async function POST() {
     
     for (const cookieName of cookiesToClear) {
       response.cookies.set(cookieName, "", {
-        maxAge: 0,
+        maxAge: 0, // delete
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
         sameSite: "lax",
+        path: "/", // important: ensure deletion matches original scope
       });
     }
     
