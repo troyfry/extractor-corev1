@@ -1,11 +1,42 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import AppShell from "@/components/layout/AppShell";
 import MainNavigation from "@/components/layout/MainNavigation";
 
 export default function ProSettingsPage() {
+  const router = useRouter();
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+
+  const handleResetOnboarding = async () => {
+    if (!confirm("Are you sure you want to reset onboarding? This will clear all onboarding progress and redirect you to the setup wizard.")) {
+      return;
+    }
+
+    setIsResetting(true);
+    setResetError(null);
+
+    try {
+      const response = await fetch("/api/onboarding/reset", {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to reset onboarding");
+      }
+
+      // Redirect to onboarding start
+      router.push("/onboarding");
+    } catch (err) {
+      setResetError(err instanceof Error ? err.message : "An error occurred");
+      setIsResetting(false);
+    }
+  };
+
   return (
     <AppShell>
       <MainNavigation />
@@ -54,6 +85,28 @@ export default function ProSettingsPage() {
                 <p className="text-sm text-slate-400">
                   Advanced configuration options will be available here.
                 </p>
+              </section>
+
+              {/* Reset Onboarding */}
+              <section className="rounded-xl border border-red-700 bg-red-900/20 p-6">
+                <h2 className="text-xl font-semibold text-red-200 mb-2">
+                  Reset Onboarding
+                </h2>
+                <p className="text-sm text-red-200/80 mb-4">
+                  Clear all onboarding progress and start the setup wizard from the beginning. This will clear your spreadsheet and folder selections, but your data in Google Sheets will remain unchanged.
+                </p>
+                {resetError && (
+                  <div className="mb-4 p-3 bg-red-900/30 border border-red-700 rounded text-red-200 text-sm">
+                    {resetError}
+                  </div>
+                )}
+                <button
+                  onClick={handleResetOnboarding}
+                  disabled={isResetting}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded font-medium transition-colors"
+                >
+                  {isResetting ? "Resetting..." : "Reset Onboarding"}
+                </button>
               </section>
             </div>
           </div>

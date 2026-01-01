@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 export default function OnboardingGooglePage() {
   const router = useRouter();
   const [folderName, setFolderName] = useState("Work Orders");
-  const [sheetName, setSheetName] = useState("Work Order Tracker");
+  const [sheetName, setSheetName] = useState("Work Order Workspace");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{
@@ -31,7 +31,7 @@ export default function OnboardingGooglePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           folderName: folderName.trim() || "Work Orders",
-          sheetName: sheetName.trim() || "Work Order Tracker",
+          sheetName: sheetName.trim() || "Work Order Workspace",
         }),
       });
 
@@ -90,7 +90,7 @@ export default function OnboardingGooglePage() {
               type="text"
               value={sheetName}
               onChange={(e) => setSheetName(e.target.value)}
-              placeholder="Work Order Tracker"
+              placeholder="Work Order Workspace"
               className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-500"
               required
             />

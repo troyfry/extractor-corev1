@@ -99,7 +99,9 @@ export async function POST(request: Request) {
     await ensureFmProfileSheet(mainSpreadsheetId, user.googleAccessToken);
 
     // Save all profiles
-    for (const profileData of profilesToSave) {
+    console.log(`[onboarding/fm-profiles] Saving ${profilesToSave.length} profile(s) for userId: ${user.userId}`);
+    for (let i = 0; i < profilesToSave.length; i++) {
+      const profileData = profilesToSave[i];
       const profile = {
         fmKey: profileData.fmKey.toLowerCase().trim(),
         fmLabel: profileData.fmKey.trim(), // Use fmKey as label for now
@@ -116,20 +118,32 @@ export async function POST(request: Request) {
           : (profileData.subjectKeywords || ""),
       };
 
+      console.log(`[onboarding/fm-profiles] Saving profile ${i + 1}/${profilesToSave.length}: fmKey="${profile.fmKey}"`);
       await upsertFmProfile({
         spreadsheetId: mainSpreadsheetId,
         accessToken: user.googleAccessToken,
         profile,
         userId: user.userId,
       });
+      console.log(`[onboarding/fm-profiles] ✅ Saved profile ${i + 1}/${profilesToSave.length}: fmKey="${profile.fmKey}"`);
     }
 
     const apiCalls = getApiCallCount();
     console.log(`[onboarding/fm-profiles] Sheets API calls: ${apiCalls}`);
-    return NextResponse.json({
+    
+    // Set fmProfilesReady cookie to mark this step as complete
+    const response = NextResponse.json({
       success: true,
       saved: profilesToSave.length,
     });
+    response.cookies.set("fmProfilesReady", "true", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 30 * 24 * 60 * 60, // 30 days
+    });
+    
+    return response;
   } catch (error) {
     console.error("Error saving FM profiles:", error);
     const message = error instanceof Error ? error.message : "Internal server error";

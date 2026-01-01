@@ -1,7 +1,9 @@
 import { createSheetsClient, formatSheetRange, getSheetHeadersCached, findRowIndexByColumnValue } from "@/lib/google/sheets";
 import { getColumnRange } from "@/lib/google/sheetsCache";
 
-export const SIGNED_NEEDS_REVIEW_SHEET_NAME = "Needs_Review_Signed" as const;
+export const SIGNED_VERIFICATION_SHEET_NAME = "Verification" as const;
+// Legacy alias for backward compatibility during migration
+export const SIGNED_NEEDS_REVIEW_SHEET_NAME = SIGNED_VERIFICATION_SHEET_NAME;
 
 export const SIGNED_NEEDS_REVIEW_COLUMNS = [
   "review_id",
@@ -88,7 +90,7 @@ export async function ensureSignedNeedsReviewColumnsExist(
   spreadsheetId: string
 ): Promise<void> {
   const sheets = createSheetsClient(accessToken);
-  const sheetName = SIGNED_NEEDS_REVIEW_SHEET_NAME;
+  const sheetName = SIGNED_VERIFICATION_SHEET_NAME;
 
   // Get current header row
   const headerResponse = await sheets.spreadsheets.values.get({
@@ -135,7 +137,7 @@ export async function findSignedNeedsReviewByDedupeKey(
   spreadsheetId: string,
   dedupeKey: string
 ): Promise<boolean> {
-  const sheetName = SIGNED_NEEDS_REVIEW_SHEET_NAME;
+  const sheetName = SIGNED_VERIFICATION_SHEET_NAME;
   
   try {
     const headerMeta = await getSheetHeadersCached(accessToken, spreadsheetId, sheetName);
@@ -172,7 +174,7 @@ export async function appendSignedNeedsReviewRow(
   record: SignedNeedsReviewRecord
 ): Promise<void> {
   const sheets = createSheetsClient(accessToken);
-  const sheetName = SIGNED_NEEDS_REVIEW_SHEET_NAME;
+  const sheetName = SIGNED_VERIFICATION_SHEET_NAME;
 
   // Make sure headers/columns exist first
   await ensureSignedNeedsReviewColumnsExist(accessToken, spreadsheetId);
@@ -278,7 +280,7 @@ export async function findSignedNeedsReviewRowById(
   reviewId: string
 ): Promise<{ rowIndex: number; rowData: string[] } | null> {
   const sheets = createSheetsClient(accessToken);
-  const sheetName = SIGNED_NEEDS_REVIEW_SHEET_NAME;
+  const sheetName = SIGNED_VERIFICATION_SHEET_NAME;
 
   // Get headers to find review_id column
   const headerMeta = await getSheetHeadersCached(accessToken, spreadsheetId, sheetName);
@@ -323,7 +325,7 @@ export async function markSignedNeedsReviewResolved(
   reasonNote?: string
 ): Promise<void> {
   const sheets = createSheetsClient(accessToken);
-  const sheetName = SIGNED_NEEDS_REVIEW_SHEET_NAME;
+  const sheetName = SIGNED_VERIFICATION_SHEET_NAME;
 
   // Find the row
   const found = await findSignedNeedsReviewRowById(accessToken, spreadsheetId, reviewId);
@@ -379,7 +381,7 @@ export async function updateSignedNeedsReviewUnresolved(
   reasonNote?: string
 ): Promise<void> {
   const sheets = createSheetsClient(accessToken);
-  const sheetName = SIGNED_NEEDS_REVIEW_SHEET_NAME;
+  const sheetName = SIGNED_VERIFICATION_SHEET_NAME;
 
   // Find the row
   const found = await findSignedNeedsReviewRowById(accessToken, spreadsheetId, reviewId);

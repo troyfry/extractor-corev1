@@ -185,13 +185,16 @@ export default function OnboardingTemplatesPage() {
           savedTemplate.wPt !== undefined && savedTemplate.hPt !== undefined &&
           pageWidthPt > 0 && pageHeightPt > 0) {
         // Convert PDF points to CSS pixels (top-left origin)
-        // Use IMG rect dimensions (same source as pointer events)
+        // DO compute scale from rendered PNG dimensions (imageWidth/imageHeight), NOT container size
+        // This ensures the overlay aligns correctly with the rendered image
+        const scaleX = imageWidth / savedTemplate.pageWidthPt;
+        const scaleY = imageHeight / savedTemplate.pageHeightPt;
+        const xCss = savedTemplate.xPt * scaleX;
+        const yCss = savedTemplate.yPt * scaleY;
+        const wCss = savedTemplate.wPt * scaleX;
+        const hCss = savedTemplate.hPt * scaleY;
+        
         try {
-          const rect = getImgRect();
-          const xCss = (savedTemplate.xPt / savedTemplate.pageWidthPt) * rect.width;
-          const wCss = (savedTemplate.wPt / savedTemplate.pageWidthPt) * rect.width;
-          const yCss = (savedTemplate.yPt / savedTemplate.pageHeightPt) * rect.height;
-          const hCss = (savedTemplate.hPt / savedTemplate.pageHeightPt) * rect.height;
           
           setCropZone({
             x: xCss,
@@ -1162,8 +1165,8 @@ export default function OnboardingTemplatesPage() {
                 </div>
               )}
 
-              {/* Percentages Display / Edit (Legacy - hidden by default, can be shown if needed) */}
-              {false && percentages && (
+              {/* Percentages Display / Edit (Legacy - REMOVED: PDF_POINTS_TOP_LEFT is the only source of truth) */}
+              {false && false && percentages && (
                 <div className="mt-4 p-4 bg-slate-800 rounded-lg">
                   <div className="text-sm font-medium mb-3">Crop Zone Percentages (0.0 to 1.0) - Legacy:</div>
                   <div className="grid grid-cols-4 gap-4 text-sm">

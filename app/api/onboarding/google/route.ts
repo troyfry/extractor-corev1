@@ -179,28 +179,38 @@ export async function POST(request: Request) {
     const folderUrl = `https://drive.google.com/drive/folders/${folderId}`;
     console.log(`[Setup Workspace] ✅ Folder ready: ${folderId}`);
 
-    // Step 2: Create new spreadsheet
-    console.log(`[Setup Workspace] Creating spreadsheet: "${finalSheetName}"`);
+    // Step 2: Find existing spreadsheet by name, or create new
+    console.log(`[Setup Workspace] Finding or creating spreadsheet: "${finalSheetName}"`);
+    const { findSpreadsheetByName } = await import("@/lib/google/sheets");
     const sheets = createSheetsClient(user.googleAccessToken);
-    const createResponse = await sheets.spreadsheets.create({
-      requestBody: {
-        properties: {
-          title: finalSheetName,
+    let spreadsheetId = await findSpreadsheetByName(user.googleAccessToken, finalSheetName);
+    let sheetUrl: string;
+    
+    if (spreadsheetId) {
+      console.log(`[Setup Workspace] ✅ Found existing spreadsheet: ${spreadsheetId}`);
+      sheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+    } else {
+      console.log(`[Setup Workspace] Creating new spreadsheet: "${finalSheetName}"`);
+      const createResponse = await sheets.spreadsheets.create({
+        requestBody: {
+          properties: {
+            title: finalSheetName,
+          },
         },
-      },
-    });
+      });
 
-    const spreadsheetId = createResponse.data.spreadsheetId;
-    if (!spreadsheetId) {
-      throw new Error("Failed to create spreadsheet");
+      spreadsheetId = createResponse.data.spreadsheetId;
+      if (!spreadsheetId) {
+        throw new Error("Failed to create spreadsheet");
+      }
+
+      sheetUrl = createResponse.data.spreadsheetUrl || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+      console.log(`[Setup Workspace] ✅ Spreadsheet created: ${spreadsheetId}`);
     }
-
-    const sheetUrl = createResponse.data.spreadsheetUrl || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
-    console.log(`[Setup Workspace] ✅ Spreadsheet created: ${spreadsheetId}`);
 
     // Step 3: Ensure required tabs exist (optimized - single get call, batch create)
     // Tab names match codebase convention: Work_Orders uses underscore (UI may show "Work Orders" but tab is "Work_Orders")
-    const requiredTabs = ["Work_Orders", "Verification", "Signatures", "Config", "Needs_Review_Signed"];
+    const requiredTabs = ["Work_Orders", "Verification", "Signatures", "Config"];
     
     // Get spreadsheet metadata once to check existing tabs
     const spreadsheetResponse = await sheets.spreadsheets.get({

@@ -17,7 +17,6 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { cookies, headers } from "next/headers";
-import { OnboardingHeader } from "@/app/components/onboarding/OnboardingHeader";
 
 export default async function OnboardingLayout({
   children,
@@ -80,10 +79,5 @@ export default async function OnboardingLayout({
   }
 
   // Allow onboarding pages to render (if we get here, user is on the correct step)
-  return (
-    <>
-      <OnboardingHeader />
-      {children}
-    </>
-  );
+  return <>{children}</>;
 }

@@ -361,7 +361,7 @@ export default function NeedsReviewPage() {
           </>
         )}
 
-        {/* Fix Modal */}
+        {/* Verify Modal */}
         {showFixModal && selectedFixItem && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
             <div className="bg-gray-800 rounded-lg border border-gray-700 p-6 max-w-md w-full mx-4">
@@ -403,7 +403,7 @@ export default function NeedsReviewPage() {
                     onClick={handleRetryAfterFix}
                     className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded"
                   >
-                    I fixed it — retry
+                    I verified it — retry
                   </button>
                 </div>
               </div>

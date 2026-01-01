@@ -736,70 +736,130 @@ export async function processSignedPdf(
   // Attempt OCR on template.page
   const templatePage = templateConfig.page;
 
-  // Get actual PDF page dimensions for template page
-  const actualTemplatePageDims = await getActualPdfPageDimensionsPt(pdfBuffer, templatePage);
-  const effectivePageWidthPt = actualTemplatePageDims?.pageWidthPt ?? templateConfig.pageWidthPt;
-  const effectivePageHeightPt = actualTemplatePageDims?.pageHeightPt ?? templateConfig.pageHeightPt;
-
-  // Log dimension comparison
-  if (actualTemplatePageDims && templateConfig.pageWidthPt && templateConfig.pageHeightPt) {
-    const widthDiff = Math.abs(actualTemplatePageDims.pageWidthPt - templateConfig.pageWidthPt);
-    const heightDiff = Math.abs(actualTemplatePageDims.pageHeightPt - templateConfig.pageHeightPt);
-    console.log(`[Signed Processor] Page dimension comparison:`, {
-      requestId,
-      fmKey: normalizedFmKey,
-      page: templatePage,
-      templateDimensions: {
-        pageWidthPt: templateConfig.pageWidthPt,
-        pageHeightPt: templateConfig.pageHeightPt,
-      },
-      actualPdfDimensions: {
-        pageWidthPt: actualTemplatePageDims.pageWidthPt,
-        pageHeightPt: actualTemplatePageDims.pageHeightPt,
-      },
-      differences: {
-        widthDiff,
-        heightDiff,
-        widthDiffPercent: ((widthDiff / templateConfig.pageWidthPt) * 100).toFixed(1) + "%",
-        heightDiffPercent: ((heightDiff / templateConfig.pageHeightPt) * 100).toFixed(1) + "%",
-      },
-    });
-  }
-
-  // Guard: Check for page dimension mismatch (tolerance: 2pt)
-  const DIMENSION_TOLERANCE_PT = 2.0;
-  let pageSizeMismatch = false;
-  if (
-    actualTemplatePageDims &&
-    templateConfig.pageWidthPt &&
-    templateConfig.pageHeightPt
-  ) {
-    const widthDiff = Math.abs(actualTemplatePageDims.pageWidthPt - templateConfig.pageWidthPt);
-    const heightDiff = Math.abs(actualTemplatePageDims.pageHeightPt - templateConfig.pageHeightPt);
+  /**
+   * Compute effective crop points and page dimensions for a given page.
+   * If page dimensions mismatch template, scale crop points proportionally.
+   * 
+   * @param pageNumber - 1-indexed page number
+   * @returns Object with effective crop points and page dimensions
+   */
+  async function computeEffectiveCropAndDimensions(
+    pageNumber: number
+  ): Promise<{
+    xPt: number;
+    yPt: number;
+    wPt: number;
+    hPt: number;
+    pageWidthPt: number;
+    pageHeightPt: number;
+    scaled: boolean;
+    scaleX: number;
+    scaleY: number;
+  }> {
+    // Get actual PDF page dimensions
+    const actualDims = await getActualPdfPageDimensionsPt(pdfBuffer, pageNumber);
+    const actualWidthPt = actualDims?.pageWidthPt ?? templateConfig.pageWidthPt ?? 0;
+    const actualHeightPt = actualDims?.pageHeightPt ?? templateConfig.pageHeightPt ?? 0;
     
-    if (widthDiff > DIMENSION_TOLERANCE_PT || heightDiff > DIMENSION_TOLERANCE_PT) {
-      pageSizeMismatch = true;
-      console.warn(`[Signed Processor] Page dimension mismatch detected:`, {
-        requestId,
-        fmKey: normalizedFmKey,
-        page: templatePage,
-        templateDimensions: {
-          pageWidthPt: templateConfig.pageWidthPt,
-          pageHeightPt: templateConfig.pageHeightPt,
-        },
-        actualPdfDimensions: {
-          pageWidthPt: actualTemplatePageDims.pageWidthPt,
-          pageHeightPt: actualTemplatePageDims.pageHeightPt,
-        },
-        differences: {
-          widthDiff,
-          heightDiff,
-        },
-        tolerance: DIMENSION_TOLERANCE_PT,
-        action: "Forcing NEEDS_REVIEW with TEMPLATE_PAGE_SIZE_MISMATCH",
-      });
+    // Fallback to template dimensions if actual dimensions unavailable
+    const effectivePageWidthPt = actualWidthPt || templateConfig.pageWidthPt || 0;
+    const effectivePageHeightPt = actualHeightPt || templateConfig.pageHeightPt || 0;
+    
+    // Default crop points from template
+    let xPtEff = templateConfig.xPt ?? 0;
+    let yPtEff = templateConfig.yPt ?? 0;
+    let wPtEff = templateConfig.wPt ?? 0;
+    let hPtEff = templateConfig.hPt ?? 0;
+    let scaled = false;
+    let scaleX = 1.0;
+    let scaleY = 1.0;
+    
+    // Scale crop points if dimensions mismatch (points mode only)
+    if (
+      pointsMode &&
+      templateConfig.xPt !== undefined &&
+      templateConfig.yPt !== undefined &&
+      templateConfig.wPt !== undefined &&
+      templateConfig.hPt !== undefined &&
+      templateConfig.pageWidthPt &&
+      templateConfig.pageHeightPt &&
+      effectivePageWidthPt > 0 &&
+      effectivePageHeightPt > 0
+    ) {
+      const DIMENSION_TOLERANCE_PT = 2.0;
+      const widthDiff = Math.abs(actualWidthPt - templateConfig.pageWidthPt);
+      const heightDiff = Math.abs(actualHeightPt - templateConfig.pageHeightPt);
+      
+      if (widthDiff > DIMENSION_TOLERANCE_PT || heightDiff > DIMENSION_TOLERANCE_PT) {
+        // Compute scale factors
+        scaleX = effectivePageWidthPt / templateConfig.pageWidthPt;
+        scaleY = effectivePageHeightPt / templateConfig.pageHeightPt;
+        
+        // Scale crop points proportionally
+        xPtEff = templateConfig.xPt * scaleX;
+        yPtEff = templateConfig.yPt * scaleY;
+        wPtEff = templateConfig.wPt * scaleX;
+        hPtEff = templateConfig.hPt * scaleY;
+        scaled = true;
+        
+        // Log dimension mismatch and scaling
+        console.log(`[Signed Processor] Page dimension mismatch detected - scaling crop points:`, {
+          requestId,
+          fmKey: normalizedFmKey,
+          page: pageNumber,
+          templateDimensions: {
+            pageWidthPt: templateConfig.pageWidthPt,
+            pageHeightPt: templateConfig.pageHeightPt,
+          },
+          actualPdfDimensions: {
+            pageWidthPt: effectivePageWidthPt,
+            pageHeightPt: effectivePageHeightPt,
+          },
+          differences: {
+            widthDiff,
+            heightDiff,
+            tolerance: DIMENSION_TOLERANCE_PT,
+          },
+          scaleFactors: {
+            scaleX,
+            scaleY,
+          },
+          originalCropPoints: {
+            xPt: templateConfig.xPt,
+            yPt: templateConfig.yPt,
+            wPt: templateConfig.wPt,
+            hPt: templateConfig.hPt,
+          },
+          effectiveCropPoints: {
+            xPt: xPtEff,
+            yPt: yPtEff,
+            wPt: wPtEff,
+            hPt: hPtEff,
+          },
+        });
+      }
     }
+    
+    return {
+      xPt: xPtEff,
+      yPt: yPtEff,
+      wPt: wPtEff,
+      hPt: hPtEff,
+      pageWidthPt: effectivePageWidthPt,
+      pageHeightPt: effectivePageHeightPt,
+      scaled,
+      scaleX,
+      scaleY,
+    };
   }
+
+  // Compute effective crop and dimensions for template page
+  const templatePageEffective = await computeEffectiveCropAndDimensions(templatePage);
+  const effectivePageWidthPt = templatePageEffective.pageWidthPt;
+  const effectivePageHeightPt = templatePageEffective.pageHeightPt;
+
+  // Note: Page dimension mismatches are now handled automatically by scaling crop points
+  // in computeEffectiveCropAndDimensions(). No need for a separate guard.
 
   // Guard: assert points are valid before calling OCR (if in points mode)
   if (pointsMode) {
@@ -893,98 +953,8 @@ export async function processSignedPdf(
     }
   }
 
-  // Guard: Check for page size mismatch - force Verification if detected
-  if (pageSizeMismatch) {
-    // Generate a fallback snippet for Verification
-    let fallbackSnippetUrl: string | null = null;
-    try {
-      const { renderPdfPageToPng } = await import("@/lib/pdf/renderPdfPage");
-      const rendered = await renderPdfPageToPng(pdfBuffer, templatePage);
-      if (rendered.pngBase64) {
-        // Upload snippet to Drive
-        const snippetBuffer = Buffer.from(rendered.pngBase64, "base64");
-        const snippetFilename = `snippet_${fileHash.substring(0, 8)}_${templatePage}.png`;
-        fallbackSnippetUrl = await uploadSnippetImageToDrive({
-          accessToken,
-          fileName: snippetFilename,
-          pngBuffer: snippetBuffer,
-        });
-      }
-    } catch (snippetError) {
-      console.warn(`[Signed Processor] Failed to generate fallback snippet for page size mismatch:`, {
-        requestId,
-        error: snippetError instanceof Error ? snippetError.message : String(snippetError),
-      });
-    }
-
-    const reviewId = `review_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    const createdAt = new Date().toISOString();
-    await appendSignedNeedsReviewRow(accessToken, spreadsheetId, {
-      review_id: reviewId,
-      created_at: createdAt,
-      fmKey: normalizedFmKey,
-      signed_pdf_url: signedPdfUrl,
-      preview_image_url: fallbackSnippetUrl,
-      raw_text: digitalText || "",
-      confidence: "low",
-      reason: NEEDS_REVIEW_REASONS.TEMPLATE_PAGE_SIZE_MISMATCH,
-      manual_work_order_number: null,
-      resolved: "FALSE",
-      resolved_at: null,
-      file_hash: fileHash,
-      source: source,
-      gmail_message_id: sourceMeta?.gmailMessageId || null,
-      gmail_attachment_id: sourceMeta?.gmailAttachmentId || null,
-      gmail_subject: sourceMeta?.gmailSubject || null,
-      gmail_from: sourceMeta?.gmailFrom || null,
-      gmail_date: sourceMeta?.gmailDate || null,
-    });
-
-    const pageSizeUx = getNeedsReviewUx(NEEDS_REVIEW_REASONS.TEMPLATE_PAGE_SIZE_MISMATCH, normalizedFmKey);
-    
-    return {
-      mode: "NEEDS_REVIEW",
-      data: {
-        fmKey: normalizedFmKey,
-        woNumber: null,
-        ocrConfidenceLabel: "low",
-        ocrConfidenceRaw: 0,
-        confidenceLabel: "low",
-        confidenceRaw: 0,
-        automationStatus: "BLOCKED",
-        automationBlocked: true,
-        automationBlockReason: NEEDS_REVIEW_REASONS.TEMPLATE_PAGE_SIZE_MISMATCH,
-        signedPdfUrl,
-        snippetImageUrl: fallbackSnippetUrl,
-        snippetDriveUrl: fallbackSnippetUrl,
-        jobExistsInSheet1: false,
-        retryAttempted: false,
-        alternatePageAttempted: false,
-        reason: NEEDS_REVIEW_REASONS.TEMPLATE_PAGE_SIZE_MISMATCH,
-        fixHref: pageSizeUx.href || null,
-        fixAction: pageSizeUx.actionLabel || null,
-        reasonTitle: pageSizeUx.title,
-        reasonMessage: pageSizeUx.message,
-        tone: pageSizeUx.tone,
-        templateUsed: {
-          templateId: templateConfig.templateId,
-          fmKey: normalizedFmKey,
-          page: templatePage ?? null,
-          region: normalizedRegion,
-          dpi: templateConfig.dpi ?? null,
-          coordSystem: "PDF_POINTS_TOP_LEFT",
-          xPt: templateConfig.xPt ?? null,
-          yPt: templateConfig.yPt ?? null,
-          wPt: templateConfig.wPt ?? null,
-          hPt: templateConfig.hPt ?? null,
-          pageWidthPt: templateConfig.pageWidthPt ?? null,
-          pageHeightPt: templateConfig.pageHeightPt ?? null,
-        },
-        chosenPage: null,
-        attemptedPages: "",
-      },
-    };
-  }
+  // Note: Page dimension mismatches are now handled automatically by scaling crop points
+  // in computeEffectiveCropAndDimensions(). OCR proceeds with scaled coordinates.
 
   // Only call OCR if digital text extraction yielded no valid candidates
   // Normalize and validate digital candidates
@@ -1074,13 +1044,13 @@ export async function processSignedPdf(
       page: templatePage,
       region: pointsMode ? null : templateConfig.region, // null in points mode, region in legacy mode
       dpi: templateConfig.dpi,
-      // Pass PDF points if available
-      xPt: templateConfig.xPt,
-      yPt: templateConfig.yPt,
-      wPt: templateConfig.wPt,
-      hPt: templateConfig.hPt,
-      pageWidthPt: effectivePageWidthPt,
-      pageHeightPt: effectivePageHeightPt,
+      // Pass effective PDF points (scaled if dimensions mismatch)
+      xPt: templatePageEffective.xPt,
+      yPt: templatePageEffective.yPt,
+      wPt: templatePageEffective.wPt,
+      hPt: templatePageEffective.hPt,
+      pageWidthPt: templatePageEffective.pageWidthPt,
+      pageHeightPt: templatePageEffective.pageHeightPt,
       requestId,
     }
   );
@@ -1112,7 +1082,17 @@ export async function processSignedPdf(
   if (shouldRetry) {
     if (pointsMode) {
       // In points mode, expand points, not percents
-      const expanded = expandCropPoints(templateConfig, 6); // 6pt padding (~0.083in)
+      // First get effective crop (with scaling if needed), then expand
+      const effectiveCrop = await computeEffectiveCropAndDimensions(templatePage);
+      
+      // Expand the effective crop points (already scaled if needed)
+      const expanded = {
+        xPt: Math.max(0, effectiveCrop.xPt - 6),
+        yPt: Math.max(0, effectiveCrop.yPt - 6),
+        wPt: Math.min(effectiveCrop.pageWidthPt - Math.max(0, effectiveCrop.xPt - 6), effectiveCrop.wPt + 12),
+        hPt: Math.min(effectiveCrop.pageHeightPt - Math.max(0, effectiveCrop.yPt - 6), effectiveCrop.hPt + 12),
+      };
+      
       const retryAttempt = await callSignedOcrService(
         pdfBuffer,
         originalFilename,
@@ -1125,8 +1105,8 @@ export async function processSignedPdf(
           yPt: expanded.yPt,
           wPt: expanded.wPt,
           hPt: expanded.hPt,
-          pageWidthPt: templateConfig.pageWidthPt,
-          pageHeightPt: templateConfig.pageHeightPt,
+          pageWidthPt: effectiveCrop.pageWidthPt,
+          pageHeightPt: effectiveCrop.pageHeightPt,
           requestId,
         }
       );
@@ -1153,6 +1133,8 @@ export async function processSignedPdf(
     } else {
       // Legacy mode: expand percentages
       const expandedRegion = expandCrop(templateConfig.region, 0.015);
+      // Get effective dimensions for legacy mode (no scaling, just actual dimensions)
+      const effectiveCrop = await computeEffectiveCropAndDimensions(templatePage);
       const retryAttempt = await callSignedOcrService(
         pdfBuffer,
         originalFilename,
@@ -1161,6 +1143,8 @@ export async function processSignedPdf(
           page: templatePage,
           region: expandedRegion,
           dpi: templateConfig.dpi,
+          pageWidthPt: effectiveCrop.pageWidthPt,
+          pageHeightPt: effectiveCrop.pageHeightPt,
           requestId,
         }
       );
@@ -1207,6 +1191,10 @@ export async function processSignedPdf(
     
     if (alternatePage !== null && alternatePage >= 1 && alternatePage <= pageCount && alternatePage !== templatePage) {
       alternatePageAttempted = true;
+      
+      // Compute effective crop and dimensions for alternate page
+      const alternatePageEffective = await computeEffectiveCropAndDimensions(alternatePage);
+      
       const alternateAttempt = await callSignedOcrService(
         pdfBuffer,
         originalFilename,
@@ -1215,13 +1203,13 @@ export async function processSignedPdf(
           page: alternatePage,
           region: pointsMode ? null : templateConfig.region, // null in points mode, region in legacy mode
           dpi: templateConfig.dpi,
-          // Pass PDF points if available
-          xPt: templateConfig.xPt,
-          yPt: templateConfig.yPt,
-          wPt: templateConfig.wPt,
-          hPt: templateConfig.hPt,
-          pageWidthPt: templateConfig.pageWidthPt,
-          pageHeightPt: templateConfig.pageHeightPt,
+          // Pass effective PDF points (scaled if dimensions mismatch)
+          xPt: alternatePageEffective.xPt,
+          yPt: alternatePageEffective.yPt,
+          wPt: alternatePageEffective.wPt,
+          hPt: alternatePageEffective.hPt,
+          pageWidthPt: alternatePageEffective.pageWidthPt,
+          pageHeightPt: alternatePageEffective.pageHeightPt,
           requestId,
         }
       );
@@ -1377,10 +1365,11 @@ export async function processSignedPdf(
       });
       
       const snippetPage = chosenPage ?? templatePage;
-      const actualSnippetPageDims = await getActualPdfPageDimensionsPt(pdfBuffer, snippetPage);
-      const snippetPageWidthPt = actualSnippetPageDims?.pageWidthPt ?? effectivePageWidthPt;
-      const snippetPageHeightPt = actualSnippetPageDims?.pageHeightPt ?? effectivePageHeightPt;
       
+      // Compute effective crop and dimensions for snippet page
+      const snippetPageEffective = await computeEffectiveCropAndDimensions(snippetPage);
+      
+      // Use effective crop zone for snippet - matches user's rectangle (scaled if dimensions mismatch)
       const snippetAttempt = await callSignedOcrService(
         pdfBuffer,
         originalFilename,
@@ -1389,12 +1378,12 @@ export async function processSignedPdf(
           page: snippetPage,
           region: pointsMode ? null : templateConfig.region,
           dpi: templateConfig.dpi,
-          xPt: templateConfig.xPt,
-          yPt: templateConfig.yPt,
-          wPt: templateConfig.wPt,
-          hPt: templateConfig.hPt,
-          pageWidthPt: snippetPageWidthPt,
-          pageHeightPt: snippetPageHeightPt,
+          xPt: snippetPageEffective.xPt,
+          yPt: snippetPageEffective.yPt,
+          wPt: snippetPageEffective.wPt,
+          hPt: snippetPageEffective.hPt,
+          pageWidthPt: snippetPageEffective.pageWidthPt,
+          pageHeightPt: snippetPageEffective.pageHeightPt,
           requestId,
         }
       );
@@ -1449,15 +1438,16 @@ export async function processSignedPdf(
     }
   }
 
-  // Use decision engine's best candidate when state is AUTO_CONFIRMED or QUICK_CHECK
+  // Use decision engine's best candidate - it represents the best available work order number
+  // regardless of decision state (AUTO_CONFIRMED, QUICK_CHECK, or NEEDS_ATTENTION)
   // This ensures we use the engine's deterministic choice, especially in multi-candidate auto-resolve cases
   const engineWo = decisionResult.bestCandidate ? decisionResult.bestCandidate : null;
   
-  // Priority: manual override > decision engine (only for AUTO_CONFIRMED or QUICK_CHECK) > validated OCR/digital > empty
-  // Only use engine's best candidate when state is AUTO_CONFIRMED or QUICK_CHECK (not NEEDS_ATTENTION)
+  // Priority: manual override > decision engine best candidate > validated OCR/digital > empty
+  // Use engine's best candidate for all states - it's the best available WO number even if review is needed
   const effectiveWoNumber = (
     woNumberOverride ||
-    (decisionResult.state === "AUTO_CONFIRMED" || decisionResult.state === "QUICK_CHECK" ? engineWo : null) ||
+    engineWo ||
     validatedWoNumber ||
     ""
   ).trim();
@@ -1629,22 +1619,48 @@ export async function processSignedPdf(
     const ocrPassAgreementStr = passAgreement ? "TRUE" : (decisionExtractionMethod === "OCR" ? "FALSE" : null);
     
     // Ensure snippet is available for review (generate if missing)
+    // This ensures admins always have a visual preview for verification cases
     if (!snippetDriveUrl) {
       try {
+        const snippetPage = chosenPage ?? templatePage;
+        
+        // Compute effective crop and dimensions for snippet page
+        const snippetPageEffective = await computeEffectiveCropAndDimensions(snippetPage);
+        
+        console.log(`[Signed Processor] Generating snippet for review (missing from digital extraction):`, {
+          requestId,
+          fmKey: normalizedFmKey,
+          page: snippetPage,
+          effectiveDimensions: {
+            pageWidthPt: snippetPageEffective.pageWidthPt,
+            pageHeightPt: snippetPageEffective.pageHeightPt,
+          },
+          effectiveCropZone: {
+            xPt: snippetPageEffective.xPt,
+            yPt: snippetPageEffective.yPt,
+            wPt: snippetPageEffective.wPt,
+            hPt: snippetPageEffective.hPt,
+          },
+          scaled: snippetPageEffective.scaled,
+          note: snippetPageEffective.scaled 
+            ? "Crop points scaled to match actual page dimensions" 
+            : "Using exact template crop zone",
+        });
+        
         const attempt = await callSignedOcrService(
           pdfBuffer,
           originalFilename,
           {
             templateId: templateConfig.templateId,
-            page: chosenPage ?? templatePage,
+            page: snippetPage,
             region: pointsMode ? null : templateConfig.region,
             dpi: templateConfig.dpi,
-            xPt: templateConfig.xPt,
-            yPt: templateConfig.yPt,
-            wPt: templateConfig.wPt,
-            hPt: templateConfig.hPt,
-            pageWidthPt: templateConfig.pageWidthPt,
-            pageHeightPt: templateConfig.pageHeightPt,
+            xPt: snippetPageEffective.xPt,
+            yPt: snippetPageEffective.yPt,
+            wPt: snippetPageEffective.wPt,
+            hPt: snippetPageEffective.hPt,
+            pageWidthPt: snippetPageEffective.pageWidthPt,
+            pageHeightPt: snippetPageEffective.pageHeightPt,
             requestId,
           }
         );
@@ -1675,9 +1691,11 @@ export async function processSignedPdf(
                 driveUrl: snippetDriveUrl,
               });
             } else {
-              console.warn(`[Signed Processor] Failed to upload snippet to Drive (check GOOGLE_DRIVE_SNIPPETS_FOLDER_ID):`, {
+              console.warn(`[Signed Processor] Failed to upload snippet to Drive:`, {
                 requestId,
                 fmKey: normalizedFmKey,
+                fileName,
+                note: "Check GOOGLE_DRIVE_SNIPPETS_FOLDER_ID environment variable is set",
               });
             }
           }

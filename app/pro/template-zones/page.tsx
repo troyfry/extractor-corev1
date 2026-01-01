@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import AppShell from "@/components/layout/AppShell";
 import MainNavigation from "@/components/layout/MainNavigation";
+import { normalizeFmKey } from "@/lib/templates/fmProfiles";
 
 // Coordinate system constants
 // Internal: use PDF_POINTS_TOP_LEFT to be explicit about origin
@@ -137,15 +138,20 @@ function TemplateZonesPageContent() {
   const [manualPoints, setManualPoints] = useState<{ xPt: string; yPt: string; wPt: string; hPt: string } | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [currentViewport, setCurrentViewport] = useState<any>(null);
+  const [showAddFmForm, setShowAddFmForm] = useState(false);
+  const [newFmKey, setNewFmKey] = useState("");
+  const [newFmLabel, setNewFmLabel] = useState("");
+  const [newFmDomain, setNewFmDomain] = useState("");
+  const [isCreatingFm, setIsCreatingFm] = useState(false);
   
   // Known working coordinates per fmKey (can be expanded)
   // These are tested coordinates that work well for each FM profile
   const calibratedCoordinates: Record<string, { xPct: number; yPct: number; wPct: number; hPct: number }> = {
     superclean: {
-      xPct: 0.72,
-      yPct: 0.00,
-      wPct: 0.26,
-      hPct: 0.05,
+      xPct: 0.70,  // Slightly left to include more context
+      yPct: 0.00,  // Top of page
+      wPct: 0.28,  // Slightly wider to include surrounding text
+      hPct: 0.12,  // Increased from 0.05 to 0.12 to include context around WO number
     },
     "23rdgroup": {
       xPct: 0.02,
@@ -262,6 +268,67 @@ function TemplateZonesPageContent() {
     }
   }
 
+  async function handleCreateFmProfile() {
+    if (!newFmKey.trim()) {
+      setError("FM Key is required");
+      return;
+    }
+
+    const normalizedKey = normalizeFmKey(newFmKey);
+    if (!normalizedKey) {
+      setError("FM Key must contain at least one letter or number");
+      return;
+    }
+
+    // Check if FM key already exists
+    if (fmProfiles.some(p => p.fmKey === normalizedKey)) {
+      setError(`FM profile "${normalizedKey}" already exists`);
+      return;
+    }
+
+    setIsCreatingFm(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const response = await fetch("/api/fm-profiles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile: {
+            fmKey: normalizedKey,
+            fmLabel: newFmLabel.trim() || normalizedKey,
+            page: 1,
+            xPct: 0,
+            yPct: 0,
+            wPct: 1,
+            hPct: 1,
+            senderDomains: newFmDomain.trim() || undefined,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to create FM profile");
+      }
+
+      setSuccess(`FM profile "${normalizedKey}" created successfully!`);
+      setNewFmKey("");
+      setNewFmLabel("");
+      setNewFmDomain("");
+      setShowAddFmForm(false);
+      
+      // Reload profiles and auto-select the new one
+      await loadFmProfiles();
+      setSelectedFmKey(normalizedKey);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create FM profile");
+    } finally {
+      setIsCreatingFm(false);
+    }
+  }
+
   async function loadExistingTemplate() {
     if (!selectedFmKey) return;
     
@@ -291,10 +358,14 @@ function TemplateZonesPageContent() {
                 template.wPt !== undefined && template.hPt !== undefined &&
                 pageWidthPt > 0 && pageHeightPt > 0) {
               // Convert PDF points to pixels (top-left origin)
-              const xPx = (template.xPt / template.pageWidthPt) * imageWidth;
-              const wPx = (template.wPt / template.pageWidthPt) * imageWidth;
-              const yPx = (template.yPt / template.pageHeightPt) * imageHeight;
-              const hPx = (template.hPt / template.pageHeightPt) * imageHeight;
+              // DO compute scale from rendered PNG dimensions (imageWidth/imageHeight), NOT container size
+              // This ensures the overlay aligns correctly with the rendered image
+              const scaleX = imageWidth / template.pageWidthPt;
+              const scaleY = imageHeight / template.pageHeightPt;
+              const xPx = template.xPt * scaleX;
+              const yPx = template.yPt * scaleY;
+              const wPx = template.wPt * scaleX;
+              const hPx = template.hPt * scaleY;
               
               setCropZone({
                 x: xPx,
@@ -868,14 +939,94 @@ function TemplateZonesPageContent() {
           <div className="space-y-6">
             {/* FM Profile Selection */}
             <div>
-              <label htmlFor="fmKey" className="block text-sm font-medium mb-2">
-                FM Profile <span className="text-red-400">*</span>
-              </label>
+              <div className="flex items-center justify-between mb-2">
+                <label htmlFor="fmKey" className="block text-sm font-medium">
+                  FM Profile <span className="text-red-400">*</span>
+                </label>
+                <button
+                  onClick={() => {
+                    setShowAddFmForm(!showAddFmForm);
+                    setError(null);
+                    setSuccess(null);
+                  }}
+                  className="px-3 py-1.5 text-sm bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors"
+                >
+                  {showAddFmForm ? "Cancel" : "+ Add New FM"}
+                </button>
+              </div>
+              
+              {/* Add New FM Form */}
+              {showAddFmForm && (
+                <div className="mb-4 p-4 bg-slate-800 border border-slate-700 rounded-lg">
+                  <h3 className="text-sm font-semibold text-slate-200 mb-3">Create New FM Profile</h3>
+                  <div className="space-y-3">
+                    <div>
+                      <label htmlFor="newFmKey" className="block text-xs text-slate-400 mb-1">
+                        FM Key <span className="text-red-400">*</span>
+                      </label>
+                      <input
+                        id="newFmKey"
+                        type="text"
+                        value={newFmKey}
+                        onChange={(e) => setNewFmKey(e.target.value)}
+                        placeholder="e.g., superclean, 23rdgroup"
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded text-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        disabled={isCreatingFm}
+                      />
+                      <p className="mt-1 text-xs text-slate-500">
+                        Will be normalized to lowercase (e.g., "Super Clean" → "super_clean")
+                      </p>
+                    </div>
+                    <div>
+                      <label htmlFor="newFmLabel" className="block text-xs text-slate-400 mb-1">
+                        Display Label (optional)
+                      </label>
+                      <input
+                        id="newFmLabel"
+                        type="text"
+                        value={newFmLabel}
+                        onChange={(e) => setNewFmLabel(e.target.value)}
+                        placeholder="e.g., Super Clean Services"
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded text-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        disabled={isCreatingFm}
+                      />
+                      <p className="mt-1 text-xs text-slate-500">
+                        If empty, will use the normalized FM key
+                      </p>
+                    </div>
+                    <div>
+                      <label htmlFor="newFmDomain" className="block text-xs text-slate-400 mb-1">
+                        FM Domain (optional)
+                      </label>
+                      <input
+                        id="newFmDomain"
+                        type="text"
+                        value={newFmDomain}
+                        onChange={(e) => setNewFmDomain(e.target.value)}
+                        placeholder="e.g., superclean.com, 23rdgroup.com"
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded text-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        disabled={isCreatingFm}
+                      />
+                      <p className="mt-1 text-xs text-slate-500">
+                        Comma-separated list of sender email domains (e.g., "superclean.com, workorders@superclean.com")
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleCreateFmProfile}
+                      disabled={isCreatingFm || !newFmKey.trim()}
+                      className="w-full px-4 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+                    >
+                      {isCreatingFm ? "Creating..." : "Create FM Profile"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {isLoadingProfiles ? (
                 <div className="text-slate-400">Loading FM profiles...</div>
               ) : fmProfiles.length === 0 ? (
                 <div className="text-yellow-400">
-                  No FM profiles found. Please create an FM profile first.
+                  No FM profiles found. Use the "Add New FM" button above to create one.
                 </div>
               ) : (
                 <select
@@ -1069,8 +1220,8 @@ function TemplateZonesPageContent() {
                   </div>
                 )}
 
-                {/* Percentages Display / Edit (Legacy - hidden by default) */}
-                {false && percentages && (
+                {/* Percentages Display / Edit (Legacy - REMOVED: PDF_POINTS_TOP_LEFT is the only source of truth) */}
+                {false && false && percentages && (
                   <div className="mt-4 p-4 bg-slate-800 rounded-lg">
                     <div className="text-sm font-medium mb-3">Crop Zone Percentages (0.0 to 1.0) - Legacy:</div>
                     <div className="grid grid-cols-4 gap-4 text-sm">

@@ -87,16 +87,70 @@ export async function callSignedOcrService(
     throw new Error("page must be >= 1 (1-based)");
   }
 
+  // Convert PDF points to pixels, clamp to image bounds, then convert back to points
+  // This ensures the crop rectangle never exceeds image bounds
+  const dpi = config.dpi ?? 200;
+  const scale = dpi / 72;
+  
+  // Image dimensions in pixels
+  const imageWidthPx = pageWidthPt * scale;
+  const imageHeightPx = pageHeightPt * scale;
+  
+  // Convert points to pixels using direct formula: scale = dpi/72
+  let xPx = xPt * scale;
+  let yPx = yPt * scale;
+  let wPx = wPt * scale;
+  let hPx = hPt * scale;
+  
+  // Clamp crop rectangle to image bounds
+  const clampedXPx = Math.max(0, Math.min(xPx, imageWidthPx));
+  const clampedYPx = Math.max(0, Math.min(yPx, imageHeightPx));
+  const clampedWPx = Math.max(0, Math.min(wPx, imageWidthPx - clampedXPx));
+  const clampedHPx = Math.max(0, Math.min(hPx, imageHeightPx - clampedYPx));
+  
+  // Convert clamped pixels back to points
+  const clampedXPt = clampedXPx / scale;
+  const clampedYPt = clampedYPx / scale;
+  const clampedWPt = clampedWPx / scale;
+  const clampedHPt = clampedHPx / scale;
+  
+  // Coordinate origin conversion: Templates use PDF_POINTS_TOP_LEFT (y=0 at top)
+  // Verify Python OCR service coordinate origin:
+  // - If Python expects PDF_POINTS_TOP_LEFT (same as templates): no conversion needed
+  // - If Python expects PDF_POINTS_BOTTOM_LEFT (y=0 at bottom): convert y using:
+  //   yPtBottomLeft = pageHeightPt - (yPt + hPt)
+  // Currently assuming top-left origin (matches templates)
+  // TODO: Verify Python service coordinate system and uncomment conversion if needed:
+  // const yPtForPython = pageHeightPt - (clampedYPt + clampedHPt);
+  const finalXPt = clampedXPt;
+  const finalYPt = clampedYPt;
+  const finalWPt = clampedWPt;
+  const finalHPt = clampedHPt;
+  
+  // Debug log with all conversion details
+  console.log(`[Signed OCR] Points to pixels conversion (clamped):`, {
+    requestId: config.requestId,
+    dpi,
+    pageWidthPt,
+    pageHeightPt,
+    inputPoints: { xPt, yPt, wPt, hPt },
+    computedPixels: { xPx, yPx, wPx, hPx },
+    clampedPixels: { xPx: clampedXPx, yPx: clampedYPx, wPx: clampedWPx, hPx: clampedHPx },
+    finalPoints: { xPt: finalXPt, yPt: finalYPt, wPt: finalWPt, hPt: finalHPt },
+    imageDimensions: { widthPx: imageWidthPx, heightPx: imageHeightPx },
+    scale,
+  });
+
   const formData = new FormData();
   formData.append("templateId", config.templateId);
   formData.append("page", String(config.page)); // must be 1-based
-  formData.append("dpi", String(config.dpi ?? 200));
+  formData.append("dpi", String(dpi));
   
-  // Send PDF points directly to Python (Python will handle rasterization)
-  formData.append("xPt", String(xPt));
-  formData.append("yPt", String(yPt));
-  formData.append("wPt", String(wPt));
-  formData.append("hPt", String(hPt));
+  // Send clamped PDF points to Python (Python will handle rasterization)
+  formData.append("xPt", String(finalXPt));
+  formData.append("yPt", String(finalYPt));
+  formData.append("wPt", String(finalWPt));
+  formData.append("hPt", String(finalHPt));
   formData.append("pageWidthPt", String(pageWidthPt));
   formData.append("pageHeightPt", String(pageHeightPt));
   
@@ -112,20 +166,6 @@ export async function callSignedOcrService(
   );
 
   console.log(`[Signed OCR] Calling OCR endpoint:`, endpoint);
-  console.log(`[Signed OCR] Sending PDF points to Python:`, {
-    requestId: config.requestId,
-    templateId: config.templateId,
-    page: config.page,
-    xPt,
-    yPt,
-    wPt,
-    hPt,
-    pageWidthPt,
-    pageHeightPt,
-    dpi: config.dpi ?? 200,
-    pdfSize: pdfBuffer.length,
-    filename: filename || "signed-work-order.pdf",
-  });
 
   const response = await fetch(endpoint, {
     method: "POST",

@@ -102,7 +102,16 @@ export async function POST(request: Request) {
       openaiKeyEncrypted: encryptedKey,
     }, { allowEnsure: true });
 
-    return NextResponse.json({ success: true });
+    // Set openaiReady cookie to mark this step as complete
+    const response = NextResponse.json({ success: true });
+    response.cookies.set("openaiReady", "true", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 30 * 24 * 60 * 60, // 30 days
+    });
+
+    return response;
   } catch (error) {
     console.error("Error saving OpenAI key:", error);
     const message = error instanceof Error ? error.message : "Internal server error";

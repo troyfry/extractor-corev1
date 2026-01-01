@@ -126,8 +126,8 @@ export function getNeedsReviewUx(reason: NeedsReviewReason, fmKey?: string): Nee
     },
     UPDATE_FAILED: {
       title: "Could not update the matching job row — please verify",
-      message: "We found the job row but the update didn't apply. Try again or confirm manually.",
-      actionLabel: "Retry / Confirm",
+      message: "We found the job row but the update didn't apply. Try again or verify manually.",
+      actionLabel: "Retry / Verify",
       href: "",
       tone: "warning",
     },

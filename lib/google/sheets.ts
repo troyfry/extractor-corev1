@@ -8,7 +8,7 @@
  * - Sheet1: Job process tracking (status, PDFs, signatures, workflow state)
  * - Work_Orders: Detailed work order information (dates, addresses, costs, job details)
  * - Verification: Failed email PDF extractions
- * - Needs_Review_Signed: Signed work orders that couldn't be auto-matched
+ * - Verification: Signed work orders that need review
  */
 
 import { google } from "googleapis";
@@ -1158,6 +1158,49 @@ export async function writeWorkOrderRecord(
       spreadsheetId: `${spreadsheetId.substring(0, 10)}...`,
     });
     throw error;
+  }
+}
+
+/**
+ * Find a Google Sheets spreadsheet by name.
+ * Uses Drive API to search for files with matching name and MIME type.
+ * 
+ * @param accessToken Google OAuth access token
+ * @param spreadsheetName Name of the spreadsheet to find
+ * @returns Spreadsheet ID if found, null otherwise
+ */
+export async function findSpreadsheetByName(
+  accessToken: string,
+  spreadsheetName: string
+): Promise<string | null> {
+  const { createDriveClient } = await import("@/lib/google/drive");
+  const drive = createDriveClient(accessToken);
+  
+  try {
+    // Search for files with matching name and MIME type for Google Sheets
+    const response = await drive.files.list({
+      q: `name='${spreadsheetName.replace(/'/g, "\\'")}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`,
+      fields: "files(id, name)",
+      pageSize: 10,
+    });
+    
+    const files = response.data.files || [];
+    
+    // Return exact match if found
+    const exactMatch = files.find(f => f.name === spreadsheetName);
+    if (exactMatch?.id) {
+      return exactMatch.id;
+    }
+    
+    // Return first match if no exact match (case-insensitive fallback)
+    if (files.length > 0 && files[0].id) {
+      return files[0].id;
+    }
+    
+    return null;
+  } catch (error) {
+    console.error("[Sheets] Error finding spreadsheet by name:", error);
+    return null;
   }
 }
 

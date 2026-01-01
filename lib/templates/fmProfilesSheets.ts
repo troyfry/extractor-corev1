@@ -121,13 +121,15 @@ export async function ensureFmProfileSheet(
 
 /**
  * Write or update an FM profile in Google Sheets.
- * Uses fmKey as the unique identifier (one row per fmKey).
+ * Uses fmKey as the unique identifier (one row per spreadsheetId + fmKey).
+ * Profiles are shared per spreadsheet, not per user.
+ * userId is stored for audit purposes but not used for uniqueness.
  */
 export async function upsertFmProfile(params: {
   spreadsheetId: string;
   accessToken: string;
   profile: FmProfile;
-  userId?: string; // Optional for backward compatibility, but recommended for user-scoped profiles
+  userId?: string; // Optional, stored for audit but not used for uniqueness
 }): Promise<void> {
   const { spreadsheetId, accessToken, profile, userId } = params;
   const sheets = createSheetsClient(accessToken);
@@ -137,7 +139,7 @@ export async function upsertFmProfile(params: {
   await ensureFmProfileSheet(spreadsheetId, accessToken);
 
   try {
-    // Get all data to find existing row by fmKey
+    // Get all data to find existing row by fmKey only (profiles are shared per spreadsheet)
     const allDataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: formatSheetRange(sheetName, getColumnRange(FM_PROFILE_COLUMNS.length)),
@@ -150,7 +152,7 @@ export async function upsertFmProfile(params: {
       return;
     }
 
-    // Find row index by fmKey
+    // Find row index by fmKey only (profiles are shared per spreadsheet, not per user)
     const headers = rows[0] as string[];
     const fmKeyColIndex = headers.findIndex(
       (h) => h.toLowerCase().trim() === "fmkey"
@@ -162,11 +164,17 @@ export async function upsertFmProfile(params: {
       return;
     }
 
-    // Find existing row by fmKey
+    // Find existing row by fmKey only (profiles are shared per spreadsheet, not per user)
     let existingRowIndex = -1;
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      if (row && row[fmKeyColIndex] === profile.fmKey) {
+      if (!row) continue;
+      
+      const rowFmKey = (row[fmKeyColIndex] || "").trim().toLowerCase();
+      const profileFmKey = profile.fmKey.trim().toLowerCase();
+      
+      // Match by fmKey only
+      if (rowFmKey === profileFmKey) {
         existingRowIndex = i + 1; // +1 because Sheets is 1-indexed
         break;
       }

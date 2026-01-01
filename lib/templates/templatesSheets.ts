@@ -549,25 +549,44 @@ async function appendTemplateRow(
   const rowData: string[] = new Array(headers.length).fill("");
 
   // Map template fields to columns
+  // Each template is independent - write only what's appropriate for its coordSystem
   const templateData: Record<string, string> = {
     userId: template.userId,
     fmKey: template.fmKey,
     templateId: template.templateId,
     page: String(template.page),
-    xPct: String(template.xPct),
-    yPct: String(template.yPct),
-    wPct: String(template.wPct),
-    hPct: String(template.hPct),
     dpi: template.dpi !== undefined ? String(template.dpi) : "",
     coordSystem: template.coordSystem || "",
-    pageWidthPt: template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "",
-    pageHeightPt: template.pageHeightPt !== undefined ? String(template.pageHeightPt) : "",
-    xPt: template.xPt !== undefined ? String(template.xPt) : "",
-    yPt: template.yPt !== undefined ? String(template.yPt) : "",
-    wPt: template.wPt !== undefined ? String(template.wPt) : "",
-    hPt: template.hPt !== undefined ? String(template.hPt) : "",
     updated_at: template.updated_at,
   };
+
+  // PDF_POINTS templates: points are source of truth, percentages set to empty
+  if (template.coordSystem === "PDF_POINTS" || template.coordSystem === "PDF_POINTS_TOP_LEFT") {
+    templateData.pageWidthPt = template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "";
+    templateData.pageHeightPt = template.pageHeightPt !== undefined ? String(template.pageHeightPt) : "";
+    templateData.xPt = template.xPt !== undefined ? String(template.xPt) : "";
+    templateData.yPt = template.yPt !== undefined ? String(template.yPt) : "";
+    templateData.wPt = template.wPt !== undefined ? String(template.wPt) : "";
+    templateData.hPt = template.hPt !== undefined ? String(template.hPt) : "";
+    // Set percentages to empty to avoid accidental fallback
+    templateData.xPct = "";
+    templateData.yPct = "";
+    templateData.wPct = "";
+    templateData.hPct = "";
+  } else {
+    // Legacy templates: write percentages (and points if available)
+    templateData.xPct = String(template.xPct);
+    templateData.yPct = String(template.yPct);
+    templateData.wPct = String(template.wPct);
+    templateData.hPct = String(template.hPct);
+    // Include points if available (for future migration)
+    if (template.pageWidthPt !== undefined) templateData.pageWidthPt = String(template.pageWidthPt);
+    if (template.pageHeightPt !== undefined) templateData.pageHeightPt = String(template.pageHeightPt);
+    if (template.xPt !== undefined) templateData.xPt = String(template.xPt);
+    if (template.yPt !== undefined) templateData.yPt = String(template.yPt);
+    if (template.wPt !== undefined) templateData.wPt = String(template.wPt);
+    if (template.hPt !== undefined) templateData.hPt = String(template.hPt);
+  }
 
   for (const col of TEMPLATE_COLUMNS) {
     const index = headersLower.indexOf(col.toLowerCase());
@@ -626,25 +645,44 @@ async function updateTemplateRow(
   }
 
   // Map template fields to columns
+  // Each template is independent - write only what's appropriate for its coordSystem
   const templateData: Record<string, string> = {
     userId: template.userId,
     fmKey: template.fmKey,
     templateId: template.templateId,
     page: String(template.page),
-    xPct: String(template.xPct),
-    yPct: String(template.yPct),
-    wPct: String(template.wPct),
-    hPct: String(template.hPct),
     dpi: template.dpi !== undefined ? String(template.dpi) : "",
     coordSystem: template.coordSystem || "",
-    pageWidthPt: template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "",
-    pageHeightPt: template.pageHeightPt !== undefined ? String(template.pageHeightPt) : "",
-    xPt: template.xPt !== undefined ? String(template.xPt) : "",
-    yPt: template.yPt !== undefined ? String(template.yPt) : "",
-    wPt: template.wPt !== undefined ? String(template.wPt) : "",
-    hPt: template.hPt !== undefined ? String(template.hPt) : "",
     updated_at: template.updated_at,
   };
+
+  // PDF_POINTS templates: points are source of truth, percentages set to empty
+  if (template.coordSystem === "PDF_POINTS" || template.coordSystem === "PDF_POINTS_TOP_LEFT") {
+    templateData.pageWidthPt = template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "";
+    templateData.pageHeightPt = template.pageHeightPt !== undefined ? String(template.pageHeightPt) : "";
+    templateData.xPt = template.xPt !== undefined ? String(template.xPt) : "";
+    templateData.yPt = template.yPt !== undefined ? String(template.yPt) : "";
+    templateData.wPt = template.wPt !== undefined ? String(template.wPt) : "";
+    templateData.hPt = template.hPt !== undefined ? String(template.hPt) : "";
+    // Set percentages to empty to avoid accidental fallback
+    templateData.xPct = "";
+    templateData.yPct = "";
+    templateData.wPct = "";
+    templateData.hPct = "";
+  } else {
+    // Legacy templates: write percentages (and points if available)
+    templateData.xPct = String(template.xPct);
+    templateData.yPct = String(template.yPct);
+    templateData.wPct = String(template.wPct);
+    templateData.hPct = String(template.hPct);
+    // Include points if available (for future migration)
+    if (template.pageWidthPt !== undefined) templateData.pageWidthPt = String(template.pageWidthPt);
+    if (template.pageHeightPt !== undefined) templateData.pageHeightPt = String(template.pageHeightPt);
+    if (template.xPt !== undefined) templateData.xPt = String(template.xPt);
+    if (template.yPt !== undefined) templateData.yPt = String(template.yPt);
+    if (template.wPt !== undefined) templateData.wPt = String(template.wPt);
+    if (template.hPt !== undefined) templateData.hPt = String(template.hPt);
+  }
 
   for (const col of TEMPLATE_COLUMNS) {
     const index = headersLower.indexOf(col.toLowerCase());
