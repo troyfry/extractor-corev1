@@ -277,7 +277,7 @@ export default function ProHomePageClient({ quotaError }: Props = {}) {
                           Match Signed Paperwork (Verification)
                         </h3>
                         <p className="text-sm text-slate-300 leading-relaxed">
-                          Review and verify signed work orders that need attention.
+                          Review and verify signed work orders that need attention. This step prepares jobs for invoicing.
                         </p>
                         {status.verificationCount !== null && status.verificationCount > 0 && (
                           <div className="mt-2">

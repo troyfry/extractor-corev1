@@ -8,6 +8,7 @@ import ResultsTable from "@/components/work-orders/ResultsTable";
 import type { WorkOrder } from "@/lib/workOrders/types";
 import { useCurrentPlan } from "@/lib/plan-context";
 import { isFreePlan } from "@/lib/plan-helpers";
+import { getAiHeaders } from "@/lib/byok-client";
 
 /**
  * Pro tier dashboard page for work order extraction.
@@ -158,8 +159,11 @@ export default function DashboardPage() {
             formData.append("emailText", emailText.trim());
           }
 
+          const headers = getAiHeaders();
+          
           const response = await fetch("/api/extract-pro", {
             method: "POST",
+            headers,
             body: formData,
           });
 

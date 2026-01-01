@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import AppShell from "@/components/layout/AppShell";
 import ParsedWorkOrdersPreview from "@/components/manual/ParsedWorkOrdersPreview";
 import type { ParsedWorkOrder, ManualProcessResponse } from "@/lib/workOrders/parsedTypes";
+import { getAiHeaders } from "@/lib/byok-client";
 
 /**
  * Free tier work order extraction page.
@@ -158,8 +159,11 @@ export default function FreePage() {
             formData.append("emailText", emailText.trim());
           }
 
+          const headers = getAiHeaders();
+          
           const response = await fetch("/api/extract-free", {
             method: "POST",
+            headers,
             body: formData,
           });
 

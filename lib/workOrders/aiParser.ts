@@ -262,9 +262,10 @@ function parseAiResponse(
 }
 
 export async function aiParseWorkOrdersFromEmail(
-  email: EmailMessage
+  email: EmailMessage,
+  apiKey?: string | null
 ): Promise<Omit<WorkOrderInput, "userId">[] | null> {
-  if (!isAiParsingEnabled()) return null;
+  if (!apiKey || !isAiParsingEnabled(true, apiKey)) return null;
 
   try {
     const pdfAttachments = email.attachments.filter((att) =>
@@ -297,7 +298,12 @@ export async function aiParseWorkOrdersFromEmail(
 
     const prompt = buildExtractionPrompt(email, pdfTexts);
 
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+    if (!apiKey) {
+      console.error("No API key provided to aiParseWorkOrdersFromEmail");
+      return null;
+    }
+
+    const client = new OpenAI({ apiKey });
     const model = getAiModelName();
 
     const response = await client.chat.completions.create({

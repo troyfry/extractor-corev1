@@ -7,9 +7,10 @@
  * Resume rules:
  * - If onboardingCompleted=true → redirect to /pro
  * - Else if no workspaceReady → allow /onboarding/google (correct step)
- * - Else if workspaceReady=true and openaiReady!=true and openaiReady!=skipped → redirect to /onboarding/openai
  * - Else if fmProfilesReady!=true → redirect to /onboarding/fm-profiles
  * - Else → redirect to /onboarding/templates
+ * 
+ * NOTE: OpenAI setup is now optional and skipped in onboarding flow.
  * 
  * NOTE: Uses lightweight checks (cookie-only) to avoid Sheets API quota issues.
  */
@@ -40,7 +41,6 @@ export default async function OnboardingLayout({
   // Resume logic: decide next step from cookies
   const cookieOnboardingCompleted = cookieStore.get("onboardingCompleted")?.value;
   const cookieWorkspaceReady = cookieStore.get("workspaceReady")?.value;
-  const cookieOpenaiReady = cookieStore.get("openaiReady")?.value;
   const cookieFmProfilesReady = cookieStore.get("fmProfilesReady")?.value;
   
   // Rule 1: Full onboarding completed → redirect to /pro
@@ -56,21 +56,14 @@ export default async function OnboardingLayout({
       redirect("/onboarding/google");
     }
   }
-  // Rule 3: Workspace ready but OpenAI not ready/skipped → go to /onboarding/openai
-  else if (cookieOpenaiReady !== "true" && cookieOpenaiReady !== "skipped") {
-    // Only redirect if not already on /onboarding/openai
-    if (currentPathname !== "/onboarding/openai") {
-      redirect("/onboarding/openai");
-    }
-  }
-  // Rule 4: FM profiles not ready → go to /onboarding/fm-profiles
+  // Rule 3: FM profiles not ready → go to /onboarding/fm-profiles
   else if (!cookieFmProfilesReady || cookieFmProfilesReady !== "true") {
     // Only redirect if not already on /onboarding/fm-profiles
     if (currentPathname !== "/onboarding/fm-profiles") {
       redirect("/onboarding/fm-profiles");
     }
   }
-  // Rule 5: All ready → go to /onboarding/templates
+  // Rule 4: All ready → go to /onboarding/templates
   else {
     // Only redirect if not already on /onboarding/templates
     if (currentPathname !== "/onboarding/templates") {

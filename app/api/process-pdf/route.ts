@@ -261,42 +261,16 @@ export async function POST(request: Request) {
       );
     }
 
-    // Get current plan
-    const plan = getPlanFromRequest(request);
-
-    // Determine which OpenAI key to use based on plan
-    let apiKey: string | null = null;
-    
-    if (plan === "FREE_BYOK") {
-      // Free plan: Read BYOK from header (temporary - will move to client-side calls later)
-      // IMPORTANT: This key is NEVER stored, logged, or persisted - only used for the request
-      const byokKey = request.headers.get("x-openai-key");
-      if (!byokKey || byokKey.trim().length === 0) {
-        return NextResponse.json(
-          { error: "OpenAI API key is required for Free (BYOK) plan. Please provide your key." },
-          { status: 400 }
-        );
-      }
-      apiKey = byokKey.trim();
-      // NOTE: This BYOK key is never stored, logged, or written to database
-    } else {
-      // Pro/Premium plans: Use server-side OpenAI key only
-      apiKey = process.env.OPENAI_API_KEY;
-      if (!apiKey) {
-        console.error("Missing OPENAI_API_KEY environment variable");
-        return NextResponse.json(
-          { error: "Server configuration error: OpenAI API key not configured" },
-          { status: 500 }
-        );
-      }
-    }
+    // Read AI configuration from headers (optional)
+    const aiEnabled = request.headers.get("x-ai-enabled") === "true";
+    const apiKey = request.headers.get("x-openai-key")?.trim() || null;
 
     // Build candidate ParsedWorkOrder[] - try AI first, then fall back to rule-based
     // NOTE: Manual upload is stateless - we do NOT save to database
     let parsedWorkOrders: ParsedWorkOrder[] = [];
 
-    // Try AI parser first (if enabled and key available)
-    if (apiKey && isAiParsingEnabled()) {
+    // Try AI parser first (if enabled and key provided)
+    if (aiEnabled && apiKey && isAiParsingEnabled(aiEnabled, apiKey)) {
       try {
         const profile = getIndustryProfile();
         const model = getAiModelName();

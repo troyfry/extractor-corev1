@@ -150,8 +150,10 @@ export async function processSingleEmailMessage(
   let candidateInputs: WorkOrderInput[] = [];
 
   // Try AI parser first (if enabled)
+  // NOTE: This function is deprecated - AI parsing now happens in API routes with headers
+  // Passing null to disable AI here (legacy code path)
   try {
-    const aiResult = await aiParseWorkOrdersFromEmail(email);
+    const aiResult = await aiParseWorkOrdersFromEmail(email, null);
 
     if (aiResult && aiResult.length > 0) {
       // Attach userId to AI results (optional for free version)

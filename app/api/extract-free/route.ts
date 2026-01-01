@@ -159,17 +159,14 @@ export async function POST(request: Request) {
       );
     }
 
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: "Server configuration error: OpenAI API key not configured" },
-        { status: 500 }
-      );
-    }
+    // Read AI configuration from headers (optional)
+    const aiEnabled = request.headers.get("x-ai-enabled") === "true";
+    const apiKey = request.headers.get("x-openai-key")?.trim() || null;
 
     let parsedWorkOrders: ParsedWorkOrder[] = [];
 
-    if (isAiParsingEnabled()) {
+    // Try AI parsing if enabled and key provided
+    if (aiEnabled && apiKey && isAiParsingEnabled(aiEnabled, apiKey)) {
       try {
         const profile = getIndustryProfile();
         const model = getAiModelName();

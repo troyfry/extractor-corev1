@@ -45,9 +45,10 @@ export default function OnboardingGooglePage() {
       setIsSubmitting(false);
       
       // Auto-continue after a brief delay to show success
+      // Note: OpenAI setup is now optional - skip to FM profiles
       // Note: Using setTimeout for UX; component unmount will cancel navigation
       setTimeout(() => {
-        router.push("/onboarding/openai");
+        router.push("/onboarding/fm-profiles");
       }, 2000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");

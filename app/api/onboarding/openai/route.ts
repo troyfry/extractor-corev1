@@ -1,15 +1,16 @@
 /**
- * API route for saving OpenAI API key during onboarding.
+ * API route for validating OpenAI API key (optional, no longer part of onboarding flow).
  * 
  * POST /api/onboarding/openai
  * Body: { openaiKey: string }
+ * 
+ * DEPRECATED: OpenAI setup is now optional and handled via Settings page.
+ * This route is kept for backward compatibility and validation only.
+ * Keys are NOT stored in Sheets/DB - they are client-side only (sessionStorage).
  */
 
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { getUserRowById, upsertUserRow, ensureUsersSheet } from "@/lib/onboarding/usersSheet";
-import { encryptSecret } from "@/lib/onboarding/crypto";
-import { cookies } from "next/headers";
 import OpenAI from "openai";
 
 export const runtime = "nodejs";
@@ -70,48 +71,15 @@ export async function POST(request: Request) {
       );
     }
 
-    // Encrypt the key
-    const encryptedKey = encryptSecret(openaiKey);
-
-    // Get the main spreadsheet ID from cookie (set during Google step)
-    const cookieStore = await cookies();
-    const mainSpreadsheetId = cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
-
-    if (!mainSpreadsheetId) {
-      return NextResponse.json(
-        { error: "Spreadsheet ID not configured. Please complete the Google step first." },
-        { status: 400 }
-      );
-    }
-
-    // Ensure Users sheet exists (onboarding route - must ensure sheet exists)
-    await ensureUsersSheet(user.googleAccessToken, mainSpreadsheetId, { allowEnsure: true });
-
-    // Get existing user row
-    const userRow = await getUserRowById(user.googleAccessToken, mainSpreadsheetId, user.userId);
-    if (!userRow) {
-      return NextResponse.json(
-        { error: "User row not found. Please complete the Google step first." },
-        { status: 400 }
-      );
-    }
-
-    // Update user row with encrypted OpenAI key
-    await upsertUserRow(user.googleAccessToken, mainSpreadsheetId, {
-      ...userRow,
-      openaiKeyEncrypted: encryptedKey,
-    }, { allowEnsure: true });
-
-    // Set openaiReady cookie to mark this step as complete
-    const response = NextResponse.json({ success: true });
-    response.cookies.set("openaiReady", "true", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      maxAge: 30 * 24 * 60 * 60, // 30 days
+    // NOTE: Keys are no longer stored in Sheets/DB - they are client-side only
+    // This route now only validates the key and returns success
+    // The client should store the key in sessionStorage using the BYOK helpers
+    
+    // Return success (key validation already done above)
+    return NextResponse.json({ 
+      success: true,
+      message: "OpenAI key validated successfully. Store it in sessionStorage on the client side."
     });
-
-    return response;
   } catch (error) {
     console.error("Error saving OpenAI key:", error);
     const message = error instanceof Error ? error.message : "Internal server error";

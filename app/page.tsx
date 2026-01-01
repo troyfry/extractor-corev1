@@ -10,6 +10,7 @@ import { useUserOpenAIKey } from "@/lib/useUserOpenAIKey";
 import { requiresBYOK } from "@/lib/plan-helpers";
 import { canUseProFeatures } from "@/lib/planVisibility";
 import { clearUserApiKey } from "@/lib/byok";
+import { getAiHeaders } from "@/lib/byok-client";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import type { ParsedWorkOrder, ManualProcessResponse } from "@/lib/workOrders/parsedTypes";
@@ -352,16 +353,12 @@ export default function GmailPage() {
       try {
         setIsProcessing(messageId);
         
-        // Set headers for plan
-        // Note: Free plan users should NOT use server routes (Gmail is Pro/Premium feature)
-        // Pro/Premium users use server-side key (no BYOK sent)
+        // Set headers for plan and optional AI
         const headers: HeadersInit = {
           "Content-Type": "application/json",
           "x-plan": plan,
+          ...getAiHeaders(), // Add AI headers if enabled
         };
-        
-        // Free plan: BYOK should NOT be sent to server (client-side only)
-        // Pro/Premium: Server uses env var, no key needed from client
         
         const response = await fetch("/api/gmail/process", {
           method: "POST",

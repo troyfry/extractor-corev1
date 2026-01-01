@@ -1,19 +1,21 @@
 /**
  * AI parsing configuration and feature flags.
  * 
- * To enable AI parsing, install:
- * npm install openai pdf-parse
- * 
- * And set OPENAI_API_KEY in your environment.
+ * AI is now optional and BYOK (Bring Your Own Key).
+ * Keys are provided via request headers (x-ai-enabled and x-openai-key).
+ * No server-side OPENAI_API_KEY is required.
  */
 
 /**
  * Check if AI parsing is enabled.
- * Currently based on the presence of OPENAI_API_KEY.
- * Later we could add per-tenant flags or other configuration.
+ * Now accepts parameters instead of checking environment variables.
+ * 
+ * @param aiEnabled - Whether AI is enabled (from x-ai-enabled header)
+ * @param apiKey - The OpenAI API key (from x-openai-key header)
+ * @returns true if AI is enabled and a valid key is provided
  */
-export function isAiParsingEnabled(): boolean {
-  return !!process.env.OPENAI_API_KEY;
+export function isAiParsingEnabled(aiEnabled?: boolean, apiKey?: string | null): boolean {
+  return aiEnabled === true && !!apiKey && apiKey.trim().length > 0;
 }
 
 /**
