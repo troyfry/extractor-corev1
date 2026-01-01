@@ -1,69 +1,60 @@
 /**
  * Pro Home Page - Server Component Wrapper
  * 
- * Checks onboarding status server-side and redirects if not completed.
- * Uses lightweight cookie check first to avoid Sheets API calls.
+ * Uses universal workspace loader to check workspace status.
+ * Never redirects to onboarding unless workspace is truly missing.
  * 
- * IMPORTANT: When cookie says onboardingCompleted=true, we NEVER call getOnboardingStatus()
- * or read the Users sheet. This prevents quota errors on /pro page refreshes.
+ * Priority:
+ * 1. Cookies (fast, zero API calls)
+ * 2. Users Sheet (source of truth, rehydrates cookies)
+ * 3. Redirect to onboarding only if BOTH are missing
  */
 
 import { redirect } from "next/navigation";
-import { getOnboardingStatus } from "@/lib/onboarding/status";
+import { loadWorkspace } from "@/lib/workspace/loadWorkspace";
 import { cookies } from "next/headers";
+import { NextResponse } from "next/server";
 import ProHomePageClient from "./ProHomePageClient";
 
 // Mark this route as dynamic since it uses cookies()
 export const dynamic = 'force-dynamic';
 
 export default async function ProHomePage() {
-  // STEP 1: Check cookie first (no API calls, no Users sheet reads)
-  // If cookie says completed, return immediately without any Sheets API calls
-  try {
+  // Load workspace (cookie-first, then Users Sheet)
+  const workspace = await loadWorkspace();
+
+  // If workspace loaded from Users Sheet, set cookies for next request
+  if (workspace) {
     const cookieStore = await cookies();
-    const cookieOnboardingCompleted = cookieStore.get("onboardingCompleted")?.value;
+    const workspaceReady = cookieStore.get("workspaceReady")?.value;
     
-    if (cookieOnboardingCompleted === "true") {
-      // Cookie indicates onboarding completed - render pro page immediately
-      // Do NOT call getOnboardingStatus() - this prevents Users sheet reads
-      console.log("[Pro Page] Cookie indicates onboarding completed - rendering without status check");
-      return <ProHomePageClient />;
+    // If workspace was loaded from Sheets, rehydrate cookies
+    if (workspaceReady !== "true") {
+      // This is a server component, so we can't set cookies directly
+      // Cookies will be set by the bootstrap endpoint or on next API call
+      // For now, we'll let the client call bootstrap if needed
     }
-  } catch (error) {
-    // Cookie check failed, continue to status check below
-    console.warn("[Pro Page] Cookie check failed, falling back to status check:", error);
   }
 
-  // STEP 2: Check for degraded status cookie - if set, skip Sheets calls to prevent retry storms
+  // If no workspace found, redirect to onboarding
+  if (!workspace) {
+    console.log("[Pro Page] No workspace found - redirecting to onboarding");
+    redirect("/onboarding");
+  }
+
+  // Check for degraded status cookie (quota error)
   try {
     const cookieStore = await cookies();
     const degraded = cookieStore.get("onboardingStatusDegraded")?.value;
     
     if (degraded === "true") {
-      console.log("[Pro Page] Status degraded - rendering page with error message without calling getOnboardingStatus()");
+      console.log("[Pro Page] Status degraded - rendering with error message");
       return <ProHomePageClient quotaError={true} />;
     }
   } catch (error) {
     // Continue if cookie check fails
   }
 
-  // STEP 3: Only if cookie missing/false and not degraded, check status (may hit Sheets API once, with cache)
-  // This path is only taken when cookie is missing or false and status is not degraded
-  const status = await getOnboardingStatus();
-
-  // If quota error occurred, render page with error message (do NOT redirect - prevents refresh loop)
-  if (status.quotaError) {
-    console.warn("[Pro Page] Quota error detected - rendering page with error message instead of redirecting");
-    return <ProHomePageClient quotaError={true} />;
-  }
-
-  // If user is authenticated but onboarding is not completed, redirect to onboarding
-  // Only redirect if we're confident (not a quota fallback)
-  if (status.isAuthenticated && !status.onboardingCompleted) {
-    redirect("/onboarding");
-  }
-
-  // If user is not authenticated, middleware will handle redirect to sign-in
-  // If onboarding is completed, render the client component
+  // Workspace exists - render pro page
   return <ProHomePageClient />;
 }

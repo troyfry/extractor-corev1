@@ -200,8 +200,8 @@ export default function FmProfilesPage() {
         <div className="min-h-screen bg-gray-900 text-white pt-8">
           <UpgradePrompt
             requiredPlan="PRO"
-            featureName="FM Profiles"
-            description="Configure Facility Management profiles for work order extraction. This feature is available on the Pro plan."
+            featureName="Facility Senders"
+            description="Configure facility management platforms that send work orders. This feature is available on the Pro plan."
           />
         </div>
       </AppShell>
@@ -214,8 +214,8 @@ export default function FmProfilesPage() {
       <div className="min-h-screen bg-gray-900 text-white pt-8">
         <div className="max-w-6xl mx-auto px-4">
           <div className="mb-6">
-            <h1 className="text-2xl font-semibold text-white mb-2">FM Profiles</h1>
-            <p className="text-gray-400">Configure Facility Management profiles for work order extraction. Profiles are saved to your Google Sheet.</p>
+            <h1 className="text-2xl font-semibold text-white mb-2">Facility Senders</h1>
+            <p className="text-gray-400">Configure facility management platforms that send work orders. Profiles are saved to your Google Sheet.</p>
           </div>
 
           {/* Error/Success Messages */}

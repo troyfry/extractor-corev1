@@ -14,12 +14,12 @@ type FileInfo = {
 // Reason copy mapping for human-readable explanations
 const reasonCopy: Record<string, { title: string; body: string }> = {
   TEMPLATE_NOT_CONFIGURED: {
-    title: "Template not configured",
-    body: "This FM template doesn't have a saved crop zone yet. Set the rectangle once and it will work going forward.",
+    title: "Capture zone not configured",
+    body: "This facility sender doesn't have a saved capture zone yet. Set the rectangle once and it will work going forward.",
   },
   INVALID_CROP: {
-    title: "Invalid template crop",
-    body: "The saved crop zone is out of bounds. Redraw the rectangle and save again.",
+    title: "Invalid capture zone",
+    body: "The saved capture zone is out of bounds. Redraw the rectangle and save again.",
   },
   CROP_TOO_SMALL: {
     title: "Crop zone too small",
@@ -27,7 +27,7 @@ const reasonCopy: Record<string, { title: string; body: string }> = {
   },
   PAGE_MISMATCH: {
     title: "Page mismatch",
-    body: "This work order's number is on a different page than the saved template. Update the template page or redraw on the correct page.",
+    body: "This work order's number is on a different page than the saved capture zone. Update the capture zone page or redraw on the correct page.",
   },
   LOW_CONFIDENCE_AFTER_RETRY: {
     title: "Low confidence",

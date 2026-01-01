@@ -128,9 +128,9 @@ export default function OnboardingFmProfilesPage() {
   return (
     <div className="min-h-screen bg-slate-900 text-slate-50 p-8">
       <div className="max-w-4xl mx-auto">
-        <h1 className="text-3xl font-semibold mb-4">FM Profiles</h1>
+        <h1 className="text-3xl font-semibold mb-4">Facility Senders</h1>
         <p className="text-slate-300 mb-8">
-          Set up your Facility Management (FM) profiles for matching work orders. You can add multiple profiles.
+          Set up facility management platforms that send work orders. You can add multiple senders.
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-8">

@@ -343,50 +343,9 @@ export async function completeOnboarding(spreadsheetId?: string): Promise<void> 
     throw new Error("Google Sheets and Drive folder must be configured before completing onboarding.");
   }
 
-  // Check that at least one FM profile exists
-  const { getAllFmProfiles } = await import("@/lib/templates/fmProfilesSheets");
-  const fmProfiles = await getAllFmProfiles({
-    spreadsheetId: targetSpreadsheetId,
-    accessToken: user.googleAccessToken,
-  });
-  
-  // Filter profiles for this user (check userId field if present, or assume all are for this user if userId column doesn't exist)
-  const userFmProfiles = fmProfiles.filter(p => {
-    // If profile has userId property, check it matches
-    // Otherwise, assume it's for this user (legacy profiles without userId)
-    return !(p as { userId?: string }).userId || (p as { userId?: string }).userId === userId;
-  });
-
-  if (userFmProfiles.length === 0) {
-    throw new Error("At least one FM profile must be configured before completing onboarding.");
-  }
-
-  // Check that at least one template crop zone exists
-  const { listTemplatesForUser } = await import("@/lib/templates/templatesSheets");
-  const templates = await listTemplatesForUser(
-    user.googleAccessToken,
-    targetSpreadsheetId,
-    userId
-  );
-
-  if (templates.length === 0) {
-    throw new Error("Before automation can run, set the Work Order Number crop zone for at least one FM template. Please complete the Templates step.");
-  }
-
-  // Validate templates are not default (0/0/1/1)
-  const validTemplates = templates.filter(t => {
-    const TOLERANCE = 0.01;
-    return !(
-      Math.abs(t.xPct) < TOLERANCE &&
-      Math.abs(t.yPct) < TOLERANCE &&
-      Math.abs(t.wPct - 1) < TOLERANCE &&
-      Math.abs(t.hPct - 1) < TOLERANCE
-    );
-  });
-
-  if (validTemplates.length === 0) {
-    throw new Error("At least one template must have a valid crop zone (not the default full-page). Please configure template crop zones.");
-  }
+  // NOTE: FM Profiles and Templates are now settings, not onboarding requirements
+  // Onboarding is complete once workspace (folder + spreadsheet) is created
+  // Users can configure FM Profiles and Templates in settings later
 
   await setOnboardingCompleted(user.googleAccessToken, targetSpreadsheetId, userId);
 }

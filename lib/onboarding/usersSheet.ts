@@ -124,30 +124,52 @@ async function retryWithBackoff<T>(
 
 /**
  * Required columns for Users sheet.
+ * Extended to include workspace configuration (source of truth).
  */
 const USERS_SHEET_COLUMNS = [
   "userId",
   "email",
   "onboardingCompleted",
   "sheetId",
-  "mainSpreadsheetId", // The spreadsheet where this Users sheet is stored
-  "driveFolderId",
+  "mainSpreadsheetId", // The spreadsheet where this Users sheet is stored (legacy)
+  "spreadsheetId", // Workspace spreadsheet ID (new, preferred)
+  "driveFolderId", // Workspace drive folder ID (source of truth)
+  "fmProfilesJson", // JSON string array of normalized fmKeys
+  "templatesConfigured", // "TRUE" or "FALSE"
+  "onboardingCompletedAt", // ISO timestamp
+  "mainSheet", // Usually "Sheet1" or "Work_Orders" (legacy)
+  "workOrdersSheet", // Usually "Work_Orders" (legacy)
+  "templatesSheet", // Usually "Templates" (legacy)
+  "signedFolderId", // Signed PDFs folder (legacy)
+  "snippetsFolderId", // Snippets folder (legacy)
   "openaiKeyEncrypted",
   "createdAt",
+  "updatedAt",
 ] as const;
 
 /**
  * User row type matching the Users sheet structure.
+ * Extended to include workspace configuration.
  */
 export type UserRow = {
   userId: string;
   email: string;
   onboardingCompleted: "TRUE" | "FALSE" | "";
-  sheetId: string | "";
-  mainSpreadsheetId: string | ""; // The spreadsheet where this Users sheet is stored
-  driveFolderId: string | "";
+  sheetId: string | ""; // Legacy
+  mainSpreadsheetId: string | ""; // Legacy - The spreadsheet where this Users sheet is stored
+  spreadsheetId: string | ""; // Workspace spreadsheet ID (new, preferred)
+  driveFolderId: string | ""; // Workspace drive folder ID (source of truth)
+  fmProfilesJson: string | ""; // JSON string array of normalized fmKeys
+  templatesConfigured: "TRUE" | "FALSE" | ""; // Whether templates are configured
+  onboardingCompletedAt: string | ""; // ISO timestamp
+  mainSheet: string | ""; // Usually "Sheet1" or "Work_Orders" (legacy)
+  workOrdersSheet: string | ""; // Usually "Work_Orders" (legacy)
+  templatesSheet: string | ""; // Usually "Templates" (legacy)
+  signedFolderId: string | ""; // Signed PDFs folder (legacy)
+  snippetsFolderId: string | ""; // Snippets folder (legacy)
   openaiKeyEncrypted: string | "";
   createdAt: string | "";
+  updatedAt: string | "";
 };
 
 /**
@@ -737,7 +759,7 @@ export async function upsertUserRow(
 }
 
 /**
- * Set onboardingCompleted to "TRUE" for a user.
+ * Set onboardingCompleted to "TRUE" for a user and update workspace fields.
  */
 export async function setOnboardingCompleted(
   accessToken: string,
@@ -749,8 +771,17 @@ export async function setOnboardingCompleted(
     throw new Error(`User ${userId} not found in Users sheet`);
   }
 
+  const now = new Date().toISOString();
   await upsertUserRow(accessToken, spreadsheetId, {
     ...userRow,
+    // Ensure workspace fields are set
+    spreadsheetId: userRow.spreadsheetId || spreadsheetId,
+    mainSheet: userRow.mainSheet || "Sheet1",
+    workOrdersSheet: userRow.workOrdersSheet || "Work_Orders",
+    templatesSheet: userRow.templatesSheet || "Templates",
+    signedFolderId: userRow.signedFolderId || userRow.driveFolderId || "",
+    snippetsFolderId: userRow.snippetsFolderId || userRow.driveFolderId || "",
+    updatedAt: now,
     onboardingCompleted: "TRUE",
   }, { allowEnsure: true }); // Allow ensure in onboarding completion
   
@@ -798,9 +829,19 @@ async function appendUserRow(
     onboardingCompleted: user.onboardingCompleted || "FALSE",
     sheetId: user.sheetId || "",
     mainSpreadsheetId: user.mainSpreadsheetId || "",
+    spreadsheetId: user.spreadsheetId || "",
     driveFolderId: user.driveFolderId || "",
+    fmProfilesJson: user.fmProfilesJson || "",
+    templatesConfigured: user.templatesConfigured || "",
+    onboardingCompletedAt: user.onboardingCompletedAt || "",
+    mainSheet: user.mainSheet || "",
+    workOrdersSheet: user.workOrdersSheet || "",
+    templatesSheet: user.templatesSheet || "",
+    signedFolderId: user.signedFolderId || "",
+    snippetsFolderId: user.snippetsFolderId || "",
     openaiKeyEncrypted: user.openaiKeyEncrypted || "",
     createdAt: user.createdAt || now,
+    updatedAt: user.updatedAt || now,
   };
 
   for (const col of USERS_SHEET_COLUMNS) {
@@ -883,9 +924,22 @@ async function updateUserRow(
   if (user.onboardingCompleted !== undefined) userData.onboardingCompleted = user.onboardingCompleted;
   if (user.sheetId !== undefined) userData.sheetId = user.sheetId;
   if (user.mainSpreadsheetId !== undefined) userData.mainSpreadsheetId = user.mainSpreadsheetId;
+  if (user.spreadsheetId !== undefined) userData.spreadsheetId = user.spreadsheetId;
   if (user.driveFolderId !== undefined) userData.driveFolderId = user.driveFolderId;
+  if (user.fmProfilesJson !== undefined) userData.fmProfilesJson = user.fmProfilesJson;
+  if (user.templatesConfigured !== undefined) userData.templatesConfigured = user.templatesConfigured;
+  if (user.onboardingCompletedAt !== undefined) userData.onboardingCompletedAt = user.onboardingCompletedAt;
+  if (user.mainSheet !== undefined) userData.mainSheet = user.mainSheet;
+  if (user.workOrdersSheet !== undefined) userData.workOrdersSheet = user.workOrdersSheet;
+  if (user.templatesSheet !== undefined) userData.templatesSheet = user.templatesSheet;
+  if (user.signedFolderId !== undefined) userData.signedFolderId = user.signedFolderId;
+  if (user.snippetsFolderId !== undefined) userData.snippetsFolderId = user.snippetsFolderId;
   if (user.openaiKeyEncrypted !== undefined) userData.openaiKeyEncrypted = user.openaiKeyEncrypted;
   if (user.createdAt !== undefined) userData.createdAt = user.createdAt;
+  // Always update updatedAt if any field is being updated
+  if (Object.keys(userData).length > 0 && !userData.updatedAt) {
+    userData.updatedAt = new Date().toISOString();
+  }
 
   for (const col of USERS_SHEET_COLUMNS) {
     const index = headersLower.indexOf(col.toLowerCase());

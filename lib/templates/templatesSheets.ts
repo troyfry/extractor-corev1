@@ -311,7 +311,19 @@ export async function getTemplateByFmKey(
   const templates = await listTemplatesForUser(accessToken, spreadsheetId, userId);
   // Use normalizeFmKey for consistent normalization (handles spaces, special chars, etc.)
   const normalizedFmKey = normalizeFmKey(fmKey);
-  const found = templates.find(t => normalizeFmKey(t.fmKey) === normalizedFmKey) || null;
+  const found = templates.find(t => {
+    const templateNormalized = normalizeFmKey(t.fmKey);
+    // Guardrail: fmKey normalized mismatch
+    if (templateNormalized !== normalizedFmKey && normalizeFmKey(t.fmKey) !== normalizeFmKey(normalizedFmKey)) {
+      console.warn("[Templates] Guardrail: fmKey normalized mismatch", {
+        requestedFmKey: fmKey,
+        requestedNormalized: normalizedFmKey,
+        templateFmKey: t.fmKey,
+        templateNormalized,
+      });
+    }
+    return templateNormalized === normalizedFmKey;
+  }) || null;
   
   if (!found) {
     console.log(`[Templates] getTemplateByFmKey: Template not found`, {

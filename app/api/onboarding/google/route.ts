@@ -261,20 +261,27 @@ export async function POST(request: Request) {
       createdAt,
     });
 
-    // Step 6: Store in Users sheet and cookies
+    // Step 6: Store workspace in Users sheet (source of truth) and cookies
     // mainSpreadsheetId = workspace spreadsheet ID (where Users sheet is stored)
-    // sheetId = work orders spreadsheet ID (same as workspace spreadsheet for now)
-    // Note: If later you split "Users sheet" into a central admin sheet, update mainSpreadsheetId here
+    // spreadsheetId = workspace spreadsheet ID (new field, preferred)
     const mainSpreadsheetId = spreadsheetId;
+    const now = new Date().toISOString();
     await upsertUserRow(user.googleAccessToken, mainSpreadsheetId, {
       userId: user.userId,
       email: user.email || "",
-      sheetId: spreadsheetId, // Work orders spreadsheet (same as workspace for now)
-      mainSpreadsheetId: mainSpreadsheetId, // Workspace spreadsheet (where Users sheet is stored)
-      driveFolderId: folderId,
-      onboardingCompleted: "FALSE",
+      sheetId: spreadsheetId, // Legacy - work orders spreadsheet
+      mainSpreadsheetId: mainSpreadsheetId, // Legacy - workspace spreadsheet (where Users sheet is stored)
+      spreadsheetId: spreadsheetId, // New - workspace spreadsheet ID
+      mainSheet: "Sheet1", // Default main sheet name
+      workOrdersSheet: "Work_Orders", // Work orders sheet name
+      templatesSheet: "Templates", // Templates sheet name
+      driveFolderId: folderId, // Legacy - signed folder
+      signedFolderId: folderId, // Signed PDFs folder
+      snippetsFolderId: folderId, // Snippets folder (same as signed for now)
+      onboardingCompleted: "FALSE", // Will be set to TRUE when onboarding completes
       openaiKeyEncrypted: "",
-      createdAt,
+      createdAt: now,
+      updatedAt: now,
     }, { allowEnsure: true });
 
     // Store spreadsheet ID in cookie for session persistence
@@ -307,8 +314,31 @@ export async function POST(request: Request) {
       maxAge: 30 * 24 * 60 * 60, // 30 days
     });
 
+    // Mark onboarding as complete (workspace creation is the only required step)
+    // FM Profiles and Templates are settings, not onboarding requirements
+    await upsertUserRow(user.googleAccessToken, mainSpreadsheetId, {
+      userId: user.userId,
+      email: user.email || "",
+      spreadsheetId: spreadsheetId,
+      mainSheet: "Sheet1",
+      workOrdersSheet: "Work_Orders",
+      templatesSheet: "Templates",
+      signedFolderId: folderId,
+      snippetsFolderId: folderId,
+      onboardingCompleted: "TRUE",
+      updatedAt: createdAt,
+    }, { allowEnsure: true });
+
+    // Set onboarding completed cookie
+    response.cookies.set("onboardingCompleted", "true", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 30 * 24 * 60 * 60, // 30 days
+    });
+
     const apiCalls = getApiCallCount();
-    console.log(`[Setup Workspace] ✅ Complete. Sheets API calls: ${apiCalls}`);
+    console.log(`[Setup Workspace] ✅ Complete. Onboarding marked complete. Sheets API calls: ${apiCalls}`);
     return response;
   } catch (error) {
     console.error("Error setting up workspace:", error);

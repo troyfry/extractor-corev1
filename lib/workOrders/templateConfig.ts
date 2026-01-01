@@ -237,6 +237,20 @@ export async function getTemplateConfigForFmKey(
                    template.wPct !== undefined && template.hPct !== undefined),
       });
       
+      // Guardrail: template exists but page dimensions mismatch (warn, don't auto-correct)
+      if (template.pageWidthPt && template.pageHeightPt) {
+        // Template has dimensions, but we're using pct fallback
+        // This is expected during transition, but log for visibility
+        console.warn("[Template Config] Guardrail: Template has page dimensions but using pct fallback", {
+          normalizedFmKey,
+          templateId: template.templateId,
+          templateDimensions: {
+            pageWidthPt: template.pageWidthPt,
+            pageHeightPt: template.pageHeightPt,
+          },
+        });
+      }
+      
       // Validate template is not default (0/0/1/1)
       const TOLERANCE = 0.01;
       const isDefault = Math.abs(template.xPct || 0) < TOLERANCE &&

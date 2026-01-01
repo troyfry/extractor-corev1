@@ -25,8 +25,8 @@ const TILES: Tile[] = [
   },
   {
     href: "/pro/signed",
-    title: "Process Signed PDFs",
-    description: "Match signed work orders from the field to your existing jobs.",
+    title: "Verify & Prepare for Invoice",
+    description: "Confirm signatures, resolve issues, and prepare clean invoice-ready data.",
     icon: "✍️",
   },
   {
@@ -38,7 +38,7 @@ const TILES: Tile[] = [
   {
     href: "/pro/settings",
     title: "Settings & Profiles",
-    description: "Manage FM profiles, templates, and advanced setup.",
+    description: "Manage facility senders, capture zones, and advanced setup.",
     icon: "⚙️",
   },
 ];
@@ -67,66 +67,88 @@ export default function ProHomePageClient({ quotaError }: Props = {}) {
   const [isLoadingStatus, setIsLoadingStatus] = useState(true);
   const [hasRetried, setHasRetried] = useState(false);
 
-  // Check cookies for basic status (no API calls)
+  // Check status via API endpoint (more reliable than cookies)
   useEffect(() => {
-    // Check cookies for onboarding status
-    const onboardingCompleted = document.cookie
-      .split("; ")
-      .find((row) => row.startsWith("onboardingCompleted="))
-      ?.split("=")[1];
+    setIsLoadingStatus(true);
     
-    const workspaceReady = document.cookie
-      .split("; ")
-      .find((row) => row.startsWith("workspaceReady="))
-      ?.split("=")[1];
+    // Fetch onboarding status from API
+    fetch("/api/onboarding/status")
+      .then((res) => {
+        if (res.ok) {
+          return res.json();
+        }
+        return { onboardingCompleted: false, isAuthenticated: false };
+      })
+      .then((data) => {
+        // Google connected if user is authenticated
+        const googleConnected = data.isAuthenticated === true;
+        // Sheet ready if onboarding is completed
+        const sheetReady = data.onboardingCompleted === true;
 
-    // Google connected if we have any cookies (user is authenticated)
-    const googleConnected = !!onboardingCompleted || !!workspaceReady;
-    const sheetReady = onboardingCompleted === "true";
+        setStatus((prev) => ({
+          ...prev,
+          googleConnected,
+          sheetReady,
+        }));
 
-    setStatus((prev) => ({
-      ...prev,
-      googleConnected,
-      sheetReady,
-    }));
+        // Only fetch counts if sheet is ready (to avoid unnecessary API calls)
+        if (sheetReady && !quotaError) {
+          // Fetch verification count (lightweight, only if sheet ready)
+          fetch("/api/signed/needs-review")
+            .then((res) => {
+              if (res.ok) {
+                return res.json();
+              }
+              return { items: [] };
+            })
+            .then((data) => {
+              setStatus((prev) => ({
+                ...prev,
+                verificationCount: data.items?.length ?? 0,
+              }));
+            })
+            .catch(() => {
+              // Silently fail - show link instead
+              setStatus((prev) => ({
+                ...prev,
+                verificationCount: null,
+              }));
+            })
+            .finally(() => {
+              setIsLoadingStatus(false);
+            });
 
-    // Only fetch counts if sheet is ready (to avoid unnecessary API calls)
-    if (sheetReady && !quotaError) {
-      setIsLoadingStatus(true);
-      
-      // Fetch verification count (lightweight, only if sheet ready)
-      fetch("/api/signed/needs-review")
-        .then((res) => {
-          if (res.ok) {
-            return res.json();
-          }
-          return { items: [] };
-        })
-        .then((data) => {
+          // Templates count - we don't have a lightweight endpoint, so show "Open to confirm"
           setStatus((prev) => ({
             ...prev,
-            verificationCount: data.items?.length ?? 0,
+            templatesCount: null,
           }));
-        })
-        .catch(() => {
-          // Silently fail - show link instead
-          setStatus((prev) => ({
-            ...prev,
-            verificationCount: null,
-          }));
-        })
-        .finally(() => {
+        } else {
           setIsLoadingStatus(false);
-        });
+        }
+      })
+      .catch(() => {
+        // Fallback to cookie check if API fails
+        const onboardingCompleted = document.cookie
+          .split("; ")
+          .find((row) => row.startsWith("onboardingCompleted="))
+          ?.split("=")[1];
+        
+        const workspaceReady = document.cookie
+          .split("; ")
+          .find((row) => row.startsWith("workspaceReady="))
+          ?.split("=")[1];
 
-      // Templates count - we don't have a lightweight endpoint, so show "Open to confirm"
-      setStatus((prev) => ({
-        ...prev,
-        templatesCount: null,
-      }));
-    } else {
-      setIsLoadingStatus(false);
-    }
+        const googleConnected = !!onboardingCompleted || !!workspaceReady;
+        const sheetReady = onboardingCompleted === "true";
+
+        setStatus((prev) => ({
+          ...prev,
+          googleConnected,
+          sheetReady,
+        }));
+        setIsLoadingStatus(false);
+      });
   }, [quotaError]);
 
   const handleRetry = () => {
@@ -216,7 +238,7 @@ export default function ProHomePageClient({ quotaError }: Props = {}) {
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full bg-gray-500" />
                     <span className="text-sm text-slate-300">
-                      Templates: {status.templatesCount !== null ? `${status.templatesCount} configured` : (
+                      Capture Zones: {status.templatesCount !== null ? `${status.templatesCount} configured` : (
                         <Link href="/pro/template-zones" className="text-blue-400 hover:text-blue-300 underline">
                           Open to confirm
                         </Link>

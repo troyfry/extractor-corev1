@@ -36,6 +36,25 @@ function getToneBorderClass(tone: string | null | undefined): string {
   }
 }
 
+// Helper function to convert Google Drive URLs to viewable thumbnail URLs
+function getImageUrl(url: string | null): string | null {
+  if (!url) return null;
+  // If it's already a data URL, use it as-is
+  if (url.startsWith("data:image")) return url;
+  // If it's a Google Drive URL, convert to thumbnail format
+  if (url.includes("drive.google.com")) {
+    const fileIdMatch = url.match(/\/d\/([a-zA-Z0-9_-]+)/) ||
+      url.match(/id=([a-zA-Z0-9_-]+)/) ||
+      url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+    if (fileIdMatch) {
+      // Use larger thumbnail size (w800) for readability of 12-14pt font
+      return `https://drive.google.com/thumbnail?id=${fileIdMatch[1]}&sz=w800`;
+    }
+  }
+  // Otherwise, use the URL as-is (might be a direct image URL)
+  return url;
+}
+
 export default function NeedsReviewPage() {
   const [items, setItems] = useState<NeedsReviewItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -52,6 +71,10 @@ export default function NeedsReviewPage() {
   const [showOnlyUnresolved, setShowOnlyUnresolved] = useState(true);
   const [showFixModal, setShowFixModal] = useState(false);
   const [selectedFixItem, setSelectedFixItem] = useState<{ item: NeedsReviewItem; ux: ReturnType<typeof getNeedsReviewUx> } | null>(null);
+  const [isClearing, setIsClearing] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [clearError, setClearError] = useState<string | null>(null);
+  const [clearSuccess, setClearSuccess] = useState(false);
 
   useEffect(() => {
     loadItems();
@@ -71,6 +94,39 @@ export default function NeedsReviewPage() {
       setError(err instanceof Error ? err.message : "Failed to load items");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleClearVerification() {
+    setIsClearing(true);
+    setClearError(null);
+    setClearSuccess(false);
+
+    try {
+      const response = await fetch("/api/signed/verification/clear", {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to clear verification items");
+      }
+
+      const data = await response.json();
+      setClearSuccess(true);
+      setShowClearConfirm(false);
+      
+      // Reload items to refresh the list
+      await loadItems();
+      
+      // Clear success message after 3 seconds
+      setTimeout(() => {
+        setClearSuccess(false);
+      }, 3000);
+    } catch (err) {
+      setClearError(err instanceof Error ? err.message : "An error occurred");
+    } finally {
+      setIsClearing(false);
     }
   }
 
@@ -230,6 +286,59 @@ export default function NeedsReviewPage() {
               </div>
             </div>
 
+            {/* Clear Verification Button */}
+            <div className="mb-4 p-4 bg-red-900/20 rounded border border-red-700/50 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-red-200 mb-1">
+                  Clear Resolved Items
+                </h3>
+                <p className="text-xs text-red-200/70">
+                  Remove all resolved items from the verification queue. This does not delete Drive files.
+                </p>
+              </div>
+              {!showClearConfirm ? (
+                <button
+                  onClick={() => setShowClearConfirm(true)}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded font-medium transition-colors text-sm"
+                >
+                  Clear Verification
+                </button>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-red-200">Are you sure?</span>
+                  <button
+                    onClick={handleClearVerification}
+                    disabled={isClearing}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded font-medium transition-colors text-sm"
+                  >
+                    {isClearing ? "Clearing..." : "Confirm Clear"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowClearConfirm(false);
+                      setClearError(null);
+                    }}
+                    disabled={isClearing}
+                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white rounded font-medium transition-colors text-sm"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {clearError && (
+              <div className="mb-4 p-3 bg-red-900/30 border border-red-700 rounded text-red-200 text-sm">
+                {clearError}
+              </div>
+            )}
+
+            {clearSuccess && (
+              <div className="mb-4 p-3 bg-green-900/30 border border-green-700 rounded text-green-200 text-sm">
+                ✓ Successfully cleared resolved items
+              </div>
+            )}
+
             {/* Filtered items */}
             {(() => {
               const filteredItems = items.filter(i => {
@@ -308,7 +417,7 @@ export default function NeedsReviewPage() {
                         </div>
                       </td>
                       <td className="p-3">
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 items-center">
                           {item.signed_pdf_url ? (
                             <a
                               href={item.signed_pdf_url}
@@ -323,14 +432,45 @@ export default function NeedsReviewPage() {
                           )}
 
                           {item.preview_image_url ? (
-                            <a
-                              href={item.preview_image_url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded text-sm transition-colors"
-                            >
-                              Snippet
-                            </a>
+                            <div className="flex items-center gap-2">
+                              {(() => {
+                                const imageUrl = getImageUrl(item.preview_image_url);
+                                const originalUrl = item.preview_image_url;
+                                return imageUrl ? (
+                                  <a
+                                    href={originalUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="block"
+                                    title="Click to view full size"
+                                  >
+                                    <img
+                                      src={imageUrl}
+                                      alt="Snippet preview"
+                                      className="max-w-[200px] max-h-[150px] w-auto h-auto object-contain border border-slate-600 rounded bg-slate-900 hover:border-slate-500 transition-colors cursor-pointer"
+                                      onError={(e) => {
+                                        // If thumbnail fails, try original URL
+                                        if (e.currentTarget.src !== originalUrl && originalUrl) {
+                                          e.currentTarget.src = originalUrl;
+                                        } else {
+                                          // Hide broken image and show fallback
+                                          e.currentTarget.style.display = "none";
+                                          const parent = e.currentTarget.parentElement;
+                                          if (parent) {
+                                            const fallback = document.createElement("span");
+                                            fallback.className = "text-xs text-gray-500";
+                                            fallback.textContent = "Image unavailable";
+                                            parent.appendChild(fallback);
+                                          }
+                                        }
+                                      }}
+                                    />
+                                  </a>
+                                ) : (
+                                  <span className="text-xs text-gray-500">Invalid URL</span>
+                                );
+                              })()}
+                            </div>
                           ) : (
                             <span className="text-xs text-gray-500">No snippet</span>
                           )}

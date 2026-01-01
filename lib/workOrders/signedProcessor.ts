@@ -1512,6 +1512,17 @@ export async function processSignedPdf(
     const normalizedRequestFmKey = normalizeFmKey(normalizedFmKey);
     const normalizedRowFmKey = matchedRowFmKey ? normalizeFmKey(matchedRowFmKey) : null;
     
+    // Guardrail: fmKey normalized mismatch
+    if (matchedRowFmKey && normalizedRequestFmKey !== normalizedRowFmKey) {
+      console.warn("[Signed Processor] Guardrail: fmKey normalized mismatch", {
+        requestId,
+        requestedFmKey: normalizedFmKey,
+        requestedNormalized: normalizedRequestFmKey,
+        rowFmKey: matchedRowFmKey,
+        rowNormalized: normalizedRowFmKey,
+      });
+    }
+    
     const requestFmKeyForComparison = normalizedRequestFmKey.replace(/_/g, "");
     const rowFmKeyForComparison = normalizedRowFmKey ? normalizedRowFmKey.replace(/_/g, "") : null;
     

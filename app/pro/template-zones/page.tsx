@@ -258,11 +258,11 @@ function TemplateZonesPageContent() {
           setSelectedFmKey(profiles[0].fmKey);
         }
       } else {
-        const errorData = await response.json().catch(() => ({ error: "Failed to load FM profiles" }));
-        setError(errorData.error || "Failed to load FM profiles");
+        const errorData = await response.json().catch(() => ({ error: "Failed to load facility senders" }));
+        setError(errorData.error || "Failed to load facility senders");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load FM profiles");
+      setError(err instanceof Error ? err.message : "Failed to load facility senders");
     } finally {
       setIsLoadingProfiles(false);
     }
@@ -282,7 +282,7 @@ function TemplateZonesPageContent() {
 
     // Check if FM key already exists
     if (fmProfiles.some(p => p.fmKey === normalizedKey)) {
-      setError(`FM profile "${normalizedKey}" already exists`);
+      setError(`Facility sender "${normalizedKey}" already exists`);
       return;
     }
 
@@ -310,10 +310,10 @@ function TemplateZonesPageContent() {
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || "Failed to create FM profile");
+        throw new Error(errorData.error || "Failed to create facility sender");
       }
 
-      setSuccess(`FM profile "${normalizedKey}" created successfully!`);
+      setSuccess(`Facility sender "${normalizedKey}" created successfully!`);
       setNewFmKey("");
       setNewFmLabel("");
       setNewFmDomain("");
@@ -323,7 +323,7 @@ function TemplateZonesPageContent() {
       await loadFmProfiles();
       setSelectedFmKey(normalizedKey);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create FM profile");
+      setError(err instanceof Error ? err.message : "Failed to create facility sender");
     } finally {
       setIsCreatingFm(false);
     }
@@ -781,7 +781,7 @@ function TemplateZonesPageContent() {
     if (isSaving) return;
     
     if (!selectedFmKey) {
-      setError("Please select an FM profile");
+      setError("Please select a facility sender");
       return;
     }
 
@@ -900,7 +900,7 @@ function TemplateZonesPageContent() {
 
   function handleApplyCalibratedCoords() {
     if (!selectedFmKey || !imageWidth || !imageHeight) {
-      setError("Please select an FM profile and upload a PDF first");
+      setError("Please select a facility sender and upload a PDF first");
       return;
     }
 
@@ -930,9 +930,9 @@ function TemplateZonesPageContent() {
       <MainNavigation />
       <div className="min-h-screen bg-slate-900 text-slate-50 pt-8 p-8">
         <div className="max-w-6xl mx-auto">
-          <h1 className="text-3xl font-semibold mb-4">Template Crop Zones</h1>
+          <h1 className="text-3xl font-semibold mb-4">Capture Zones</h1>
           <p className="text-slate-300 mb-8">
-            Upload a sample work order PDF and define where the Work Order Number is located for each FM template.
+            Upload a sample work order PDF and define where the Work Order Number is located for each facility sender.
             This allows the OCR system to extract work order numbers accurately.
           </p>
 
@@ -941,7 +941,7 @@ function TemplateZonesPageContent() {
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label htmlFor="fmKey" className="block text-sm font-medium">
-                  FM Profile <span className="text-red-400">*</span>
+                  Facility Sender <span className="text-red-400">*</span>
                 </label>
                 <button
                   onClick={() => {
@@ -951,14 +951,14 @@ function TemplateZonesPageContent() {
                   }}
                   className="px-3 py-1.5 text-sm bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors"
                 >
-                  {showAddFmForm ? "Cancel" : "+ Add New FM"}
+                  {showAddFmForm ? "Cancel" : "+ Add New Sender"}
                 </button>
               </div>
               
               {/* Add New FM Form */}
               {showAddFmForm && (
                 <div className="mb-4 p-4 bg-slate-800 border border-slate-700 rounded-lg">
-                  <h3 className="text-sm font-semibold text-slate-200 mb-3">Create New FM Profile</h3>
+                  <h3 className="text-sm font-semibold text-slate-200 mb-3">Create New Facility Sender</h3>
                   <div className="space-y-3">
                     <div>
                       <label htmlFor="newFmKey" className="block text-xs text-slate-400 mb-1">
@@ -1016,17 +1016,17 @@ function TemplateZonesPageContent() {
                       disabled={isCreatingFm || !newFmKey.trim()}
                       className="w-full px-4 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
                     >
-                      {isCreatingFm ? "Creating..." : "Create FM Profile"}
+                      {isCreatingFm ? "Creating..." : "Create Facility Sender"}
                     </button>
                   </div>
                 </div>
               )}
 
               {isLoadingProfiles ? (
-                <div className="text-slate-400">Loading FM profiles...</div>
+                <div className="text-slate-400">Loading facility senders...</div>
               ) : fmProfiles.length === 0 ? (
                 <div className="text-yellow-400">
-                  No FM profiles found. Use the "Add New FM" button above to create one.
+                  No facility senders found. Use the "Add New Sender" button above to create one.
                 </div>
               ) : (
                 <select
@@ -1330,7 +1330,7 @@ function TemplateZonesPageContent() {
                 }
                 className="px-6 py-3 bg-sky-600 hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
               >
-                {isSaving ? "Saving..." : "Save Template Zone"}
+                {isSaving ? "Saving..." : "Save Capture Zone"}
               </button>
               {cropZone && (
                 <button
@@ -1352,9 +1352,9 @@ function TemplateZonesPageContent() {
             </div>
             {savedTemplate && (
               <div className="p-4 bg-green-900/20 border border-green-700 rounded-lg text-green-200">
-                <p className="font-medium mb-1">Template Saved</p>
+                <p className="font-medium mb-1">Capture Zone Saved</p>
                 <p className="text-sm">
-                  Template for {savedTemplate.fmKey} is configured. You can edit it above or create templates for other FM profiles.
+                  Capture zone for {savedTemplate.fmKey} is configured. You can edit it above or create zones for other facility senders.
                 </p>
               </div>
             )}

@@ -5,14 +5,18 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/layout/AppShell";
 import MainNavigation from "@/components/layout/MainNavigation";
+import BYOKKeyInput from "@/components/plan/BYOKKeyInput";
 
 export default function ProSettingsPage() {
   const router = useRouter();
   const [isResetting, setIsResetting] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetConfirmText, setResetConfirmText] = useState("");
 
-  const handleResetOnboarding = async () => {
-    if (!confirm("Are you sure you want to reset onboarding? This will clear all onboarding progress and redirect you to the setup wizard.")) {
+  const handleResetWorkspace = async () => {
+    if (resetConfirmText !== "RESET") {
+      setResetError("Please type RESET to confirm");
       return;
     }
 
@@ -20,20 +24,22 @@ export default function ProSettingsPage() {
     setResetError(null);
 
     try {
-      const response = await fetch("/api/onboarding/reset", {
+      const response = await fetch("/api/workspace/reset", {
         method: "POST",
       });
 
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.error || "Failed to reset onboarding");
+        throw new Error(data.error || "Failed to reset workspace");
       }
 
-      // Redirect to onboarding start
-      router.push("/onboarding");
+      // Redirect to onboarding with message
+      router.push("/onboarding?reset=true");
     } catch (err) {
       setResetError(err instanceof Error ? err.message : "An error occurred");
       setIsResetting(false);
+      setShowResetConfirm(false);
+      setResetConfirmText("");
     }
   };
 
@@ -57,23 +63,34 @@ export default function ProSettingsPage() {
             </div>
 
             <div className="space-y-6">
-              {/* Facility Management Profiles */}
+              {/* OpenAI API Key Configuration */}
               <section className="rounded-xl border border-slate-700 bg-slate-800 p-6">
                 <h2 className="text-xl font-semibold text-slate-50 mb-4">
-                  Facility Management Profiles
+                  AI Parsing (Optional)
+                </h2>
+                <p className="text-sm text-slate-400 mb-4">
+                  Configure your OpenAI API key to enable AI-powered work order extraction. This is optional - you can use rule-based parsing without AI.
+                </p>
+                <BYOKKeyInput />
+              </section>
+
+              {/* Facility Senders */}
+              <section className="rounded-xl border border-slate-700 bg-slate-800 p-6">
+                <h2 className="text-xl font-semibold text-slate-50 mb-4">
+                  Facility Senders
                 </h2>
                 <p className="text-sm text-slate-400">
-                  Manage your FM profiles for matching work orders. (Coming soon)
+                  Manage facility management platforms that send work orders. (Coming soon)
                 </p>
               </section>
 
-              {/* Templates & OCR Zones */}
+              {/* Capture Zones */}
               <section className="rounded-xl border border-slate-700 bg-slate-800 p-6">
                 <h2 className="text-xl font-semibold text-slate-50 mb-4">
-                  Templates & OCR Zones
+                  Capture Zones
                 </h2>
                 <p className="text-sm text-slate-400">
-                  Configure OCR zones and templates for different work order formats. (Coming soon)
+                  Configure capture zones for different work order formats. (Coming soon)
                 </p>
               </section>
 
@@ -87,26 +104,69 @@ export default function ProSettingsPage() {
                 </p>
               </section>
 
-              {/* Reset Onboarding */}
+              {/* Danger Zone: Reset Workspace */}
               <section className="rounded-xl border border-red-700 bg-red-900/20 p-6">
                 <h2 className="text-xl font-semibold text-red-200 mb-2">
-                  Reset Onboarding
+                  Danger Zone
                 </h2>
+                <h3 className="text-lg font-semibold text-red-200/90 mb-2">
+                  Reset Workspace
+                </h3>
                 <p className="text-sm text-red-200/80 mb-4">
-                  Clear all onboarding progress and start the setup wizard from the beginning. This will clear your spreadsheet and folder selections, but your data in Google Sheets will remain unchanged.
+                  This will remove all FM profiles, capture zones, and tracking configuration.
+                  <br />
+                  <strong>Uploaded files are NOT deleted.</strong>
                 </p>
-                {resetError && (
-                  <div className="mb-4 p-3 bg-red-900/30 border border-red-700 rounded text-red-200 text-sm">
-                    {resetError}
+                
+                {!showResetConfirm ? (
+                  <button
+                    onClick={() => setShowResetConfirm(true)}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded font-medium transition-colors"
+                  >
+                    Reset Workspace (Deletes all setup and templates)
+                  </button>
+                ) : (
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-red-200/90 mb-2">
+                        Type <strong>RESET</strong> to confirm:
+                      </label>
+                      <input
+                        type="text"
+                        value={resetConfirmText}
+                        onChange={(e) => setResetConfirmText(e.target.value)}
+                        placeholder="RESET"
+                        className="w-full px-4 py-2 bg-red-900/30 border border-red-700 rounded text-white placeholder-red-400 focus:outline-none focus:ring-2 focus:ring-red-500"
+                        disabled={isResetting}
+                      />
+                    </div>
+                    {resetError && (
+                      <div className="p-3 bg-red-900/30 border border-red-700 rounded text-red-200 text-sm">
+                        {resetError}
+                      </div>
+                    )}
+                    <div className="flex gap-3">
+                      <button
+                        onClick={handleResetWorkspace}
+                        disabled={isResetting || resetConfirmText !== "RESET"}
+                        className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded font-medium transition-colors"
+                      >
+                        {isResetting ? "Resetting..." : "Confirm Reset"}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowResetConfirm(false);
+                          setResetConfirmText("");
+                          setResetError(null);
+                        }}
+                        disabled={isResetting}
+                        className="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white rounded font-medium transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
                   </div>
                 )}
-                <button
-                  onClick={handleResetOnboarding}
-                  disabled={isResetting}
-                  className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded font-medium transition-colors"
-                >
-                  {isResetting ? "Resetting..." : "Reset Onboarding"}
-                </button>
               </section>
             </div>
           </div>
