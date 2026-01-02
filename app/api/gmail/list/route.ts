@@ -12,6 +12,8 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { listWorkOrderEmails, createGmailClient } from "@/lib/google/gmail";
+import { loadWorkspace } from "@/lib/workspace/loadWorkspace";
+import { isForbiddenLabel } from "@/lib/google/gmailValidation";
 
 export const runtime = "nodejs";
 
@@ -57,18 +59,36 @@ export async function GET(request: Request) {
 
     // Get optional query parameters
     const { searchParams } = new URL(request.url);
-    const labelName = searchParams.get("label") || undefined;
+    const labelParam = searchParams.get("label") || undefined;
     const pageToken = searchParams.get("pageToken") || undefined;
     const maxResults = searchParams.get("maxResults") 
       ? parseInt(searchParams.get("maxResults")!, 10) 
       : 50; // Increased default to match Step 2
 
-    // Step 1: Resolve label name to labelId (case-insensitive, handles spaces and nested labels)
+    // Load workspace to get default label IDs
+    const workspace = await loadWorkspace();
+    
+    // Use workspace label ID by default, or resolve from query param
     let labelId: string | null = null;
-    if (labelName) {
+    let labelName: string | undefined = undefined;
+    
+    if (labelParam) {
+      // Query param provided - validate and resolve it
+      if (isForbiddenLabel(labelParam)) {
+        return NextResponse.json(
+          { error: `${labelParam} is a system label and cannot be used. Please use a custom label.` },
+          { status: 400 }
+        );
+      }
+      labelName = labelParam;
       const gmail = createGmailClient(accessToken);
       labelId = await resolveLabelId(gmail, labelName);
-      console.log(`[Gmail List API] Label name: "${labelName}", resolved labelId: ${labelId || "null"}`);
+      console.log(`[Gmail List API] Label name from query: "${labelName}", resolved labelId: ${labelId || "null"}`);
+    } else if (workspace?.gmailWorkOrdersLabelId) {
+      // Use workspace default label ID
+      labelId = workspace.gmailWorkOrdersLabelId;
+      labelName = workspace.gmailWorkOrdersLabelName;
+      console.log(`[Gmail List API] Using workspace label: "${labelName}" (ID: ${labelId})`);
     }
 
     const result = await listWorkOrderEmails(accessToken, labelName, labelId, pageToken, maxResults);

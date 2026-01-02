@@ -12,8 +12,20 @@ export default function OnboardingDonePage() {
   useEffect(() => {
     const completeOnboarding = async () => {
       try {
+        // Get Gmail label names from sessionStorage (set by Gmail onboarding page)
+        const gmailWorkOrdersLabelName = sessionStorage.getItem("gmailWorkOrdersLabelName");
+        const gmailSignedLabelName = sessionStorage.getItem("gmailSignedLabelName");
+        const gmailProcessedLabelName = sessionStorage.getItem("gmailProcessedLabelName");
+
+        const body: Record<string, string> = {};
+        if (gmailWorkOrdersLabelName) body.gmailWorkOrdersLabelName = gmailWorkOrdersLabelName;
+        if (gmailSignedLabelName) body.gmailSignedLabelName = gmailSignedLabelName;
+        if (gmailProcessedLabelName) body.gmailProcessedLabelName = gmailProcessedLabelName;
+
         const response = await fetch("/api/onboarding/complete", {
           method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: Object.keys(body).length > 0 ? JSON.stringify(body) : undefined,
         });
 
         if (!response.ok) {

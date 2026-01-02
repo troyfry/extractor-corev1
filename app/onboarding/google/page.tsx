@@ -44,12 +44,9 @@ export default function OnboardingGooglePage() {
       setSuccess(data);
       setIsSubmitting(false);
       
-      // Auto-continue after a brief delay to show success
-      // Note: Onboarding is complete after workspace creation
-      // FM Profiles and Templates are settings, not onboarding steps
-      // Note: Using setTimeout for UX; component unmount will cancel navigation
+      // Continue to Gmail label configuration
       setTimeout(() => {
-        router.push("/pro");
+        router.push("/onboarding/gmail");
       }, 2000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");

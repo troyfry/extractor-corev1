@@ -47,6 +47,12 @@ export async function saveWorkspaceConfig(
     fmProfilesJson,
     templatesConfigured: workspace.templatesConfigured ? "TRUE" : "FALSE",
     onboardingCompletedAt: workspace.onboardingCompletedAt,
+    gmailWorkOrdersLabelName: workspace.gmailWorkOrdersLabelName || "",
+    gmailWorkOrdersLabelId: workspace.gmailWorkOrdersLabelId || "",
+    gmailSignedLabelName: workspace.gmailSignedLabelName || "",
+    gmailSignedLabelId: workspace.gmailSignedLabelId || "",
+    gmailProcessedLabelName: workspace.gmailProcessedLabelName || "",
+    gmailProcessedLabelId: workspace.gmailProcessedLabelId || "",
     onboardingCompleted: "TRUE",
     updatedAt: new Date().toISOString(),
   }, { allowEnsure: true });

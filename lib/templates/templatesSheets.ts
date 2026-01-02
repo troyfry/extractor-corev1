@@ -90,21 +90,31 @@ export async function ensureTemplatesSheet(
     // Create sheet if it doesn't exist
     if (!sheetExists) {
       console.log(`[Templates] Creating "${sheetName}" sheet`);
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId,
-        requestBody: {
-          requests: [
-            {
-              addSheet: {
-                properties: {
-                  title: sheetName,
+      try {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId,
+          requestBody: {
+            requests: [
+              {
+                addSheet: {
+                  properties: {
+                    title: sheetName,
+                  },
                 },
               },
-            },
-          ],
-        },
-      });
-      console.log(`[Templates] Created "${sheetName}" sheet`);
+            ],
+          },
+        });
+        console.log(`[Templates] Created "${sheetName}" sheet`);
+      } catch (error) {
+        // Handle race condition: sheet might have been created by another concurrent request
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (errorMessage.includes("already exists") || errorMessage.includes("duplicate")) {
+          console.log(`[Templates] Sheet "${sheetName}" already exists (likely created concurrently), continuing...`);
+        } else {
+          throw error;
+        }
+      }
     }
 
     // Get current header row

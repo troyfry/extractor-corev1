@@ -63,6 +63,100 @@ export default function ProSettingsPage() {
             </div>
 
             <div className="space-y-6">
+              {/* Gmail Label Configuration */}
+              <section className="rounded-xl border border-slate-700 bg-slate-800 p-6">
+                <h2 className="text-xl font-semibold text-slate-50 mb-4">
+                  Gmail Labels
+                </h2>
+                <p className="text-sm text-slate-400 mb-4">
+                  Configure Gmail labels for organizing work order emails. Labels will be created automatically if they don't exist.
+                </p>
+
+                {isLoadingGmail ? (
+                  <div className="text-slate-400">Loading Gmail labels...</div>
+                ) : (
+                  <>
+                    {gmailError && (
+                      <div className="mb-4 p-3 bg-red-900/30 border border-red-700 rounded text-red-200 text-sm">
+                        {gmailError}
+                      </div>
+                    )}
+                    {gmailSuccess && (
+                      <div className="mb-4 p-3 bg-green-900/30 border border-green-700 rounded text-green-200 text-sm">
+                        {gmailSuccess}
+                      </div>
+                    )}
+
+                    <div className="space-y-4">
+                      <div>
+                        <label htmlFor="work-orders-label" className="block text-sm font-medium text-slate-300 mb-2">
+                          Work Orders Label <span className="text-red-400">*</span>
+                        </label>
+                        <input
+                          id="work-orders-label"
+                          type="text"
+                          value={gmailWorkOrdersLabelName}
+                          onChange={(e) => setGmailWorkOrdersLabelName(e.target.value)}
+                          placeholder={WORK_ORDERS_LABEL_NAME}
+                          className="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        />
+                        <p className="mt-1 text-xs text-slate-400">
+                          Emails with this label will be processed for work order extraction.
+                          <br />
+                          <span className="text-yellow-400">Note: INBOX and other system labels cannot be used.</span>
+                        </p>
+                      </div>
+
+                      <div>
+                        <label htmlFor="signed-label" className="block text-sm font-medium text-slate-300 mb-2">
+                          Signed Work Orders Label <span className="text-red-400">*</span>
+                        </label>
+                        <input
+                          id="signed-label"
+                          type="text"
+                          value={gmailSignedLabelName}
+                          onChange={(e) => setGmailSignedLabelName(e.target.value)}
+                          placeholder={SIGNED_WORK_ORDERS_LABEL_NAME}
+                          className="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        />
+                        <p className="mt-1 text-xs text-slate-400">
+                          Emails with this label will be processed for signed work order matching.
+                          <br />
+                          <span className="text-yellow-400">Note: INBOX and other system labels cannot be used.</span>
+                        </p>
+                      </div>
+
+                      <div>
+                        <label htmlFor="processed-label" className="block text-sm font-medium text-slate-300 mb-2">
+                          Processed Label (Optional)
+                        </label>
+                        <input
+                          id="processed-label"
+                          type="text"
+                          value={gmailProcessedLabelName}
+                          onChange={(e) => setGmailProcessedLabelName(e.target.value)}
+                          placeholder={PROCESSED_WORK_ORDERS_LABEL_NAME}
+                          className="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        />
+                        <p className="mt-1 text-xs text-slate-400">
+                          This label will be applied to emails after successful processing. Leave empty to skip.
+                          <br />
+                          <span className="text-yellow-400">Note: INBOX and other system labels cannot be used.</span>
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={handleSaveGmailLabels}
+                        disabled={isSavingGmail || !gmailWorkOrdersLabelName.trim() || !gmailSignedLabelName.trim()}
+                        className="px-4 py-2 bg-sky-600 hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+                      >
+                        {isSavingGmail ? "Saving..." : "Save Gmail Labels"}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </section>
+
               {/* OpenAI API Key Configuration */}
               <section className="rounded-xl border border-slate-700 bg-slate-800 p-6">
                 <h2 className="text-xl font-semibold text-slate-50 mb-4">

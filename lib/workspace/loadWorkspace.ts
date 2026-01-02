@@ -47,6 +47,12 @@ export async function loadWorkspace(): Promise<WorkspaceConfig | null> {
         fmProfiles: [], // Not stored in cookies, load separately
         templatesConfigured: false, // Not stored in cookies, check separately
         onboardingCompletedAt: cookieStore.get("onboardingCompletedAt")?.value || new Date().toISOString(),
+        gmailWorkOrdersLabelName: cookieStore.get("gmailWorkOrdersLabelName")?.value || "",
+        gmailWorkOrdersLabelId: cookieStore.get("gmailWorkOrdersLabelId")?.value || "",
+        gmailSignedLabelName: cookieStore.get("gmailSignedLabelName")?.value || "",
+        gmailSignedLabelId: cookieStore.get("gmailSignedLabelId")?.value || "",
+        gmailProcessedLabelName: cookieStore.get("gmailProcessedLabelName")?.value || null,
+        gmailProcessedLabelId: cookieStore.get("gmailProcessedLabelId")?.value || null,
       };
     }
   }
@@ -96,6 +102,12 @@ export async function loadWorkspace(): Promise<WorkspaceConfig | null> {
       fmProfiles,
       templatesConfigured: userRow.templatesConfigured === "TRUE",
       onboardingCompletedAt: userRow.onboardingCompletedAt || userRow.updatedAt || new Date().toISOString(),
+      gmailWorkOrdersLabelName: userRow.gmailWorkOrdersLabelName || "",
+      gmailWorkOrdersLabelId: userRow.gmailWorkOrdersLabelId || "",
+      gmailSignedLabelName: userRow.gmailSignedLabelName || "",
+      gmailSignedLabelId: userRow.gmailSignedLabelId || "",
+      gmailProcessedLabelName: userRow.gmailProcessedLabelName || null,
+      gmailProcessedLabelId: userRow.gmailProcessedLabelId || null,
     };
 
     // Re-set cookies for next request (fast path)

@@ -7,6 +7,7 @@
 
 import { google } from "googleapis";
 import { WORK_ORDER_LABEL_NAME } from "./gmailConfig";
+import { validateLabelName } from "./gmailValidation";
 
 /**
  * Create a Gmail API client using an OAuth access token.
@@ -104,7 +105,93 @@ export async function getLabelIdByName(
 }
 
 /**
- * Remove the work orders label from a Gmail message.
+ * Ensure a Gmail label exists (create if missing).
+ * 
+ * @param accessToken Google OAuth access token
+ * @param labelName Label name to ensure exists
+ * @returns Label ID and name
+ * @throws Error if label name is invalid (e.g., INBOX or other system labels)
+ */
+export async function ensureLabel(
+  accessToken: string,
+  labelName: string
+): Promise<GmailLabel> {
+  // Validate label name (reject INBOX and other system labels)
+  const validationError = validateLabelName(labelName);
+  if (validationError) {
+    throw new Error(validationError);
+  }
+
+  const gmail = createGmailClient(accessToken);
+
+  const list = await gmail.users.labels.list({ userId: "me" });
+  const existing = (list.data.labels || []).find((l) => l.name === labelName);
+
+  if (existing?.id) {
+    return { id: existing.id, name: labelName };
+  }
+
+  const created = await gmail.users.labels.create({
+    userId: "me",
+    requestBody: {
+      name: labelName,
+      labelListVisibility: "labelShow",
+      messageListVisibility: "show",
+    },
+  });
+
+  if (!created.data.id) {
+    throw new Error(`Failed to create Gmail label: ${labelName}`);
+  }
+
+  console.log(`[Gmail] Created label "${labelName}" with ID: ${created.data.id}`);
+  return { id: created.data.id, name: labelName };
+}
+
+/**
+ * Apply a label to a Gmail message by label ID.
+ * 
+ * @param accessToken Google OAuth access token
+ * @param messageId Gmail message ID
+ * @param labelId Label ID to apply
+ */
+export async function applyLabelById(
+  accessToken: string,
+  messageId: string,
+  labelId: string
+): Promise<void> {
+  const gmail = createGmailClient(accessToken);
+  await gmail.users.messages.modify({
+    userId: "me",
+    id: messageId,
+    requestBody: { addLabelIds: [labelId] },
+  });
+  console.log(`[Gmail] Applied label ${labelId} to message ${messageId}`);
+}
+
+/**
+ * Remove a label from a Gmail message by label ID.
+ * 
+ * @param accessToken Google OAuth access token
+ * @param messageId Gmail message ID
+ * @param labelId Label ID to remove
+ */
+export async function removeLabelById(
+  accessToken: string,
+  messageId: string,
+  labelId: string
+): Promise<void> {
+  const gmail = createGmailClient(accessToken);
+  await gmail.users.messages.modify({
+    userId: "me",
+    id: messageId,
+    requestBody: { removeLabelIds: [labelId] },
+  });
+  console.log(`[Gmail] Removed label ${labelId} from message ${messageId}`);
+}
+
+/**
+ * Remove the work orders label from a Gmail message (legacy function).
  * 
  * @param accessToken Google OAuth access token
  * @param messageId Gmail message ID
@@ -125,15 +212,7 @@ export async function removeWorkOrderLabel(
       return false;
     }
 
-    await gmail.users.messages.modify({
-      userId: "me",
-      id: messageId,
-      requestBody: {
-        removeLabelIds: [labelId],
-      },
-    });
-
-    console.log(`Successfully removed label "${WORK_ORDER_LABEL_NAME}" from message ${messageId}`);
+    await removeLabelById(accessToken, messageId, labelId);
     return true;
   } catch (error) {
     console.error(`Error removing label from message ${messageId}:`, error);

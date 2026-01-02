@@ -13,7 +13,7 @@ export default function OnboardingPage() {
         <h1 className="text-3xl font-semibold mb-4">Welcome to Work Order Suite</h1>
         <p className="text-slate-300 mb-8">
           Let&apos;s get you set up. This wizard will guide you through connecting your Google Sheets,
-          Drive folder, OpenAI API key, and configuring your FM profiles.
+          Drive folder, Gmail labels, OpenAI API key, and configuring your FM profiles.
         </p>
         
         <div className="space-y-4">

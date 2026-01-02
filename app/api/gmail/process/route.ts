@@ -10,7 +10,8 @@
 
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { getEmailWithPdfAttachments, removeWorkOrderLabel } from "@/lib/google/gmail";
+import { getEmailWithPdfAttachments, removeLabelById, applyLabelById } from "@/lib/google/gmail";
+import { loadWorkspace } from "@/lib/workspace/loadWorkspace";
 import { extractWorkOrderNumberFromText } from "@/lib/workOrders/processing";
 import { isAiParsingEnabled, getAiModelName, getIndustryProfile } from "@/lib/config/ai";
 import { getPlanFromRequest } from "@/lib/api/getPlanFromRequest";
@@ -785,18 +786,33 @@ ${pdfText}`;
         }
       }
 
-      // ALL steps succeeded - now remove label (if requested)
-      // Note: In dev mode without Sheets, we still remove the label since parsing succeeded
+      // ALL steps succeeded - now handle labels (if requested)
+      // Note: In dev mode without Sheets, we still handle labels since parsing succeeded
       if (autoRemoveLabel) {
-      try {
-        labelRemoved = await removeWorkOrderLabel(accessToken, messageId);
-          console.log(`[Gmail Process] Label removed successfully for message ${messageId}`);
-      } catch (labelError) {
-          // Label removal failed - log but don't fail the request since processing succeeded
-          console.error(`[Gmail Process] Failed to remove label for message ${messageId}:`, labelError);
+        try {
+          // Load workspace to get label IDs
+          const workspace = await loadWorkspace();
+          
+          if (workspace?.gmailWorkOrdersLabelId) {
+            // Remove source label (work orders label)
+            await removeLabelById(accessToken, messageId, workspace.gmailWorkOrdersLabelId);
+            labelRemoved = true;
+            console.log(`[Gmail Process] Removed source label from message ${messageId}`);
+            
+            // Apply processed label if configured
+            if (workspace.gmailProcessedLabelId) {
+              await applyLabelById(accessToken, messageId, workspace.gmailProcessedLabelId);
+              console.log(`[Gmail Process] Applied processed label to message ${messageId}`);
+            }
+          } else {
+            console.warn(`[Gmail Process] Workspace label IDs not found, skipping label operations`);
+          }
+        } catch (labelError) {
+          // Label operations failed - log but don't fail the request since processing succeeded
+          console.error(`[Gmail Process] Failed to handle labels for message ${messageId}:`, labelError);
           // Note: labelRemoved remains false, but processing succeeded
+        }
       }
-    }
 
     } catch (error) {
       // Processing failed - DO NOT remove label

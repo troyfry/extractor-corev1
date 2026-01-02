@@ -738,13 +738,16 @@ export async function processSignedPdf(
 
   /**
    * Compute effective crop points and page dimensions for a given page.
-   * If page dimensions mismatch template, scale crop points proportionally.
    * 
-   * @param pageNumber - 1-indexed page number
-   * @returns Object with effective crop points and page dimensions
+   * CRITICAL: Use template coordinates EXACTLY as saved - NO SCALING.
+   * The coordinates saved during template configuration must match exactly what's used here.
+   * The OCR service handles dimension differences internally when rasterizing.
+   * 
+   * @param _pageNumber - 1-indexed page number (unused, kept for API compatibility)
+   * @returns Object with effective crop points and page dimensions (always from template, never scaled)
    */
   async function computeEffectiveCropAndDimensions(
-    pageNumber: number
+    _pageNumber: number
   ): Promise<{
     xPt: number;
     yPt: number;
@@ -756,89 +759,31 @@ export async function processSignedPdf(
     scaleX: number;
     scaleY: number;
   }> {
-    // Get actual PDF page dimensions
-    const actualDims = await getActualPdfPageDimensionsPt(pdfBuffer, pageNumber);
-    const actualWidthPt = actualDims?.pageWidthPt ?? templateConfig.pageWidthPt ?? 0;
-    const actualHeightPt = actualDims?.pageHeightPt ?? templateConfig.pageHeightPt ?? 0;
+    // ALWAYS use template coordinates EXACTLY as saved - NO SCALING
+    // The OCR service will handle any dimension differences when rasterizing the PDF
+    const effectivePageWidthPt = templateConfig.pageWidthPt || 0;
+    const effectivePageHeightPt = templateConfig.pageHeightPt || 0;
     
-    // Fallback to template dimensions if actual dimensions unavailable
-    const effectivePageWidthPt = actualWidthPt || templateConfig.pageWidthPt || 0;
-    const effectivePageHeightPt = actualHeightPt || templateConfig.pageHeightPt || 0;
+    // Use template crop points directly - these match what was saved during template configuration
+    const xPtEff = templateConfig.xPt ?? 0;
+    const yPtEff = templateConfig.yPt ?? 0;
+    const wPtEff = templateConfig.wPt ?? 0;
+    const hPtEff = templateConfig.hPt ?? 0;
     
-    // Default crop points from template
-    let xPtEff = templateConfig.xPt ?? 0;
-    let yPtEff = templateConfig.yPt ?? 0;
-    let wPtEff = templateConfig.wPt ?? 0;
-    let hPtEff = templateConfig.hPt ?? 0;
-    let scaled = false;
-    let scaleX = 1.0;
-    let scaleY = 1.0;
-    
-    // Scale crop points if dimensions mismatch (points mode only)
-    if (
-      pointsMode &&
-      templateConfig.xPt !== undefined &&
-      templateConfig.yPt !== undefined &&
-      templateConfig.wPt !== undefined &&
-      templateConfig.hPt !== undefined &&
-      templateConfig.pageWidthPt &&
-      templateConfig.pageHeightPt &&
-      effectivePageWidthPt > 0 &&
-      effectivePageHeightPt > 0
-    ) {
-      const DIMENSION_TOLERANCE_PT = 2.0;
-      const widthDiff = Math.abs(actualWidthPt - templateConfig.pageWidthPt);
-      const heightDiff = Math.abs(actualHeightPt - templateConfig.pageHeightPt);
-      
-      if (widthDiff > DIMENSION_TOLERANCE_PT || heightDiff > DIMENSION_TOLERANCE_PT) {
-        // Compute scale factors
-        scaleX = effectivePageWidthPt / templateConfig.pageWidthPt;
-        scaleY = effectivePageHeightPt / templateConfig.pageHeightPt;
-        
-        // Scale crop points proportionally
-        xPtEff = templateConfig.xPt * scaleX;
-        yPtEff = templateConfig.yPt * scaleY;
-        wPtEff = templateConfig.wPt * scaleX;
-        hPtEff = templateConfig.hPt * scaleY;
-        scaled = true;
-        
-        // Log dimension mismatch and scaling
-        console.log(`[Signed Processor] Page dimension mismatch detected - scaling crop points:`, {
-          requestId,
-          fmKey: normalizedFmKey,
-          page: pageNumber,
-          templateDimensions: {
-            pageWidthPt: templateConfig.pageWidthPt,
-            pageHeightPt: templateConfig.pageHeightPt,
-          },
-          actualPdfDimensions: {
-            pageWidthPt: effectivePageWidthPt,
-            pageHeightPt: effectivePageHeightPt,
-          },
-          differences: {
-            widthDiff,
-            heightDiff,
-            tolerance: DIMENSION_TOLERANCE_PT,
-          },
-          scaleFactors: {
-            scaleX,
-            scaleY,
-          },
-          originalCropPoints: {
-            xPt: templateConfig.xPt,
-            yPt: templateConfig.yPt,
-            wPt: templateConfig.wPt,
-            hPt: templateConfig.hPt,
-          },
-          effectiveCropPoints: {
-            xPt: xPtEff,
-            yPt: yPtEff,
-            wPt: wPtEff,
-            hPt: hPtEff,
-          },
-        });
-      }
-    }
+    console.log(`[Signed Processor] Using template coordinates EXACTLY as saved (no scaling):`, {
+      requestId,
+      fmKey: normalizedFmKey,
+      templateCropPoints: {
+        xPt: xPtEff,
+        yPt: yPtEff,
+        wPt: wPtEff,
+        hPt: hPtEff,
+      },
+      templatePageDimensions: {
+        pageWidthPt: effectivePageWidthPt,
+        pageHeightPt: effectivePageHeightPt,
+      },
+    });
     
     return {
       xPt: xPtEff,
@@ -847,9 +792,9 @@ export async function processSignedPdf(
       hPt: hPtEff,
       pageWidthPt: effectivePageWidthPt,
       pageHeightPt: effectivePageHeightPt,
-      scaled,
-      scaleX,
-      scaleY,
+      scaled: false, // Never scale - use template coordinates as-is
+      scaleX: 1.0,
+      scaleY: 1.0,
     };
   }
 

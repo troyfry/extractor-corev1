@@ -142,6 +142,12 @@ const USERS_SHEET_COLUMNS = [
   "templatesSheet", // Usually "Templates" (legacy)
   "signedFolderId", // Signed PDFs folder (legacy)
   "snippetsFolderId", // Snippets folder (legacy)
+  "gmailWorkOrdersLabelName", // Gmail label name for work orders
+  "gmailWorkOrdersLabelId", // Gmail label ID for work orders
+  "gmailSignedLabelName", // Gmail label name for signed work orders
+  "gmailSignedLabelId", // Gmail label ID for signed work orders
+  "gmailProcessedLabelName", // Gmail label name for processed work orders (optional)
+  "gmailProcessedLabelId", // Gmail label ID for processed work orders (optional)
   "openaiKeyEncrypted",
   "createdAt",
   "updatedAt",
@@ -167,6 +173,12 @@ export type UserRow = {
   templatesSheet: string | ""; // Usually "Templates" (legacy)
   signedFolderId: string | ""; // Signed PDFs folder (legacy)
   snippetsFolderId: string | ""; // Snippets folder (legacy)
+  gmailWorkOrdersLabelName: string | ""; // Gmail label name for work orders
+  gmailWorkOrdersLabelId: string | ""; // Gmail label ID for work orders
+  gmailSignedLabelName: string | ""; // Gmail label name for signed work orders
+  gmailSignedLabelId: string | ""; // Gmail label ID for signed work orders
+  gmailProcessedLabelName: string | ""; // Gmail label name for processed work orders (optional)
+  gmailProcessedLabelId: string | ""; // Gmail label ID for processed work orders (optional)
   openaiKeyEncrypted: string | "";
   createdAt: string | "";
   updatedAt: string | "";

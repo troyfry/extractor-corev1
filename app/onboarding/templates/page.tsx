@@ -139,6 +139,7 @@ export default function OnboardingTemplatesPage() {
   const hasInitializedFromQuery = useRef<boolean>(false);
   const [manualCoords, setManualCoords] = useState<{ xPct: string; yPct: string; wPct: string; hPct: string } | null>(null);
   const [manualPoints, setManualPoints] = useState<{ xPt: string; yPt: string; wPt: string; hPt: string } | null>(null);
+  const [calculatedPoints, setCalculatedPoints] = useState<{ xPt: number; yPt: number; wPt: number; hPt: number } | null>(null);
 
   // Auto-select fmKey from query parameter (will be validated after profiles load)
   useEffect(() => {
@@ -454,6 +455,10 @@ export default function OnboardingTemplatesPage() {
       width: 0,
       height: 0,
     });
+    // Clear manual points when starting a new rectangle so calculated points show
+    setManualPoints(null);
+    // Clear manual points when starting a new rectangle so calculated points show
+    setManualPoints(null);
   }
 
   function handlePointerMove(e: React.PointerEvent<HTMLDivElement>) {
@@ -492,6 +497,10 @@ export default function OnboardingTemplatesPage() {
       const truePageHeightPt = yMax - yMin;
       setPageWidthPt(truePageWidthPt);
       setPageHeightPt(truePageHeightPt);
+      
+      // Store view box offset for coordinate conversion
+      // The viewport.convertToPdfPoint accounts for this, but we need to verify
+      console.log("[Onboarding] PDF page view box:", { xMin, yMin, xMax, yMax, width: truePageWidthPt, height: truePageHeightPt });
       
       // Optional sanity log to verify the fix
       const v1 = page.getViewport({ scale: 1.0 });
@@ -635,11 +644,12 @@ export default function OnboardingTemplatesPage() {
   }
 
   function calculatePoints(): { xPt: number; yPt: number; wPt: number; hPt: number } | null {
-    if (!cropZone || !currentViewport || !pageWidthPt || !pageHeightPt) return null;
+    if (!cropZone || !currentViewport || !pageWidthPt || !pageHeightPt || !imageWidth || !imageHeight) return null;
 
     // Convert cropZone (CSS px) to viewport px, then to PDF points
     try {
       const rect = getImgRect();
+      // Scale from CSS-displayed size to viewport pixel size
       const scaleX = currentViewport.width / rect.width;
       const scaleY = currentViewport.height / rect.height;
 
@@ -648,14 +658,17 @@ export default function OnboardingTemplatesPage() {
       const x1 = (cropZone.x + cropZone.width) * scaleX;
       const y1 = (cropZone.y + cropZone.height) * scaleY;
 
+      // Use viewport.convertToPdfPoint - it returns PDF coordinates (bottom-left origin)
       const [x0Pt, y0PtBottom] = currentViewport.convertToPdfPoint(x0, y0);
       const [x1Pt, y1PtBottom] = currentViewport.convertToPdfPoint(x1, y1);
 
+      // Normalize with min/max to guarantee XYWH is correct
       const xMin = Math.min(x0Pt, x1Pt);
       const xMax = Math.max(x0Pt, x1Pt);
       const yMinBottom = Math.min(y0PtBottom, y1PtBottom);
       const yMaxBottom = Math.max(y0PtBottom, y1PtBottom);
 
+      // Convert Y to TOP-LEFT points: yPtTopLeft = pageHeightPt - yMaxBottom
       const xPt = xMin;
       const wPt = xMax - xMin;
       const hPt = yMaxBottom - yMinBottom;
@@ -666,6 +679,16 @@ export default function OnboardingTemplatesPage() {
       return null;
     }
   }
+
+  // Update calculated points whenever cropZone changes
+  useEffect(() => {
+    if (cropZone && cropZone.width > 0 && cropZone.height > 0 && currentViewport && pageWidthPt && pageHeightPt && imageWidth && imageHeight) {
+      const points = calculatePoints();
+      setCalculatedPoints(points);
+    } else {
+      setCalculatedPoints(null);
+    }
+  }, [cropZone, currentViewport, pageWidthPt, pageHeightPt, imageWidth, imageHeight]);
 
   function handleManualPointsChange(field: "xPt" | "yPt" | "wPt" | "hPt", value: string) {
     if (!pageWidthPt || !pageHeightPt) return;
@@ -792,7 +815,9 @@ export default function OnboardingTemplatesPage() {
     setSuccess(null);
 
     // Convert cropZone (CSS px) into viewport/render px
-    // Scale from IMG display size → viewport pixels
+    // CRITICAL: viewport.convertToPdfPoint expects coordinates in viewport pixel space
+    // The viewport is at scale 2.0, so viewport.width = imageWidth (canvas dimensions)
+    // We need to scale from CSS-displayed size to viewport pixel size
     const scaleX = currentViewport.width / rect.width;
     const scaleY = currentViewport.height / rect.height;
 
@@ -804,6 +829,7 @@ export default function OnboardingTemplatesPage() {
     // Use the same pdf.js viewport used for rendering the preview (same scale/rotation)
     // Convert BOTH corners using viewport.convertToPdfPoint()
     // Note: viewport.convertToPdfPoint returns coordinates in PDF coordinate space (bottom-left origin)
+    // It expects coordinates in viewport pixel space (which is at scale 2.0)
     const [x0Pt, y0PtBottom] = currentViewport.convertToPdfPoint(x0, y0);
     const [x1Pt, y1PtBottom] = currentViewport.convertToPdfPoint(x1, y1);
 
@@ -813,13 +839,11 @@ export default function OnboardingTemplatesPage() {
     const yMinBottom = Math.min(y0PtBottom, y1PtBottom); // Bottom edge in PDF coordinates
     const yMaxBottom = Math.max(y0PtBottom, y1PtBottom); // Top edge in PDF coordinates
 
-    // Convert Y to TOP-LEFT points before saving: yPtTopLeft = pageHeightPt - yMax
+    // Convert Y to TOP-LEFT points: yPtTopLeft = pageHeightPt - yMaxBottom
     const xPt = xMin;
     const wPt = xMax - xMin;
     const hPt = yMaxBottom - yMinBottom;
-    const yPtTopLeft = pageHeightPt - yMaxBottom; // Convert from bottom-left to top-left origin
-
-    
+    const yPtTopLeft = pageHeightPt - yMaxBottom;
 
     // Debug log with all conversion details (as requested)
     // "Truth log" to verify mismatch is gone - these 3 should line up
@@ -1097,7 +1121,7 @@ export default function OnboardingTemplatesPage() {
                         step="0.01"
                         min="0"
                         max={pageWidthPt}
-                        value={manualPoints?.xPt ?? (calculatePoints()?.xPt.toFixed(2) ?? "0.00")}
+                        value={manualPoints?.xPt ?? (calculatedPoints?.xPt.toFixed(2) ?? "0.00")}
                         onChange={(e) => handleManualPointsChange("xPt", e.target.value)}
                         onBlur={() => {
                           if (manualPoints) {
@@ -1114,7 +1138,7 @@ export default function OnboardingTemplatesPage() {
                         step="0.01"
                         min="0"
                         max={pageHeightPt}
-                        value={manualPoints?.yPt ?? (calculatePoints()?.yPt.toFixed(2) ?? "0.00")}
+                        value={manualPoints?.yPt ?? (calculatedPoints?.yPt.toFixed(2) ?? "0.00")}
                         onChange={(e) => handleManualPointsChange("yPt", e.target.value)}
                         onBlur={() => {
                           if (manualPoints) {
@@ -1131,7 +1155,7 @@ export default function OnboardingTemplatesPage() {
                         step="0.01"
                         min="0"
                         max={pageWidthPt}
-                        value={manualPoints?.wPt ?? (calculatePoints()?.wPt.toFixed(2) ?? "0.00")}
+                        value={manualPoints?.wPt ?? (calculatedPoints?.wPt.toFixed(2) ?? "0.00")}
                         onChange={(e) => handleManualPointsChange("wPt", e.target.value)}
                         onBlur={() => {
                           if (manualPoints) {
@@ -1148,7 +1172,7 @@ export default function OnboardingTemplatesPage() {
                         step="0.01"
                         min="0"
                         max={pageHeightPt}
-                        value={manualPoints?.hPt ?? (calculatePoints()?.hPt.toFixed(2) ?? "0.00")}
+                        value={manualPoints?.hPt ?? (calculatedPoints?.hPt.toFixed(2) ?? "0.00")}
                         onChange={(e) => handleManualPointsChange("hPt", e.target.value)}
                         onBlur={() => {
                           if (manualPoints) {
