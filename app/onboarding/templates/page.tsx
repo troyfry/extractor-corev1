@@ -272,7 +272,7 @@ export default function OnboardingTemplatesPage() {
           setSavedTemplate(template);
           
           // If we have a PDF loaded, navigate to the saved template's page
-          if (pdfDoc && template.page && template.page !== selectedPage) {
+          if (pdfFile && template.page && template.page !== selectedPage) {
             await handlePageChange(template.page);
           }
           
@@ -365,60 +365,26 @@ export default function OnboardingTemplatesPage() {
       setPdfFile(file);
       setError(null);
       setSuccess(null);
-      setIsRenderingPdf(true);
       setPreviewImage(null);
       setImageWidth(0);
       setImageHeight(0);
       setCropZone(null);
       setCoordsPage(null);
       setSelectedPage(1);
-      setPageCount(0);
+      setPageCount(1); // Will be updated when we get page count from API
       setPdfDoc(null);
-      setCurrentViewport(null); // Clear viewport when loading new PDF
+      setCurrentViewport(null); // Clear viewport (no longer used)
 
     try {
-      // Ensure pdf.js is loaded (uses shared helper)
-      const pdfjsLib = await initPdfJsLib();
-
-      if (!pdfjsLib || typeof pdfjsLib.getDocument !== "function") {
-        throw new Error("PDF.js library not loaded correctly");
-      }
-
-      // Read file as ArrayBuffer
-      const arrayBuffer = await file.arrayBuffer();
-      const uint8Array = new Uint8Array(arrayBuffer);
-
-      // Validate PDF header
-      const header = String.fromCharCode(...uint8Array.slice(0, 5));
-      if (header !== "%PDF-") {
-        throw new Error("Invalid PDF file format");
-      }
-
-      // Load PDF document
-      const loadingTask = pdfjsLib.getDocument({ data: uint8Array });
-      const pdf = await loadingTask.promise;
-
-      // Store PDF document for page navigation
-      setPdfDoc(pdf);
-      
-      // Get page count
-      const numPages = pdf.numPages;
-      setPageCount(numPages);
-      
-      // Reset to page 1 when new PDF is loaded
-      setSelectedPage(1);
-      setCoordsPage(null);
-      
-      // Render first page
-      await renderPage(pdf, 1);
+      // Render first page using MuPDF API
+      // TODO: Get page count from API or first render response
+      await renderPage(file, 1);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Failed to render PDF";
       console.error("[PDF Render] Error:", err);
       setError(`Failed to render PDF: ${errorMessage}`);
       setPreviewImage(null);
       setCropZone(null);
-    } finally {
-      setIsRenderingPdf(false);
     }
   }
 
@@ -430,7 +396,7 @@ export default function OnboardingTemplatesPage() {
   }
 
   function handlePointerDown(e: React.PointerEvent<HTMLDivElement>) {
-    if (!previewImage || !currentViewport) return;
+    if (!previewImage) return;
     
     // Prevent default to avoid text selection
     e.preventDefault();
@@ -484,72 +450,53 @@ export default function OnboardingTemplatesPage() {
     });
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function renderPage(pdf: any, pageNum: number) {
+  // Render PDF page using MuPDF API (server-side rendering)
+  async function renderPage(pdfFile: File, pageNum: number) {
     try {
-      const page = await pdf.getPage(pageNum);
-      
-      // Get PDF page size in true PDF points (user space units)
-      // Note: getViewport({ scale: 1.0 }) gives CSS pixels (96 DPI), not PDF points (72 DPI)
-      // Use page.view to get actual PDF user-space coordinates in points
-      const [xMin, yMin, xMax, yMax] = page.view; // PDF units (points)
-      const truePageWidthPt = xMax - xMin;
-      const truePageHeightPt = yMax - yMin;
-      setPageWidthPt(truePageWidthPt);
-      setPageHeightPt(truePageHeightPt);
-      
-      // Store view box offset for coordinate conversion
-      // The viewport.convertToPdfPoint accounts for this, but we need to verify
-      console.log("[Onboarding] PDF page view box:", { xMin, yMin, xMax, yMax, width: truePageWidthPt, height: truePageHeightPt });
-      
-      // Optional sanity log to verify the fix
-      const v1 = page.getViewport({ scale: 1.0 });
-      console.log("[Onboarding] page.view (pt):", page.view, "wPt:", truePageWidthPt, "hPt:", truePageHeightPt);
-      console.log("[Onboarding] viewport scale=1 (css px):", v1.width, v1.height);
-      
-      // Use scale 2.0 for preview rendering (better quality)
-      // Include page rotation if present
-      const viewport = page.getViewport({ 
-        scale: 2.0, 
-        rotation: page.rotate || 0 
+      setIsRenderingPdf(true);
+      setError(null);
+
+      // Render via API endpoint (uses MuPDF server-side)
+      const formData = new FormData();
+      formData.append("pdf", pdfFile);
+      formData.append("page", String(pageNum));
+
+      const response = await fetch("/api/pdf/render-page", {
+        method: "POST",
+        body: formData,
       });
 
-      // Store viewport for accurate pixel->PDF point conversion
-      setCurrentViewport(viewport);
-
-      // Create canvas to render the page
-      const canvas = document.createElement("canvas");
-      const context = canvas.getContext("2d");
-      if (!context) {
-        throw new Error("Failed to get canvas context");
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Failed to render PDF page" }));
+        throw new Error(errorData.error || "Failed to render PDF page");
       }
 
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
+      const data = await response.json();
 
-      // Render PDF page to canvas
-      const renderContext = {
-        canvasContext: context,
-        viewport: viewport,
-      };
-      await page.render(renderContext).promise;
-
-      // Convert canvas to data URL (PNG)
-      const dataUrl = canvas.toDataURL("image/png");
+      // Set preview image from API response
+      setPreviewImage(data.pngDataUrl);
       
-      setPreviewImage(dataUrl);
-      // Use canvas dimensions (matches viewport.width/height) - ensures rectPx coordinates match render dimensions
-      setImageWidth(canvas.width);
-      setImageHeight(canvas.height);
+      // Store rendered image dimensions (for coordinate conversion)
+      setImageWidth(data.widthPx);
+      setImageHeight(data.heightPx);
       
-      console.log("[Onboarding] Rendered page with viewport:", {
-        viewportWidth: viewport.width,
-        viewportHeight: viewport.height,
-        canvasWidth: canvas.width,
-        canvasHeight: canvas.height,
-        pageWidthPt: truePageWidthPt,
-        pageHeightPt: truePageHeightPt,
-        rotation: page.rotate || 0,
+      // Store PDF page dimensions in points (from MuPDF - source of truth)
+      setPageWidthPt(data.pageWidthPt);
+      setPageHeightPt(data.pageHeightPt);
+      
+      // Clear viewport (no longer needed - we use proportional math)
+      setCurrentViewport(null);
+      
+      console.log("[Onboarding] Rendered page via MuPDF API:", {
+        renderedSize: {
+          widthPx: data.widthPx,
+          heightPx: data.heightPx,
+        },
+        boundsPt: data.boundsPt,
+        pdfPageSize: {
+          pageWidthPt: data.pageWidthPt,
+          pageHeightPt: data.pageHeightPt,
+        },
       });
       
       // If we have a saved template for this page, the useEffect will convert it to pixels
@@ -561,14 +508,16 @@ export default function OnboardingTemplatesPage() {
       setPreviewImage(null);
       setPageWidthPt(0);
       setPageHeightPt(0);
+    } finally {
+      setIsRenderingPdf(false);
     }
   }
 
   async function handlePageChange(newPage: number) {
-    if (!pdfDoc || newPage < 1 || newPage > pageCount) return;
+    if (!pdfFile || newPage < 1 || newPage > pageCount) return;
     
     setSelectedPage(newPage);
-    await renderPage(pdfDoc, newPage);
+    await renderPage(pdfFile, newPage);
   }
 
   function handlePointerUp(e: React.PointerEvent<HTMLDivElement>) {
@@ -644,37 +593,25 @@ export default function OnboardingTemplatesPage() {
   }
 
   function calculatePoints(): { xPt: number; yPt: number; wPt: number; hPt: number } | null {
-    if (!cropZone || !currentViewport || !pageWidthPt || !pageHeightPt || !imageWidth || !imageHeight) return null;
+    if (!cropZone || !pageWidthPt || !pageHeightPt) return null;
 
-    // Convert cropZone (CSS px) to viewport px, then to PDF points
+    // GOLDEN RULE: Use simple proportional math - NO DPI, NO SCALE, NO VIEWPORT CONVERSION
     try {
       const rect = getImgRect();
-      // Scale from CSS-displayed size to viewport pixel size
-      const scaleX = currentViewport.width / rect.width;
-      const scaleY = currentViewport.height / rect.height;
+      
+      // Calculate percentages (0-1 range)
+      const xPct = cropZone.x / rect.width;
+      const yPct = cropZone.y / rect.height;
+      const wPct = cropZone.width / rect.width;
+      const hPct = cropZone.height / rect.height;
 
-      const x0 = cropZone.x * scaleX;
-      const y0 = cropZone.y * scaleY;
-      const x1 = (cropZone.x + cropZone.width) * scaleX;
-      const y1 = (cropZone.y + cropZone.height) * scaleY;
+      // Convert to PDF points using PAGE POINTS (not image px, not DPI, not scale)
+      const xPt = xPct * pageWidthPt;
+      const yPt = yPct * pageHeightPt;
+      const wPt = wPct * pageWidthPt;
+      const hPt = hPct * pageHeightPt;
 
-      // Use viewport.convertToPdfPoint - it returns PDF coordinates (bottom-left origin)
-      const [x0Pt, y0PtBottom] = currentViewport.convertToPdfPoint(x0, y0);
-      const [x1Pt, y1PtBottom] = currentViewport.convertToPdfPoint(x1, y1);
-
-      // Normalize with min/max to guarantee XYWH is correct
-      const xMin = Math.min(x0Pt, x1Pt);
-      const xMax = Math.max(x0Pt, x1Pt);
-      const yMinBottom = Math.min(y0PtBottom, y1PtBottom);
-      const yMaxBottom = Math.max(y0PtBottom, y1PtBottom);
-
-      // Convert Y to TOP-LEFT points: yPtTopLeft = pageHeightPt - yMaxBottom
-      const xPt = xMin;
-      const wPt = xMax - xMin;
-      const hPt = yMaxBottom - yMinBottom;
-      const yPtTopLeft = pageHeightPt - yMaxBottom;
-
-      return { xPt, yPt: yPtTopLeft, wPt, hPt };
+      return { xPt, yPt, wPt, hPt };
     } catch {
       return null;
     }
@@ -682,13 +619,13 @@ export default function OnboardingTemplatesPage() {
 
   // Update calculated points whenever cropZone changes
   useEffect(() => {
-    if (cropZone && cropZone.width > 0 && cropZone.height > 0 && currentViewport && pageWidthPt && pageHeightPt && imageWidth && imageHeight) {
+    if (cropZone && cropZone.width > 0 && cropZone.height > 0 && pageWidthPt && pageHeightPt) {
       const points = calculatePoints();
       setCalculatedPoints(points);
     } else {
       setCalculatedPoints(null);
     }
-  }, [cropZone, currentViewport, pageWidthPt, pageHeightPt, imageWidth, imageHeight]);
+  }, [cropZone, pageWidthPt, pageHeightPt]);
 
   function handleManualPointsChange(field: "xPt" | "yPt" | "wPt" | "hPt", value: string) {
     if (!pageWidthPt || !pageHeightPt) return;
@@ -796,11 +733,6 @@ export default function OnboardingTemplatesPage() {
       return;
     }
 
-    if (!currentViewport) {
-      setError("Viewport not available. Please reload the PDF.");
-      return;
-    }
-
     // Get IMG rect (CSS pixels) - same source as pointer events
     const rect = getImgRect();
     
@@ -814,80 +746,72 @@ export default function OnboardingTemplatesPage() {
     setError(null);
     setSuccess(null);
 
-    // Convert cropZone (CSS px) into viewport/render px
-    // CRITICAL: viewport.convertToPdfPoint expects coordinates in viewport pixel space
-    // The viewport is at scale 2.0, so viewport.width = imageWidth (canvas dimensions)
-    // We need to scale from CSS-displayed size to viewport pixel size
-    const scaleX = currentViewport.width / rect.width;
-    const scaleY = currentViewport.height / rect.height;
+    // GOLDEN RULE: Use simple proportional math - NO DPI, NO SCALE, NO VIEWPORT CONVERSION
+    // Convert CSS pixels to PDF points using natural image dimensions
+    const { cssCropToNaturalPx, naturalPxToPdfPoints, assertPtSanity } = await import("@/lib/templates/coordinateUtils");
+    
+    if (!imgRef.current) {
+      setError("Image element not available");
+      setIsSaving(false);
+      return;
+    }
 
-    const x0 = cropZone.x * scaleX;
-    const y0 = cropZone.y * scaleY;
-    const x1 = (cropZone.x + cropZone.width) * scaleX;
-    const y1 = (cropZone.y + cropZone.height) * scaleY;
+    if (!pageWidthPt || !pageHeightPt) {
+      setError("PDF page dimensions not available");
+      setIsSaving(false);
+      return;
+    }
 
-    // Use the same pdf.js viewport used for rendering the preview (same scale/rotation)
-    // Convert BOTH corners using viewport.convertToPdfPoint()
-    // Note: viewport.convertToPdfPoint returns coordinates in PDF coordinate space (bottom-left origin)
-    // It expects coordinates in viewport pixel space (which is at scale 2.0)
-    const [x0Pt, y0PtBottom] = currentViewport.convertToPdfPoint(x0, y0);
-    const [x1Pt, y1PtBottom] = currentViewport.convertToPdfPoint(x1, y1);
+    // Step 1: Convert CSS crop → natural pixels
+    const nat = cssCropToNaturalPx(imgRef.current, {
+      x: cropZone.x,
+      y: cropZone.y,
+      w: cropZone.width,
+      h: cropZone.height,
+    });
 
-    // Normalize with min/max to guarantee XYWH is correct
-    const xMin = Math.min(x0Pt, x1Pt);
-    const xMax = Math.max(x0Pt, x1Pt);
-    const yMinBottom = Math.min(y0PtBottom, y1PtBottom); // Bottom edge in PDF coordinates
-    const yMaxBottom = Math.max(y0PtBottom, y1PtBottom); // Top edge in PDF coordinates
+    // Step 2: Convert natural pixels → PDF points
+    const { xPt, yPt, wPt, hPt } = naturalPxToPdfPoints(
+      nat,
+      imgRef.current.naturalWidth,
+      imgRef.current.naturalHeight,
+      pageWidthPt,
+      pageHeightPt
+    );
 
-    // Convert Y to TOP-LEFT points: yPtTopLeft = pageHeightPt - yMaxBottom
-    const xPt = xMin;
-    const wPt = xMax - xMin;
-    const hPt = yMaxBottom - yMinBottom;
-    const yPtTopLeft = pageHeightPt - yMaxBottom;
+    // Hard guard: Assert point sanity before saving (with Superclean validation)
+    const fmKeyNormalized = selectedFmKey?.toLowerCase() || "";
+    assertPtSanity(selectedFmKey || "Template", { xPt, yPt, wPt, hPt, pageWidthPt, pageHeightPt }, fmKeyNormalized);
 
-    // Debug log with all conversion details (as requested)
-    // "Truth log" to verify mismatch is gone - these 3 should line up
-    console.log("[Onboarding Save] Crop conversion details:", {
-      imgRect: {
-        width: rect.width,
-        height: rect.height,
-      },
-      viewport: {
-        width: currentViewport.width,
-        height: currentViewport.height,
-        rotation: currentViewport.rotation || 0,
-      },
-      scale: {
-        scaleX,
-        scaleY,
-      },
-      cropZone: {
+    // Debug log with all conversion details
+    // GOLDEN RULE: Conversion uses simple proportional math - NO DPI, NO SCALE
+    console.log("[Onboarding Save] Crop conversion details (proportional math):", {
+      cropZoneCssPx: {
         x: cropZone.x,
         y: cropZone.y,
         w: cropZone.width,
         h: cropZone.height,
       },
-      rectViewportPx: {
-        x0,
-        y0,
-        x1,
-        y1,
+      renderedImageSize: {
+        widthPx: rect.width,
+        heightPx: rect.height,
       },
-      pdfPointsRaw: {
-        x0Pt,
-        y0PtBottom,
-        x1Pt,
-        y1PtBottom,
+      pdfPageSize: {
+        pageWidthPt,
+        pageHeightPt,
+      },
+      percentages: {
+        xPct: cropZone.x / rect.width,
+        yPct: cropZone.y / rect.height,
+        wPct: cropZone.width / rect.width,
+        hPct: cropZone.height / rect.height,
       },
       pdfPointsFinal: {
         xPt,
-        yPtTopLeft,
+        yPt,
         wPt,
         hPt,
-      },
-      pageSize: {
-        pageWidthPt,
-        pageHeightPt,
+        note: "Calculated as: xPt = (cropX / imgW) * pageWidthPt",
       },
     });
 
@@ -903,8 +827,9 @@ export default function OnboardingTemplatesPage() {
       fmKey: selectedFmKey,
       page: coordsPage, // Use coordsPage, not selectedPage
       // PDF points in x,y,w,h order (top-left origin) - saved to named columns
+      // GOLDEN RULE: These come from proportional math, NOT from DPI/scale/viewport
       xPt,
-      yPt: yPtTopLeft,
+      yPt,
       wPt,
       hPt,
       pageWidthPt: Number(pageWidthPt), // Ensure it's a number
@@ -917,8 +842,8 @@ export default function OnboardingTemplatesPage() {
         w: cropZone.width,
         h: cropZone.height,
       },
-      renderWidthPx: currentViewport.width,
-      renderHeightPx: currentViewport.height,
+      renderWidthPx: rect.width,
+      renderHeightPx: rect.height,
     };
     
     console.log("[Onboarding Save] Final payload being written to Sheets:", finalPayload);
@@ -1186,6 +1111,36 @@ export default function OnboardingTemplatesPage() {
                   <p className="mt-2 text-xs text-slate-500">
                     Edit PDF point values above to adjust the crop zone. Page size: {pageWidthPt.toFixed(2)} x {pageHeightPt.toFixed(2)} points. Changes apply when you click outside the field.
                   </p>
+                  
+                  {/* Debug Panel - Live computed point values */}
+                  {calculatedPoints && (
+                    <div className="mt-4 p-3 bg-slate-900/50 border border-slate-600 rounded text-xs font-mono">
+                      <div className="text-slate-400 mb-2">Live Computed Points (Debug):</div>
+                      <div className="grid grid-cols-4 gap-2 text-slate-300">
+                        <div>
+                          <span className="text-slate-500">xPt:</span>{" "}
+                          <span className={calculatedPoints.xPt >= 440 && calculatedPoints.xPt <= 465 ? "text-green-400" : "text-yellow-400"}>
+                            {calculatedPoints.xPt.toFixed(2)}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500">yPt:</span> {calculatedPoints.yPt.toFixed(2)}
+                        </div>
+                        <div>
+                          <span className="text-slate-500">wPt:</span> {calculatedPoints.wPt.toFixed(2)}
+                        </div>
+                        <div>
+                          <span className="text-slate-500">hPt:</span> {calculatedPoints.hPt.toFixed(2)}
+                        </div>
+                      </div>
+                      {calculatedPoints.xPt >= 440 && calculatedPoints.xPt <= 465 && (
+                        <div className="mt-2 text-green-400 text-xs">✓ xPt is in expected range (440-465)</div>
+                      )}
+                      {(calculatedPoints.xPt < 440 || calculatedPoints.xPt > 465) && (
+                        <div className="mt-2 text-yellow-400 text-xs">⚠ xPt should be around 440-465 for superclean</div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

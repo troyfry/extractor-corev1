@@ -49,7 +49,7 @@ async function getMupdfInstance() {
 export async function renderPdfPageToPng(
   pdfBuffer: Buffer,
   page: number
-): Promise<{ pngBase64: string; width: number; height: number }> {
+): Promise<{ pngBase64: string; width: number; height: number; boundsPt: { x0: number; y0: number; x1: number; y1: number }; pageWidthPt: number; pageHeightPt: number }> {
   // Validate PDF buffer size
   if (pdfBuffer.length > MAX_PDF_SIZE) {
     throw new Error(`PDF file too large. Maximum size is ${MAX_PDF_SIZE / 1024 / 1024}MB.`);
@@ -123,11 +123,15 @@ export async function renderPdfPageToPng(
       throw new Error("Failed to load PDF page");
     }
 
-    // Get page dimensions
+    // Get page dimensions in PDF points (source of truth)
     console.log("[renderPdfPage] Getting page bounds");
     const rect = pdfPage.getBounds();
-    const pageWidth = Math.ceil(rect.x1 - rect.x0);
-    const pageHeight = Math.ceil(rect.y1 - rect.y0);
+    const pageWidthPt = Math.ceil(rect.x1 - rect.x0);
+    const pageHeightPt = Math.ceil(rect.y1 - rect.y0);
+    
+    // Use points for scale calculation
+    const pageWidth = pageWidthPt;
+    const pageHeight = pageHeightPt;
 
     // Calculate scale to cap width at MAX_RENDERED_WIDTH
     let scale = 2.0; // Default scale for quality
@@ -217,6 +221,9 @@ export async function renderPdfPageToPng(
       pngBase64,
       width: scaledWidth,
       height: scaledHeight,
+      boundsPt,
+      pageWidthPt,
+      pageHeightPt,
     };
   } catch (error) {
     console.error("[renderPdfPage] Error rendering PDF page:", error);
