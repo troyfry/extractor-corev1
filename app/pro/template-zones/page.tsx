@@ -117,6 +117,7 @@ function TemplateZonesPageContent() {
   const [imageHeight, setImageHeight] = useState<number>(0);
   const [pageWidthPt, setPageWidthPt] = useState<number>(0);
   const [pageHeightPt, setPageHeightPt] = useState<number>(0);
+  const [boundsPt, setBoundsPt] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [cropZone, setCropZone] = useState<CropZone | null>(null);
   const [isSelecting, setIsSelecting] = useState(false);
   const [startPos, setStartPos] = useState<{ x: number; y: number } | null>(null);
@@ -136,6 +137,7 @@ function TemplateZonesPageContent() {
   const hasInitializedFromQuery = useRef<boolean>(false);
   const [manualCoords, setManualCoords] = useState<{ xPct: string; yPct: string; wPct: string; hPct: string } | null>(null);
   const [manualPoints, setManualPoints] = useState<{ xPt: string; yPt: string; wPt: string; hPt: string } | null>(null);
+  const [calculatedPoints, setCalculatedPoints] = useState<{ xPt: number; yPt: number; wPt: number; hPt: number } | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [currentViewport, setCurrentViewport] = useState<any>(null);
   const [showAddFmForm, setShowAddFmForm] = useState(false);
@@ -205,18 +207,100 @@ function TemplateZonesPageContent() {
           savedTemplate.xPt !== undefined && savedTemplate.yPt !== undefined &&
           savedTemplate.wPt !== undefined && savedTemplate.hPt !== undefined &&
           pageWidthPt > 0 && pageHeightPt > 0) {
-        // Convert PDF points to pixels (top-left origin)
-        const xPx = (savedTemplate.xPt / savedTemplate.pageWidthPt) * imageWidth;
-        const wPx = (savedTemplate.wPt / savedTemplate.pageWidthPt) * imageWidth;
-        const yPx = (savedTemplate.yPt / savedTemplate.pageHeightPt) * imageHeight;
-        const hPx = (savedTemplate.hPt / savedTemplate.pageHeightPt) * imageHeight;
+        // Convert PDF points to CSS pixels (top-left origin)
+        // IMPORTANT: Templates saved with bounds normalization store xPt in 0-based space.
+        // To convert back to CSS pixels, we need to do the EXACT REVERSE of calculatePoints():
+        // 1. Add bounds offset to get bounds-space coordinates (reverse of normalization)
+        // 2. Convert bounds-space PDF points → canvas pixels (using SAVED page dimensions)
+        // 3. Convert canvas pixels → CSS pixels (account for CSS scaling)
         
-        setCropZone({
-          x: xPx,
-          y: yPx,
-          width: wPx,
-          height: hPx,
-        });
+        // CRITICAL: Use SAVED page dimensions (savedTemplate.pageWidthPt/pageHeightPt) for conversion
+        // The coordinates were saved relative to these dimensions, so we must use them to convert back
+        // If the current page has different dimensions, the coordinates will be proportionally scaled
+        const xPtBoundsSpace = boundsPt ? savedTemplate.xPt + boundsPt.x0 : savedTemplate.xPt;
+        const yPtBoundsSpace = boundsPt ? savedTemplate.yPt + boundsPt.y0 : savedTemplate.yPt;
+        
+        // Debug: Log conversion details to diagnose coordinate drift
+        if (boundsPt && (boundsPt.x0 !== 0 || boundsPt.y0 !== 0)) {
+          console.log("[Template Zones Load] Converting saved template:", {
+            saved: { xPt: savedTemplate.xPt, yPt: savedTemplate.yPt, wPt: savedTemplate.wPt, hPt: savedTemplate.hPt },
+            savedPageSize: { w: savedTemplate.pageWidthPt, h: savedTemplate.pageHeightPt },
+            currentPageSize: { w: pageWidthPt, h: pageHeightPt },
+            currentBounds: boundsPt,
+            xPtBoundsSpace,
+            yPtBoundsSpace,
+          });
+        }
+        
+        // Step 1: PDF points → canvas pixels (using SAVED page dimensions)
+        // Use the same proportional math as calculatePoints() but in reverse
+        // If current page size differs from saved, coordinates will scale proportionally
+        const xNorm = xPtBoundsSpace / savedTemplate.pageWidthPt;
+        const yNorm = yPtBoundsSpace / savedTemplate.pageHeightPt;
+        const wNorm = savedTemplate.wPt / savedTemplate.pageWidthPt;
+        const hNorm = savedTemplate.hPt / savedTemplate.pageHeightPt;
+        
+        const xCanvas = xNorm * imageWidth;
+        const yCanvas = yNorm * imageHeight;
+        const wCanvas = wNorm * imageWidth;
+        const hCanvas = hNorm * imageHeight;
+        
+        // Step 2: Canvas pixels → CSS pixels (reverse of calculatePoints conversion)
+        // Get displayed rect to calculate scale factor
+        const rect = imageContainerRef.current?.getBoundingClientRect();
+        if (rect && rect.width > 0 && rect.height > 0) {
+          const scaleX = rect.width / imageWidth;
+          const scaleY = rect.height / imageHeight;
+          
+          const xCss = xCanvas * scaleX;
+          const yCss = yCanvas * scaleY;
+          const wCss = wCanvas * scaleX;
+          const hCss = hCanvas * scaleY;
+          
+          // Debug: Log final conversion
+          if (boundsPt && (boundsPt.x0 !== 0 || boundsPt.y0 !== 0)) {
+            console.log("[Template Zones Load] Final CSS coords:", {
+              canvas: { x: xCanvas, y: yCanvas, w: wCanvas, h: hCanvas },
+              displayedRect: { w: rect.width, h: rect.height },
+              scale: { x: scaleX, y: scaleY },
+              css: { x: xCss, y: yCss, w: wCss, h: hCss },
+            });
+          }
+          
+          setCropZone({
+            x: xCss,
+            y: yCss,
+            width: wCss,
+            height: hCss,
+          });
+        } else {
+          // Fallback if rect not available yet - try again after a short delay
+          // This can happen if the image hasn't fully rendered yet
+          const timeoutId = setTimeout(() => {
+            const retryRect = imageContainerRef.current?.getBoundingClientRect();
+            if (retryRect && retryRect.width > 0 && retryRect.height > 0) {
+              const scaleX = retryRect.width / imageWidth;
+              const scaleY = retryRect.height / imageHeight;
+              
+              setCropZone({
+                x: xCanvas * scaleX,
+                y: yCanvas * scaleY,
+                width: wCanvas * scaleX,
+                height: hCanvas * scaleY,
+              });
+            } else {
+              // Final fallback - use canvas pixels directly (may be slightly off)
+              setCropZone({
+                x: xCanvas,
+                y: yCanvas,
+                width: wCanvas,
+                height: hCanvas,
+              });
+            }
+          }, 100);
+          
+          return () => clearTimeout(timeoutId);
+        }
       } else {
         // Fallback to percentage-based conversion (legacy)
         setCropZone({
@@ -232,7 +316,19 @@ function TemplateZonesPageContent() {
       setCropZone(null);
       setCoordsPage(null);
     }
-  }, [previewImage, imageWidth, imageHeight, savedTemplate, selectedPage, pageWidthPt, pageHeightPt]);
+  }, [previewImage, imageWidth, imageHeight, savedTemplate, selectedPage, pageWidthPt, pageHeightPt, boundsPt]);
+
+  // Update calculated points whenever cropZone changes
+  // This captures the coords when displayed correctly, so we can save them as-is
+  useEffect(() => {
+    if (cropZone && cropZone.width > 0 && cropZone.height > 0 && 
+        pageWidthPt && pageHeightPt && imageWidth && imageHeight && imageContainerRef.current) {
+      const points = calculatePoints();
+      setCalculatedPoints(points);
+    } else {
+      setCalculatedPoints(null);
+    }
+  }, [cropZone, pageWidthPt, pageHeightPt, imageWidth, imageHeight, boundsPt]);
 
   async function loadFmProfiles() {
     setIsLoadingProfiles(true);
@@ -500,12 +596,13 @@ function TemplateZonesPageContent() {
     if (!previewImage || !imageContainerRef.current) return;
 
     const rect = imageContainerRef.current.getBoundingClientRect();
+    // Get coordinates in CSS pixels (displayed size)
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    // Clamp to image bounds
-    const clampedX = Math.max(0, Math.min(x, imageWidth));
-    const clampedY = Math.max(0, Math.min(y, imageHeight));
+    // Clamp to displayed image bounds (CSS pixels)
+    const clampedX = Math.max(0, Math.min(x, rect.width));
+    const clampedY = Math.max(0, Math.min(y, rect.height));
 
     setIsSelecting(true);
     setStartPos({ x: clampedX, y: clampedY });
@@ -515,18 +612,21 @@ function TemplateZonesPageContent() {
       width: 0,
       height: 0,
     });
+    // Clear calculated points when starting a new rectangle
+    setCalculatedPoints(null);
   }
 
   function handleMouseMove(e: React.MouseEvent<HTMLDivElement>) {
     if (!isSelecting || !startPos || !previewImage || !imageContainerRef.current) return;
 
     const rect = imageContainerRef.current.getBoundingClientRect();
+    // Get coordinates in CSS pixels (displayed size)
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    // Clamp to image bounds
-    const clampedX = Math.max(0, Math.min(x, imageWidth));
-    const clampedY = Math.max(0, Math.min(y, imageHeight));
+    // Clamp to displayed image bounds (CSS pixels)
+    const clampedX = Math.max(0, Math.min(x, rect.width));
+    const clampedY = Math.max(0, Math.min(y, rect.height));
 
     const width = clampedX - startPos.x;
     const height = clampedY - startPos.y;
@@ -547,11 +647,19 @@ function TemplateZonesPageContent() {
       // Get PDF page size in true PDF points (user space units)
       // Note: getViewport({ scale: 1.0 }) gives CSS pixels (96 DPI), not PDF points (72 DPI)
       // Use page.view to get actual PDF user-space coordinates in points
+      // IMPORTANT: page.view may not start at (0,0) - store bounds for normalization
       const [xMin, yMin, xMax, yMax] = page.view; // PDF units (points)
       const truePageWidthPt = xMax - xMin;
       const truePageHeightPt = yMax - yMin;
       setPageWidthPt(truePageWidthPt);
       setPageHeightPt(truePageHeightPt);
+      
+      // Store bounds for coordinate normalization (pdf.js bounds may not start at 0,0)
+      setBoundsPt({ x0: xMin, y0: yMin, x1: xMax, y1: yMax });
+      // Only log if bounds don't start at 0,0 (to reduce console spam)
+      if (xMin !== 0 || yMin !== 0) {
+        console.log("[Template Zones] Stored boundsPt (non-zero offset):", { x0: xMin, y0: yMin, x1: xMax, y1: yMax });
+      }
       
       // Optional sanity log to verify the fix
       const v1 = page.getViewport({ scale: 1.0 });
@@ -687,32 +795,64 @@ function TemplateZonesPageContent() {
   }
 
   function calculatePoints(): { xPt: number; yPt: number; wPt: number; hPt: number } | null {
-    if (!cropZone || !currentViewport || !pageWidthPt || !pageHeightPt || !imageWidth || !imageHeight) return null;
+    if (!cropZone || !pageWidthPt || !pageHeightPt || !imageWidth || !imageHeight || !imageContainerRef.current) return null;
 
-    // Convert cropZone (pixels) to viewport pixels, then to PDF points
+    // IMPORTANT: Use proportional conversion (same as onboarding page) instead of convertToPdfPoint()
+    // This ensures consistency and avoids issues with viewport conversion
+    // cropZone is in CSS pixels (from getBoundingClientRect)
+    // Convert CSS pixels → canvas pixels → PDF points using proportional math
     try {
-      // cropZone is in imageWidth/imageHeight pixels (from viewport at scale 2.0)
-      // Convert to viewport pixels (same as imageWidth/imageHeight at scale 2.0)
-      const x0 = cropZone.x;
-      const y0 = cropZone.y;
-      const x1 = cropZone.x + cropZone.width;
-      const y1 = cropZone.y + cropZone.height;
+      const rect = imageContainerRef.current.getBoundingClientRect();
+      
+      // Step 1: Convert CSS pixels → canvas pixels (account for CSS scaling)
+      const scaleX = imageWidth / rect.width;
+      const scaleY = imageHeight / rect.height;
+      
+      const xCanvas = cropZone.x * scaleX;
+      const yCanvas = cropZone.y * scaleY;
+      const wCanvas = cropZone.width * scaleX;
+      const hCanvas = cropZone.height * scaleY;
 
-      const [x0Pt, y0PtBottom] = currentViewport.convertToPdfPoint(x0, y0);
-      const [x1Pt, y1PtBottom] = currentViewport.convertToPdfPoint(x1, y1);
+      // Step 2: Convert canvas pixels → PDF points using proportional math
+      // Use the same approach as onboarding page: (canvasPx / canvasSize) * pageSizePt
+      // cropZone coordinates are from top-left (CSS pixels), and we want top-left PDF points
+      const xNorm = xCanvas / imageWidth;
+      const yNorm = yCanvas / imageHeight;
+      const wNorm = wCanvas / imageWidth;
+      const hNorm = hCanvas / imageHeight;
 
-      const xMin = Math.min(x0Pt, x1Pt);
-      const xMax = Math.max(x0Pt, x1Pt);
-      const yMinBottom = Math.min(y0PtBottom, y1PtBottom);
-      const yMaxBottom = Math.max(y0PtBottom, y1PtBottom);
+      // Calculate in bounds space first (proportional to page size)
+      const xPtBoundsSpace = xNorm * pageWidthPt;
+      const yPtBoundsSpace = yNorm * pageHeightPt;
+      const wPt = wNorm * pageWidthPt;
+      const hPt = hNorm * pageHeightPt;
 
-      const xPt = xMin;
-      const wPt = xMax - xMin;
-      const hPt = yMaxBottom - yMinBottom;
-      const yPtTopLeft = pageHeightPt - yMaxBottom;
+      // ✅ Normalize bounds -> 0-based page space (same as MuPDF fix)
+      const xPt = boundsPt ? xPtBoundsSpace - boundsPt.x0 : xPtBoundsSpace;
+      const yPt = boundsPt ? yPtBoundsSpace - boundsPt.y0 : yPtBoundsSpace;
 
-      return { xPt, yPt: yPtTopLeft, wPt, hPt };
-    } catch {
+      // Log conversion details to diagnose coordinate drift
+      console.log("[Template Zones calculatePoints] Conversion:", {
+        cropZoneCss: { x: cropZone.x, y: cropZone.y, w: cropZone.width, h: cropZone.height },
+        displayedRect: { w: rect.width, h: rect.height },
+        canvasSize: { w: imageWidth, h: imageHeight },
+        scale: { x: scaleX, y: scaleY },
+        canvasCoords: { x: xCanvas, y: yCanvas, w: wCanvas, h: hCanvas },
+        norms: { xNorm, yNorm, wNorm, hNorm },
+        xPtBoundsSpace: xPtBoundsSpace,
+        boundsPt: boundsPt,
+        xPtAfterBounds: xPt,
+        yPt: yPt,
+        wPt: wPt,
+        hPt: hPt,
+        xPtFormula: boundsPt 
+          ? `(${xNorm} * ${pageWidthPt}) - ${boundsPt.x0} = ${xPt}`
+          : `${xNorm} * ${pageWidthPt} = ${xPt}`,
+      });
+
+      return { xPt, yPt, wPt, hPt };
+    } catch (err) {
+      console.error("[Template Zones calculatePoints] Error:", err);
       return null;
     }
   }
@@ -803,12 +943,29 @@ function TemplateZonesPageContent() {
       return;
     }
     
-    // Calculate PDF points from crop zone
-    const points = calculatePoints();
-    if (!points) {
+    // Use stored calculatedPoints instead of recalculating
+    // This ensures we save the exact coords that were displayed to the user
+    // Recalculating at save time can cause drift if getBoundingClientRect() returns different values
+    if (!calculatedPoints) {
       setError("Failed to calculate PDF points. Please redraw the rectangle.");
       return;
     }
+    
+    const points = calculatedPoints; // Use stored points, not recalculated
+    
+    // Debug log to verify we're using stored points
+    console.log("[Template Zones Save] Using stored calculated points (not recalculated):", {
+      xPt: points.xPt,
+      yPt: points.yPt,
+      wPt: points.wPt,
+      hPt: points.hPt,
+      cropZone: cropZone,
+      imageWidth: imageWidth,
+      imageHeight: imageHeight,
+      pageWidthPt: pageWidthPt,
+      pageHeightPt: pageHeightPt,
+      boundsPt: boundsPt,
+    });
 
     // Validate crop zone bounds
     if (cropZone.x < 0 || cropZone.y < 0 || cropZone.width <= 0 || cropZone.height <= 0) {
@@ -895,6 +1052,7 @@ function TemplateZonesPageContent() {
     setIsSelecting(false);
     setManualCoords(null);
     setManualPoints(null);
+    setCalculatedPoints(null);
     setCurrentViewport(null);
   }
 
@@ -1152,7 +1310,7 @@ function TemplateZonesPageContent() {
                           step="0.01"
                           min="0"
                           max={pageWidthPt}
-                          value={manualPoints?.xPt ?? (calculatePoints()?.xPt.toFixed(2) ?? "0.00")}
+                          value={manualPoints?.xPt ?? (calculatedPoints?.xPt.toFixed(2) ?? "0.00")}
                           onChange={(e) => handleManualPointsChange("xPt", e.target.value)}
                           onBlur={() => {
                             if (manualPoints) {
@@ -1169,7 +1327,7 @@ function TemplateZonesPageContent() {
                           step="0.01"
                           min="0"
                           max={pageHeightPt}
-                          value={manualPoints?.yPt ?? (calculatePoints()?.yPt.toFixed(2) ?? "0.00")}
+                          value={manualPoints?.yPt ?? (calculatedPoints?.yPt.toFixed(2) ?? "0.00")}
                           onChange={(e) => handleManualPointsChange("yPt", e.target.value)}
                           onBlur={() => {
                             if (manualPoints) {
@@ -1186,7 +1344,7 @@ function TemplateZonesPageContent() {
                           step="0.01"
                           min="0"
                           max={pageWidthPt}
-                          value={manualPoints?.wPt ?? (calculatePoints()?.wPt.toFixed(2) ?? "0.00")}
+                          value={manualPoints?.wPt ?? (calculatedPoints?.wPt.toFixed(2) ?? "0.00")}
                           onChange={(e) => handleManualPointsChange("wPt", e.target.value)}
                           onBlur={() => {
                             if (manualPoints) {
@@ -1203,7 +1361,7 @@ function TemplateZonesPageContent() {
                           step="0.01"
                           min="0"
                           max={pageHeightPt}
-                          value={manualPoints?.hPt ?? (calculatePoints()?.hPt.toFixed(2) ?? "0.00")}
+                          value={manualPoints?.hPt ?? (calculatedPoints?.hPt.toFixed(2) ?? "0.00")}
                           onChange={(e) => handleManualPointsChange("hPt", e.target.value)}
                           onBlur={() => {
                             if (manualPoints) {

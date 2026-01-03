@@ -124,8 +124,10 @@ export async function renderPdfPageToPng(
     }
 
     // Get page dimensions in PDF points (source of truth)
+    // GUARD: Always convert CSS→natural→points. Never divide by imageWidth/imageHeight directly.
     console.log("[renderPdfPage] Getting page bounds");
     const rect = pdfPage.getBounds();
+    const boundsPt = { x0: rect.x0, y0: rect.y0, x1: rect.x1, y1: rect.y1 };
     const pageWidthPt = Math.ceil(rect.x1 - rect.x0);
     const pageHeightPt = Math.ceil(rect.y1 - rect.y0);
     

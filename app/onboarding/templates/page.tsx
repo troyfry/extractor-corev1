@@ -115,6 +115,7 @@ export default function OnboardingTemplatesPage() {
   const [imageHeight, setImageHeight] = useState<number>(0);
   const [pageWidthPt, setPageWidthPt] = useState<number>(0);
   const [pageHeightPt, setPageHeightPt] = useState<number>(0);
+  const [boundsPt, setBoundsPt] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [cropZone, setCropZone] = useState<CropZone | null>(null);
   // Store the viewport used for rendering (needed for accurate pixel->PDF point conversion)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -140,6 +141,7 @@ export default function OnboardingTemplatesPage() {
   const [manualCoords, setManualCoords] = useState<{ xPct: string; yPct: string; wPct: string; hPct: string } | null>(null);
   const [manualPoints, setManualPoints] = useState<{ xPt: string; yPt: string; wPt: string; hPt: string } | null>(null);
   const [calculatedPoints, setCalculatedPoints] = useState<{ xPt: number; yPt: number; wPt: number; hPt: number } | null>(null);
+  const [imageLoaded, setImageLoaded] = useState(false);
 
   // Auto-select fmKey from query parameter (will be validated after profiles load)
   useEffect(() => {
@@ -186,14 +188,28 @@ export default function OnboardingTemplatesPage() {
           savedTemplate.wPt !== undefined && savedTemplate.hPt !== undefined &&
           pageWidthPt > 0 && pageHeightPt > 0) {
         // Convert PDF points to CSS pixels (top-left origin)
-        // DO compute scale from rendered PNG dimensions (imageWidth/imageHeight), NOT container size
-        // This ensures the overlay aligns correctly with the rendered image
+        // IMPORTANT: Templates saved with bounds normalization store xPt in 0-based space.
+        // To convert back to CSS pixels, we need to add bounds offset to get bounds-space coordinates,
+        // then scale proportionally to image dimensions.
         const scaleX = imageWidth / savedTemplate.pageWidthPt;
         const scaleY = imageHeight / savedTemplate.pageHeightPt;
-        const xCss = savedTemplate.xPt * scaleX;
-        const yCss = savedTemplate.yPt * scaleY;
+        
+        // Add bounds offset if available to convert from 0-based to bounds-space coordinates
+        // This works for both:
+        // - New templates: xPt is normalized (0-based), so adding x0 gives bounds-space (correct)
+        // - Old templates: xPt is in bounds-space, but adding x0 still works for display conversion
+        const xPtBoundsSpace = boundsPt ? savedTemplate.xPt + boundsPt.x0 : savedTemplate.xPt;
+        const yPtBoundsSpace = boundsPt ? savedTemplate.yPt + boundsPt.y0 : savedTemplate.yPt;
+        
+        const xCss = xPtBoundsSpace * scaleX;
+        const yCss = yPtBoundsSpace * scaleY;
         const wCss = savedTemplate.wPt * scaleX;
         const hCss = savedTemplate.hPt * scaleY;
+        
+        // Warn if template appears to be old (xPt seems too low for superclean)
+        if (boundsPt && savedTemplate.fmKey?.toLowerCase().includes("superclean") && savedTemplate.xPt < 400) {
+          console.warn(`[Template Load] Old template detected (xPt=${savedTemplate.xPt}). Please re-save to get correct coordinates with bounds normalization.`);
+        }
         
         try {
           
@@ -476,6 +492,9 @@ export default function OnboardingTemplatesPage() {
       // Set preview image from API response
       setPreviewImage(data.pngDataUrl);
       
+      // Reset image loaded state when new image is set
+      setImageLoaded(false);
+      
       // Store rendered image dimensions (for coordinate conversion)
       setImageWidth(data.widthPx);
       setImageHeight(data.heightPx);
@@ -483,6 +502,13 @@ export default function OnboardingTemplatesPage() {
       // Store PDF page dimensions in points (from MuPDF - source of truth)
       setPageWidthPt(data.pageWidthPt);
       setPageHeightPt(data.pageHeightPt);
+      
+      // Store bounds for coordinate normalization (MuPDF bounds may not start at 0,0)
+      setBoundsPt(data.boundsPt);
+      // Only log if bounds don't start at 0,0 (to reduce console spam)
+      if (data.boundsPt && (data.boundsPt.x0 !== 0 || data.boundsPt.y0 !== 0)) {
+        console.log("[renderPage] Stored boundsPt (non-zero offset):", data.boundsPt);
+      }
       
       // Clear viewport (no longer needed - we use proportional math)
       setCurrentViewport(null);
@@ -592,40 +618,85 @@ export default function OnboardingTemplatesPage() {
     setError(null);
   }
 
-  function calculatePoints(): { xPt: number; yPt: number; wPt: number; hPt: number } | null {
-    if (!cropZone || !pageWidthPt || !pageHeightPt) return null;
+  // IMPORTANT: cropZone is in CSS pixels (displayed image space).
+  // Always convert CSS → natural pixels → PDF points using the SAME method as handleSave().
+  // Never divide by imageWidth/imageHeight directly (those are natural px).
+  // Use cssCropToNaturalPx + naturalPxToPdfPoints (same as handleSave) for consistency.
+  async function calculatePoints(): Promise<{ xPt: number; yPt: number; wPt: number; hPt: number } | null> {
+    const imgEl = imgRef.current;
+    if (!imgEl || !cropZone || !pageWidthPt || !pageHeightPt) return null;
 
-    // GOLDEN RULE: Use simple proportional math - NO DPI, NO SCALE, NO VIEWPORT CONVERSION
+    // Guard: Image must be fully loaded (naturalWidth/Height are 0 until loaded)
+    if (!imgEl.complete || imgEl.naturalWidth === 0 || imgEl.naturalHeight === 0) {
+      console.log("[calculatePoints] Image not ready:", {
+        complete: imgEl.complete,
+        naturalWidth: imgEl.naturalWidth,
+        naturalHeight: imgEl.naturalHeight,
+      });
+      return null;
+    }
+
     try {
-      const rect = getImgRect();
+      // Use EXACT same conversion method as handleSave() for consistency
+      const { cssCropToNaturalPx, naturalPxToPdfPoints } = await import("@/lib/templates/coordinateUtils");
       
-      // Calculate percentages (0-1 range)
-      const xPct = cropZone.x / rect.width;
-      const yPct = cropZone.y / rect.height;
-      const wPct = cropZone.width / rect.width;
-      const hPct = cropZone.height / rect.height;
+      const rect = imgEl.getBoundingClientRect();
+      
+      // Step 1: Convert CSS crop → natural pixels (same as handleSave)
+      const nat = cssCropToNaturalPx(imgEl, {
+        x: cropZone.x,
+        y: cropZone.y,
+        w: cropZone.width,
+        h: cropZone.height,
+      });
 
-      // Convert to PDF points using PAGE POINTS (not image px, not DPI, not scale)
-      const xPt = xPct * pageWidthPt;
-      const yPt = yPct * pageHeightPt;
-      const wPt = wPct * pageWidthPt;
-      const hPt = hPct * pageHeightPt;
+      // Step 2: Convert natural pixels → PDF points (same as handleSave)
+      // ✅ Pass boundsPt to normalize coordinates (MuPDF bounds may not start at 0,0)
+      const pt = naturalPxToPdfPoints(
+        nat,
+        imgEl.naturalWidth,
+        imgEl.naturalHeight,
+        pageWidthPt,
+        pageHeightPt,
+        boundsPt
+      );
 
-      return { xPt, yPt, wPt, hPt };
-    } catch {
+      // Only log detailed conversion when bounds offset is non-zero or boundsPt is missing (to reduce console spam)
+      if (!boundsPt || (boundsPt.x0 !== 0 || boundsPt.y0 !== 0)) {
+        const xNorm = nat.x / imgEl.naturalWidth;
+        const xPtBeforeBounds = xNorm * pageWidthPt;
+        const xPtAfterBounds = boundsPt ? xPtBeforeBounds - boundsPt.x0 : xPtBeforeBounds;
+        
+        console.log("[calculatePoints] Conversion:", {
+          boundsPt: boundsPt,
+          boundsOffset: boundsPt ? { x0: boundsPt.x0, y0: boundsPt.y0 } : null,
+          calculatedPt: pt,
+          xPtFormula: boundsPt 
+            ? `((${nat.x} / ${imgEl.naturalWidth}) * ${pageWidthPt}) - ${boundsPt.x0} = ${xPtAfterBounds}`
+            : `(${nat.x} / ${imgEl.naturalWidth}) * ${pageWidthPt} = ${xPtBeforeBounds}`,
+          warning: boundsPt ? null : "⚠️ boundsPt is null - normalization not applied!",
+        });
+      }
+      
+      return pt;
+    } catch (err) {
+      console.error("[calculatePoints] Error:", err);
       return null;
     }
   }
 
-  // Update calculated points whenever cropZone changes
+  // Update calculated points whenever cropZone changes or image loads
+  // IMPORTANT: Wait for boundsPt to be available before calculating (needed for normalization)
   useEffect(() => {
-    if (cropZone && cropZone.width > 0 && cropZone.height > 0 && pageWidthPt && pageHeightPt) {
-      const points = calculatePoints();
-      setCalculatedPoints(points);
+    if (cropZone && cropZone.width > 0 && cropZone.height > 0 && 
+        pageWidthPt && pageHeightPt && imageLoaded && boundsPt) {
+      calculatePoints().then((points) => {
+        setCalculatedPoints(points);
+      });
     } else {
       setCalculatedPoints(null);
     }
-  }, [cropZone, pageWidthPt, pageHeightPt]);
+  }, [cropZone, pageWidthPt, pageHeightPt, imageLoaded, boundsPt]);
 
   function handleManualPointsChange(field: "xPt" | "yPt" | "wPt" | "hPt", value: string) {
     if (!pageWidthPt || !pageHeightPt) return;
@@ -771,17 +842,18 @@ export default function OnboardingTemplatesPage() {
     });
 
     // Step 2: Convert natural pixels → PDF points
+    // ✅ Pass boundsPt to normalize coordinates (MuPDF bounds may not start at 0,0)
     const { xPt, yPt, wPt, hPt } = naturalPxToPdfPoints(
       nat,
       imgRef.current.naturalWidth,
       imgRef.current.naturalHeight,
       pageWidthPt,
-      pageHeightPt
+      pageHeightPt,
+      boundsPt
     );
 
-    // Hard guard: Assert point sanity before saving (with Superclean validation)
-    const fmKeyNormalized = selectedFmKey?.toLowerCase() || "";
-    assertPtSanity(selectedFmKey || "Template", { xPt, yPt, wPt, hPt, pageWidthPt, pageHeightPt }, fmKeyNormalized);
+    // Hard guard: Assert point sanity before saving
+    assertPtSanity({ xPt, yPt, wPt, hPt }, pageWidthPt, pageHeightPt, selectedFmKey || "Template");
 
     // Debug log with all conversion details
     // GOLDEN RULE: Conversion uses simple proportional math - NO DPI, NO SCALE
@@ -999,6 +1071,20 @@ export default function OnboardingTemplatesPage() {
                   alt="PDF Preview"
                   style={{ display: "block", width: "100%", height: "auto" }}
                   draggable={false}
+                  onLoad={() => {
+                    // Mark image as loaded and verify dimensions
+                    const img = imgRef.current;
+                    if (img && imageWidth > 0 && imageHeight > 0) {
+                      // Verify natural dimensions match API response
+                      if (Math.abs(img.naturalWidth - imageWidth) > 1 || Math.abs(img.naturalHeight - imageHeight) > 1) {
+                        console.warn("[Image Load] Dimension mismatch:", {
+                          natural: { w: img.naturalWidth, h: img.naturalHeight },
+                          api: { w: imageWidth, h: imageHeight },
+                        });
+                      }
+                    }
+                    setImageLoaded(true);
+                  }}
                 />
                 {/* Single overlay element for pointer events - positioned exactly over preview */}
                 <div

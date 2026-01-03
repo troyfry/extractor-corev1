@@ -32,56 +32,81 @@ export function cssCropToNaturalPx(
 }
 
 /**
+ * PDF page bounds in points (from MuPDF getBounds()).
+ * MuPDF bounds may not start at (0,0), so we need to normalize.
+ */
+export type BoundsPt = { x0: number; y0: number; x1: number; y1: number };
+
+/**
  * Convert natural pixel coordinates to PDF points using proportional mapping.
+ * 
+ * IMPORTANT: MuPDF page.getBounds() is not guaranteed to start at (0,0).
+ * To get 0-based page coordinates, we must subtract boundsPt.x0/y0.
+ * 
+ * @param nat - Natural pixel coordinates
+ * @param naturalW - Natural image width in pixels
+ * @param naturalH - Natural image height in pixels
+ * @param pageWidthPt - Page width in points (x1 - x0 from bounds)
+ * @param pageHeightPt - Page height in points (y1 - y0 from bounds)
+ * @param boundsPt - Optional bounds from MuPDF getBounds() to normalize coordinates
  */
 export function naturalPxToPdfPoints(
   nat: { x: number; y: number; w: number; h: number },
-  naturalWidth: number,
-  naturalHeight: number,
+  naturalW: number,
+  naturalH: number,
   pageWidthPt: number,
-  pageHeightPt: number
+  pageHeightPt: number,
+  boundsPt?: BoundsPt | null
 ): { xPt: number; yPt: number; wPt: number; hPt: number } {
-  return {
-    xPt: (nat.x / naturalWidth) * pageWidthPt,
-    yPt: (nat.y / naturalHeight) * pageHeightPt,
-    wPt: (nat.w / naturalWidth) * pageWidthPt,
-    hPt: (nat.h / naturalHeight) * pageHeightPt,
-  };
+  const x0 = boundsPt?.x0 ?? 0;
+  const y0 = boundsPt?.y0 ?? 0;
+
+  const xNorm = nat.x / naturalW;
+  const yNorm = nat.y / naturalH;
+  const wNorm = nat.w / naturalW;
+  const hNorm = nat.h / naturalH;
+
+  // ✅ Normalize bounds -> 0-based page space
+  const xPt = xNorm * pageWidthPt - x0;
+  const yPt = yNorm * pageHeightPt - y0;
+  const wPt = wNorm * pageWidthPt;
+  const hPt = hNorm * pageHeightPt;
+
+  return { xPt, yPt, wPt, hPt };
 }
 
 /**
  * Assert that PDF point coordinates are sane.
  * This prevents regressions where coordinates get corrupted.
  * 
- * @param label - Label for error messages (e.g., "Superclean")
+ * Generic validation that catches drift without FM-specific rules.
+ * 
  * @param pts - PDF point coordinates to validate
- * @param fmKeyNormalized - Optional normalized FM key for special validation (e.g., "superclean")
+ * @param pageWidthPt - Page width in points
+ * @param pageHeightPt - Page height in points
+ * @param label - Optional label for error messages (default: "crop")
  */
 export function assertPtSanity(
-  label: string,
-  pts: {
-    xPt: number;
-    yPt: number;
-    wPt: number;
-    hPt: number;
-    pageWidthPt: number;
-    pageHeightPt: number;
-  },
-  fmKeyNormalized?: string
+  pts: { xPt: number; yPt: number; wPt: number; hPt: number },
+  pageWidthPt: number,
+  pageHeightPt: number,
+  label = "crop"
 ): void {
-  if (pts.xPt < 0 || pts.yPt < 0 || pts.wPt <= 0 || pts.hPt <= 0) {
-    throw new Error(`[${label}] Invalid points: negative/zero`);
-  }
-  if (pts.xPt + pts.wPt > pts.pageWidthPt + 1) {
-    throw new Error(`[${label}] Crop exceeds page width`);
-  }
-  if (pts.yPt + pts.hPt > pts.pageHeightPt + 1) {
-    throw new Error(`[${label}] Crop exceeds page height`);
-  }
+  const { xPt, yPt, wPt, hPt } = pts;
 
-  // Special validation for Superclean
-  if (fmKeyNormalized && fmKeyNormalized.includes("superclean") && (pts.xPt < 430 || pts.xPt > 475)) {
-    throw new Error(`[superclean] xPt out of expected range: ${pts.xPt}`);
+  const ok =
+    Number.isFinite(xPt) && Number.isFinite(yPt) &&
+    Number.isFinite(wPt) && Number.isFinite(hPt) &&
+    wPt > 0 && hPt > 0 &&
+    xPt >= 0 && yPt >= 0 &&
+    xPt + wPt <= pageWidthPt + 1 &&   // small tolerance
+    yPt + hPt <= pageHeightPt + 1;
+
+  if (!ok) {
+    throw new Error(
+      `[${label}] Invalid PDF_POINTS crop. Got x=${xPt},y=${yPt},w=${wPt},h=${hPt} ` +
+      `page=${pageWidthPt}x${pageHeightPt}`
+    );
   }
 }
 
