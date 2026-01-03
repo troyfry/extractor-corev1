@@ -5,6 +5,12 @@ import { useSearchParams } from "next/navigation";
 import AppShell from "@/components/layout/AppShell";
 import MainNavigation from "@/components/layout/MainNavigation";
 import { normalizeFmKey } from "@/lib/templates/fmProfiles";
+import { 
+  cssPixelsToPdfPoints, 
+  pdfPointsToCssPixels, 
+  validatePdfPoints,
+  type BoundsPt 
+} from "@/lib/templates/templateCoordinateConversion";
 
 // Coordinate system constants
 // Internal: use PDF_POINTS_TOP_LEFT to be explicit about origin
@@ -207,95 +213,43 @@ function TemplateZonesPageContent() {
           savedTemplate.xPt !== undefined && savedTemplate.yPt !== undefined &&
           savedTemplate.wPt !== undefined && savedTemplate.hPt !== undefined &&
           pageWidthPt > 0 && pageHeightPt > 0) {
-        // Convert PDF points to CSS pixels (top-left origin)
-        // IMPORTANT: Templates saved with bounds normalization store xPt in 0-based space.
-        // To convert back to CSS pixels, we need to do the EXACT REVERSE of calculatePoints():
-        // 1. Add bounds offset to get bounds-space coordinates (reverse of normalization)
-        // 2. Convert bounds-space PDF points → canvas pixels (using SAVED page dimensions)
-        // 3. Convert canvas pixels → CSS pixels (account for CSS scaling)
-        
-        // CRITICAL: Use SAVED page dimensions (savedTemplate.pageWidthPt/pageHeightPt) for conversion
-        // The coordinates were saved relative to these dimensions, so we must use them to convert back
-        // If the current page has different dimensions, the coordinates will be proportionally scaled
-        const xPtBoundsSpace = boundsPt ? savedTemplate.xPt + boundsPt.x0 : savedTemplate.xPt;
-        const yPtBoundsSpace = boundsPt ? savedTemplate.yPt + boundsPt.y0 : savedTemplate.yPt;
-        
-        // Debug: Log conversion details to diagnose coordinate drift
-        if (boundsPt && (boundsPt.x0 !== 0 || boundsPt.y0 !== 0)) {
-          console.log("[Template Zones Load] Converting saved template:", {
-            saved: { xPt: savedTemplate.xPt, yPt: savedTemplate.yPt, wPt: savedTemplate.wPt, hPt: savedTemplate.hPt },
-            savedPageSize: { w: savedTemplate.pageWidthPt, h: savedTemplate.pageHeightPt },
-            currentPageSize: { w: pageWidthPt, h: pageHeightPt },
-            currentBounds: boundsPt,
-            xPtBoundsSpace,
-            yPtBoundsSpace,
-          });
-        }
-        
-        // Step 1: PDF points → canvas pixels (using SAVED page dimensions)
-        // Use the same proportional math as calculatePoints() but in reverse
-        // If current page size differs from saved, coordinates will scale proportionally
-        const xNorm = xPtBoundsSpace / savedTemplate.pageWidthPt;
-        const yNorm = yPtBoundsSpace / savedTemplate.pageHeightPt;
-        const wNorm = savedTemplate.wPt / savedTemplate.pageWidthPt;
-        const hNorm = savedTemplate.hPt / savedTemplate.pageHeightPt;
-        
-        const xCanvas = xNorm * imageWidth;
-        const yCanvas = yNorm * imageHeight;
-        const wCanvas = wNorm * imageWidth;
-        const hCanvas = hNorm * imageHeight;
-        
-        // Step 2: Canvas pixels → CSS pixels (reverse of calculatePoints conversion)
-        // Get displayed rect to calculate scale factor
+        // ⚠️ USE LOCKED CONVERSION FUNCTION - DO NOT MODIFY
+        // See lib/templates/templateCoordinateConversion.ts for implementation details
         const rect = imageContainerRef.current?.getBoundingClientRect();
         if (rect && rect.width > 0 && rect.height > 0) {
-          const scaleX = rect.width / imageWidth;
-          const scaleY = rect.height / imageHeight;
+          const cssPx = pdfPointsToCssPixels(
+            {
+              xPt: savedTemplate.xPt,
+              yPt: savedTemplate.yPt,
+              wPt: savedTemplate.wPt,
+              hPt: savedTemplate.hPt,
+            },
+            { width: savedTemplate.pageWidthPt, height: savedTemplate.pageHeightPt },
+            { width: imageWidth, height: imageHeight },
+            { width: rect.width, height: rect.height },
+            boundsPt
+          );
           
-          const xCss = xCanvas * scaleX;
-          const yCss = yCanvas * scaleY;
-          const wCss = wCanvas * scaleX;
-          const hCss = hCanvas * scaleY;
-          
-          // Debug: Log final conversion
-          if (boundsPt && (boundsPt.x0 !== 0 || boundsPt.y0 !== 0)) {
-            console.log("[Template Zones Load] Final CSS coords:", {
-              canvas: { x: xCanvas, y: yCanvas, w: wCanvas, h: hCanvas },
-              displayedRect: { w: rect.width, h: rect.height },
-              scale: { x: scaleX, y: scaleY },
-              css: { x: xCss, y: yCss, w: wCss, h: hCss },
-            });
-          }
-          
-          setCropZone({
-            x: xCss,
-            y: yCss,
-            width: wCss,
-            height: hCss,
-          });
+          setCropZone(cssPx);
         } else {
           // Fallback if rect not available yet - try again after a short delay
           // This can happen if the image hasn't fully rendered yet
           const timeoutId = setTimeout(() => {
             const retryRect = imageContainerRef.current?.getBoundingClientRect();
             if (retryRect && retryRect.width > 0 && retryRect.height > 0) {
-              const scaleX = retryRect.width / imageWidth;
-              const scaleY = retryRect.height / imageHeight;
-              
-              setCropZone({
-                x: xCanvas * scaleX,
-                y: yCanvas * scaleY,
-                width: wCanvas * scaleX,
-                height: hCanvas * scaleY,
-              });
-            } else {
-              // Final fallback - use canvas pixels directly (may be slightly off)
-              setCropZone({
-                x: xCanvas,
-                y: yCanvas,
-                width: wCanvas,
-                height: hCanvas,
-              });
+              const cssPx = pdfPointsToCssPixels(
+                {
+                  xPt: savedTemplate.xPt,
+                  yPt: savedTemplate.yPt,
+                  wPt: savedTemplate.wPt,
+                  hPt: savedTemplate.hPt,
+                },
+                { width: savedTemplate.pageWidthPt, height: savedTemplate.pageHeightPt },
+                { width: imageWidth, height: imageHeight },
+                { width: retryRect.width, height: retryRect.height },
+                boundsPt
+              );
+              setCropZone(cssPx);
             }
           }, 100);
           
@@ -797,60 +751,25 @@ function TemplateZonesPageContent() {
   function calculatePoints(): { xPt: number; yPt: number; wPt: number; hPt: number } | null {
     if (!cropZone || !pageWidthPt || !pageHeightPt || !imageWidth || !imageHeight || !imageContainerRef.current) return null;
 
-    // IMPORTANT: Use proportional conversion (same as onboarding page) instead of convertToPdfPoint()
-    // This ensures consistency and avoids issues with viewport conversion
-    // cropZone is in CSS pixels (from getBoundingClientRect)
-    // Convert CSS pixels → canvas pixels → PDF points using proportional math
     try {
       const rect = imageContainerRef.current.getBoundingClientRect();
       
-      // Step 1: Convert CSS pixels → canvas pixels (account for CSS scaling)
-      const scaleX = imageWidth / rect.width;
-      const scaleY = imageHeight / rect.height;
+      // ⚠️ USE LOCKED CONVERSION FUNCTION - DO NOT MODIFY
+      // See lib/templates/templateCoordinateConversion.ts for implementation details
+      const points = cssPixelsToPdfPoints(
+        {
+          x: cropZone.x,
+          y: cropZone.y,
+          width: cropZone.width,
+          height: cropZone.height,
+        },
+        { width: rect.width, height: rect.height },
+        { width: imageWidth, height: imageHeight },
+        { width: pageWidthPt, height: pageHeightPt },
+        boundsPt
+      );
       
-      const xCanvas = cropZone.x * scaleX;
-      const yCanvas = cropZone.y * scaleY;
-      const wCanvas = cropZone.width * scaleX;
-      const hCanvas = cropZone.height * scaleY;
-
-      // Step 2: Convert canvas pixels → PDF points using proportional math
-      // Use the same approach as onboarding page: (canvasPx / canvasSize) * pageSizePt
-      // cropZone coordinates are from top-left (CSS pixels), and we want top-left PDF points
-      const xNorm = xCanvas / imageWidth;
-      const yNorm = yCanvas / imageHeight;
-      const wNorm = wCanvas / imageWidth;
-      const hNorm = hCanvas / imageHeight;
-
-      // Calculate in bounds space first (proportional to page size)
-      const xPtBoundsSpace = xNorm * pageWidthPt;
-      const yPtBoundsSpace = yNorm * pageHeightPt;
-      const wPt = wNorm * pageWidthPt;
-      const hPt = hNorm * pageHeightPt;
-
-      // ✅ Normalize bounds -> 0-based page space (same as MuPDF fix)
-      const xPt = boundsPt ? xPtBoundsSpace - boundsPt.x0 : xPtBoundsSpace;
-      const yPt = boundsPt ? yPtBoundsSpace - boundsPt.y0 : yPtBoundsSpace;
-
-      // Log conversion details to diagnose coordinate drift
-      console.log("[Template Zones calculatePoints] Conversion:", {
-        cropZoneCss: { x: cropZone.x, y: cropZone.y, w: cropZone.width, h: cropZone.height },
-        displayedRect: { w: rect.width, h: rect.height },
-        canvasSize: { w: imageWidth, h: imageHeight },
-        scale: { x: scaleX, y: scaleY },
-        canvasCoords: { x: xCanvas, y: yCanvas, w: wCanvas, h: hCanvas },
-        norms: { xNorm, yNorm, wNorm, hNorm },
-        xPtBoundsSpace: xPtBoundsSpace,
-        boundsPt: boundsPt,
-        xPtAfterBounds: xPt,
-        yPt: yPt,
-        wPt: wPt,
-        hPt: hPt,
-        xPtFormula: boundsPt 
-          ? `(${xNorm} * ${pageWidthPt}) - ${boundsPt.x0} = ${xPt}`
-          : `${xNorm} * ${pageWidthPt} = ${xPt}`,
-      });
-
-      return { xPt, yPt, wPt, hPt };
+      return points;
     } catch (err) {
       console.error("[Template Zones calculatePoints] Error:", err);
       return null;
@@ -953,19 +872,19 @@ function TemplateZonesPageContent() {
     
     const points = calculatedPoints; // Use stored points, not recalculated
     
-    // Debug log to verify we're using stored points
-    console.log("[Template Zones Save] Using stored calculated points (not recalculated):", {
-      xPt: points.xPt,
-      yPt: points.yPt,
-      wPt: points.wPt,
-      hPt: points.hPt,
-      cropZone: cropZone,
-      imageWidth: imageWidth,
-      imageHeight: imageHeight,
-      pageWidthPt: pageWidthPt,
-      pageHeightPt: pageHeightPt,
-      boundsPt: boundsPt,
-    });
+    // ⚠️ USE LOCKED VALIDATION FUNCTION - DO NOT MODIFY
+    // See lib/templates/templateCoordinateConversion.ts for implementation details
+    try {
+      validatePdfPoints(
+        points,
+        { width: pageWidthPt, height: pageHeightPt },
+        "Template Zones Save"
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Invalid coordinates");
+      setIsSaving(false);
+      return;
+    }
 
     // Validate crop zone bounds
     if (cropZone.x < 0 || cropZone.y < 0 || cropZone.width <= 0 || cropZone.height <= 0) {

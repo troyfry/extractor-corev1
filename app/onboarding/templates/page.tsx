@@ -2,6 +2,12 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { 
+  cssPixelsToPdfPoints, 
+  pdfPointsToCssPixels, 
+  validatePdfPoints,
+  type BoundsPt 
+} from "@/lib/templates/templateCoordinateConversion";
 
 // Coordinate system constants
 // Internal: use PDF_POINTS_TOP_LEFT to be explicit about origin
@@ -187,38 +193,32 @@ export default function OnboardingTemplatesPage() {
           savedTemplate.xPt !== undefined && savedTemplate.yPt !== undefined &&
           savedTemplate.wPt !== undefined && savedTemplate.hPt !== undefined &&
           pageWidthPt > 0 && pageHeightPt > 0) {
-        // Convert PDF points to CSS pixels (top-left origin)
-        // IMPORTANT: Templates saved with bounds normalization store xPt in 0-based space.
-        // To convert back to CSS pixels, we need to add bounds offset to get bounds-space coordinates,
-        // then scale proportionally to image dimensions.
-        const scaleX = imageWidth / savedTemplate.pageWidthPt;
-        const scaleY = imageHeight / savedTemplate.pageHeightPt;
-        
-        // Add bounds offset if available to convert from 0-based to bounds-space coordinates
-        // This works for both:
-        // - New templates: xPt is normalized (0-based), so adding x0 gives bounds-space (correct)
-        // - Old templates: xPt is in bounds-space, but adding x0 still works for display conversion
-        const xPtBoundsSpace = boundsPt ? savedTemplate.xPt + boundsPt.x0 : savedTemplate.xPt;
-        const yPtBoundsSpace = boundsPt ? savedTemplate.yPt + boundsPt.y0 : savedTemplate.yPt;
-        
-        const xCss = xPtBoundsSpace * scaleX;
-        const yCss = yPtBoundsSpace * scaleY;
-        const wCss = savedTemplate.wPt * scaleX;
-        const hCss = savedTemplate.hPt * scaleY;
-        
-        // Warn if template appears to be old (xPt seems too low for superclean)
-        if (boundsPt && savedTemplate.fmKey?.toLowerCase().includes("superclean") && savedTemplate.xPt < 400) {
-          console.warn(`[Template Load] Old template detected (xPt=${savedTemplate.xPt}). Please re-save to get correct coordinates with bounds normalization.`);
-        }
-        
+        // ⚠️ USE LOCKED CONVERSION FUNCTION - DO NOT MODIFY
+        // See lib/templates/templateCoordinateConversion.ts for implementation details
         try {
+          const imgEl = imgRef.current;
+          if (!imgEl) {
+            // Image not loaded yet, will retry when image loads
+            return;
+          }
           
-          setCropZone({
-            x: xCss,
-            y: yCss,
-            width: wCss,
-            height: hCss,
-          });
+          const rect = imgEl.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            const cssPx = pdfPointsToCssPixels(
+              {
+                xPt: savedTemplate.xPt,
+                yPt: savedTemplate.yPt,
+                wPt: savedTemplate.wPt,
+                hPt: savedTemplate.hPt,
+              },
+              { width: savedTemplate.pageWidthPt, height: savedTemplate.pageHeightPt },
+              { width: imgEl.naturalWidth, height: imgEl.naturalHeight },
+              { width: rect.width, height: rect.height },
+              boundsPt
+            );
+            
+            setCropZone(cssPx);
+          }
         } catch {
           // Image not loaded yet, will retry when image loads
           console.log("[Onboarding] Image rect not available yet for template conversion");
@@ -618,67 +618,35 @@ export default function OnboardingTemplatesPage() {
     setError(null);
   }
 
-  // IMPORTANT: cropZone is in CSS pixels (displayed image space).
-  // Always convert CSS → natural pixels → PDF points using the SAME method as handleSave().
-  // Never divide by imageWidth/imageHeight directly (those are natural px).
-  // Use cssCropToNaturalPx + naturalPxToPdfPoints (same as handleSave) for consistency.
+  // ⚠️ USE LOCKED CONVERSION FUNCTION - DO NOT MODIFY
+  // See lib/templates/templateCoordinateConversion.ts for implementation details
   async function calculatePoints(): Promise<{ xPt: number; yPt: number; wPt: number; hPt: number } | null> {
     const imgEl = imgRef.current;
     if (!imgEl || !cropZone || !pageWidthPt || !pageHeightPt) return null;
 
     // Guard: Image must be fully loaded (naturalWidth/Height are 0 until loaded)
     if (!imgEl.complete || imgEl.naturalWidth === 0 || imgEl.naturalHeight === 0) {
-      console.log("[calculatePoints] Image not ready:", {
-        complete: imgEl.complete,
-        naturalWidth: imgEl.naturalWidth,
-        naturalHeight: imgEl.naturalHeight,
-      });
       return null;
     }
 
     try {
-      // Use EXACT same conversion method as handleSave() for consistency
-      const { cssCropToNaturalPx, naturalPxToPdfPoints } = await import("@/lib/templates/coordinateUtils");
-      
       const rect = imgEl.getBoundingClientRect();
       
-      // Step 1: Convert CSS crop → natural pixels (same as handleSave)
-      const nat = cssCropToNaturalPx(imgEl, {
-        x: cropZone.x,
-        y: cropZone.y,
-        w: cropZone.width,
-        h: cropZone.height,
-      });
-
-      // Step 2: Convert natural pixels → PDF points (same as handleSave)
-      // ✅ Pass boundsPt to normalize coordinates (MuPDF bounds may not start at 0,0)
-      const pt = naturalPxToPdfPoints(
-        nat,
-        imgEl.naturalWidth,
-        imgEl.naturalHeight,
-        pageWidthPt,
-        pageHeightPt,
+      // ⚠️ USE LOCKED CONVERSION FUNCTION - DO NOT MODIFY
+      const points = cssPixelsToPdfPoints(
+        {
+          x: cropZone.x,
+          y: cropZone.y,
+          width: cropZone.width,
+          height: cropZone.height,
+        },
+        { width: rect.width, height: rect.height },
+        { width: imgEl.naturalWidth, height: imgEl.naturalHeight },
+        { width: pageWidthPt, height: pageHeightPt },
         boundsPt
       );
-
-      // Only log detailed conversion when bounds offset is non-zero or boundsPt is missing (to reduce console spam)
-      if (!boundsPt || (boundsPt.x0 !== 0 || boundsPt.y0 !== 0)) {
-        const xNorm = nat.x / imgEl.naturalWidth;
-        const xPtBeforeBounds = xNorm * pageWidthPt;
-        const xPtAfterBounds = boundsPt ? xPtBeforeBounds - boundsPt.x0 : xPtBeforeBounds;
-        
-        console.log("[calculatePoints] Conversion:", {
-          boundsPt: boundsPt,
-          boundsOffset: boundsPt ? { x0: boundsPt.x0, y0: boundsPt.y0 } : null,
-          calculatedPt: pt,
-          xPtFormula: boundsPt 
-            ? `((${nat.x} / ${imgEl.naturalWidth}) * ${pageWidthPt}) - ${boundsPt.x0} = ${xPtAfterBounds}`
-            : `(${nat.x} / ${imgEl.naturalWidth}) * ${pageWidthPt} = ${xPtBeforeBounds}`,
-          warning: boundsPt ? null : "⚠️ boundsPt is null - normalization not applied!",
-        });
-      }
       
-      return pt;
+      return points;
     } catch (err) {
       console.error("[calculatePoints] Error:", err);
       return null;
@@ -817,10 +785,8 @@ export default function OnboardingTemplatesPage() {
     setError(null);
     setSuccess(null);
 
-    // GOLDEN RULE: Use simple proportional math - NO DPI, NO SCALE, NO VIEWPORT CONVERSION
-    // Convert CSS pixels to PDF points using natural image dimensions
-    const { cssCropToNaturalPx, naturalPxToPdfPoints, assertPtSanity } = await import("@/lib/templates/coordinateUtils");
-    
+    // ⚠️ USE LOCKED CONVERSION FUNCTION - DO NOT MODIFY
+    // See lib/templates/templateCoordinateConversion.ts for implementation details
     if (!imgRef.current) {
       setError("Image element not available");
       setIsSaving(false);
@@ -833,27 +799,34 @@ export default function OnboardingTemplatesPage() {
       return;
     }
 
-    // Step 1: Convert CSS crop → natural pixels
-    const nat = cssCropToNaturalPx(imgRef.current, {
-      x: cropZone.x,
-      y: cropZone.y,
-      w: cropZone.width,
-      h: cropZone.height,
-    });
-
-    // Step 2: Convert natural pixels → PDF points
-    // ✅ Pass boundsPt to normalize coordinates (MuPDF bounds may not start at 0,0)
-    const { xPt, yPt, wPt, hPt } = naturalPxToPdfPoints(
-      nat,
-      imgRef.current.naturalWidth,
-      imgRef.current.naturalHeight,
-      pageWidthPt,
-      pageHeightPt,
+    const rect = imgRef.current.getBoundingClientRect();
+    
+    // ⚠️ USE LOCKED CONVERSION FUNCTION - DO NOT MODIFY
+    const { xPt, yPt, wPt, hPt } = cssPixelsToPdfPoints(
+      {
+        x: cropZone.x,
+        y: cropZone.y,
+        width: cropZone.width,
+        height: cropZone.height,
+      },
+      { width: rect.width, height: rect.height },
+      { width: imgRef.current.naturalWidth, height: imgRef.current.naturalHeight },
+      { width: pageWidthPt, height: pageHeightPt },
       boundsPt
     );
 
-    // Hard guard: Assert point sanity before saving
-    assertPtSanity({ xPt, yPt, wPt, hPt }, pageWidthPt, pageHeightPt, selectedFmKey || "Template");
+    // ⚠️ USE LOCKED VALIDATION FUNCTION - DO NOT MODIFY
+    try {
+      validatePdfPoints(
+        { xPt, yPt, wPt, hPt },
+        { width: pageWidthPt, height: pageHeightPt },
+        selectedFmKey || "Template"
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Invalid coordinates");
+      setIsSaving(false);
+      return;
+    }
 
     // Debug log with all conversion details
     // GOLDEN RULE: Conversion uses simple proportional math - NO DPI, NO SCALE
