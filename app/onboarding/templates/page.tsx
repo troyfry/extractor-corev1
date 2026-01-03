@@ -799,9 +799,19 @@ export default function OnboardingTemplatesPage() {
       return;
     }
 
-    const rect = imgRef.current.getBoundingClientRect();
+    // Read displayedRect from imgRef.current.getBoundingClientRect()
+    const displayedRect = imgRef.current.getBoundingClientRect();
+    
+    // Use renderedWidthPx/renderedHeightPx from /api/pdf/render-page API response
+    // These are stored in imageWidth/imageHeight state (set in renderPage function)
+    const renderedWidthPx = imageWidth;
+    const renderedHeightPx = imageHeight;
+    
+    // Use pageWidthPt/pageHeightPt from API response (stored in state)
+    // Use boundsPt from API response (stored in state)
     
     // ⚠️ USE LOCKED CONVERSION FUNCTION - DO NOT MODIFY
+    // See lib/templates/templateCoordinateConversion.ts for implementation details
     const { xPt, yPt, wPt, hPt } = cssPixelsToPdfPoints(
       {
         x: cropZone.x,
@@ -809,13 +819,14 @@ export default function OnboardingTemplatesPage() {
         width: cropZone.width,
         height: cropZone.height,
       },
-      { width: rect.width, height: rect.height },
-      { width: imgRef.current.naturalWidth, height: imgRef.current.naturalHeight },
+      { width: displayedRect.width, height: displayedRect.height },
+      { width: renderedWidthPx, height: renderedHeightPx },
       { width: pageWidthPt, height: pageHeightPt },
       boundsPt
     );
 
     // ⚠️ USE LOCKED VALIDATION FUNCTION - DO NOT MODIFY
+    // Guard: Block save if coordinates are invalid (prevents silent failures)
     try {
       validatePdfPoints(
         { xPt, yPt, wPt, hPt },
@@ -823,8 +834,10 @@ export default function OnboardingTemplatesPage() {
         selectedFmKey || "Template"
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Invalid coordinates");
+      const errorMsg = err instanceof Error ? err.message : "Invalid coordinates";
+      setError(`Template capture failed — coordinates out of bounds. Please retry.`);
       setIsSaving(false);
+      console.error("[Onboarding Save] Validation failed:", errorMsg);
       return;
     }
 
@@ -838,18 +851,18 @@ export default function OnboardingTemplatesPage() {
         h: cropZone.height,
       },
       renderedImageSize: {
-        widthPx: rect.width,
-        heightPx: rect.height,
+        widthPx: displayedRect.width,
+        heightPx: displayedRect.height,
       },
       pdfPageSize: {
         pageWidthPt,
         pageHeightPt,
       },
       percentages: {
-        xPct: cropZone.x / rect.width,
-        yPct: cropZone.y / rect.height,
-        wPct: cropZone.width / rect.width,
-        hPct: cropZone.height / rect.height,
+        xPct: cropZone.x / displayedRect.width,
+        yPct: cropZone.y / displayedRect.height,
+        wPct: cropZone.width / displayedRect.width,
+        hPct: cropZone.height / displayedRect.height,
       },
       pdfPointsFinal: {
         xPt,
@@ -887,8 +900,8 @@ export default function OnboardingTemplatesPage() {
         w: cropZone.width,
         h: cropZone.height,
       },
-      renderWidthPx: rect.width,
-      renderHeightPx: rect.height,
+      renderWidthPx: renderedWidthPx,  // Use rendered PNG width from API
+      renderHeightPx: renderedHeightPx, // Use rendered PNG height from API
     };
     
     console.log("[Onboarding Save] Final payload being written to Sheets:", finalPayload);
@@ -1171,35 +1184,35 @@ export default function OnboardingTemplatesPage() {
                     Edit PDF point values above to adjust the crop zone. Page size: {pageWidthPt.toFixed(2)} x {pageHeightPt.toFixed(2)} points. Changes apply when you click outside the field.
                   </p>
                   
-                  {/* Debug Panel - Live computed point values */}
-                  {calculatedPoints && (
-                    <div className="mt-4 p-3 bg-slate-900/50 border border-slate-600 rounded text-xs font-mono">
-                      <div className="text-slate-400 mb-2">Live Computed Points (Debug):</div>
-                      <div className="grid grid-cols-4 gap-2 text-slate-300">
+                  {/* Debug Panel - Shows conversion details for troubleshooting */}
+                  <div className="mt-4 p-3 bg-slate-800/50 border border-slate-700 rounded text-xs">
+                    <div className="text-slate-300 font-semibold mb-2">Debug Panel</div>
+                    {imgRef.current && (
+                      <div className="space-y-1 text-slate-400">
                         <div>
-                          <span className="text-slate-500">xPt:</span>{" "}
-                          <span className={calculatedPoints.xPt >= 440 && calculatedPoints.xPt <= 465 ? "text-green-400" : "text-yellow-400"}>
-                            {calculatedPoints.xPt.toFixed(2)}
-                          </span>
+                          <span className="text-slate-500">Displayed Rect:</span>{" "}
+                          {imgRef.current.getBoundingClientRect().width.toFixed(0)} × {imgRef.current.getBoundingClientRect().height.toFixed(0)} px
                         </div>
                         <div>
-                          <span className="text-slate-500">yPt:</span> {calculatedPoints.yPt.toFixed(2)}
+                          <span className="text-slate-500">Rendered PNG:</span> {imageWidth} × {imageHeight} px
                         </div>
                         <div>
-                          <span className="text-slate-500">wPt:</span> {calculatedPoints.wPt.toFixed(2)}
+                          <span className="text-slate-500">Page Size (Pt):</span> {pageWidthPt.toFixed(2)} × {pageHeightPt.toFixed(2)} pt
                         </div>
-                        <div>
-                          <span className="text-slate-500">hPt:</span> {calculatedPoints.hPt.toFixed(2)}
-                        </div>
+                        {boundsPt && (
+                          <div>
+                            <span className="text-slate-500">Bounds Offset:</span> x0={boundsPt.x0.toFixed(2)}, y0={boundsPt.y0.toFixed(2)}
+                          </div>
+                        )}
+                        {calculatedPoints && (
+                          <div className="mt-2 pt-2 border-t border-slate-700">
+                            <span className="text-slate-500">Computed xPt:</span>{" "}
+                            <span className="text-sky-400 font-mono">{calculatedPoints.xPt.toFixed(2)}</span>
+                          </div>
+                        )}
                       </div>
-                      {calculatedPoints.xPt >= 440 && calculatedPoints.xPt <= 465 && (
-                        <div className="mt-2 text-green-400 text-xs">✓ xPt is in expected range (440-465)</div>
-                      )}
-                      {(calculatedPoints.xPt < 440 || calculatedPoints.xPt > 465) && (
-                        <div className="mt-2 text-yellow-400 text-xs">⚠ xPt should be around 440-465 for superclean</div>
-                      )}
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               )}
 
