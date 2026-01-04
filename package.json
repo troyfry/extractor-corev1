@@ -7,7 +7,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "postinstall": "node scripts/copy-pdfjs-worker.mjs"
+    "postinstall": "node scripts/copy-pdfjs-worker.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "pnpm test"
   },
   "dependencies": {
     "googleapis": "^144.0.0",
@@ -23,12 +26,14 @@
     "@types/node": "^20.14.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
+    "@vitest/ui": "^4.0.16",
     "autoprefixer": "^10.4.19",
     "dotenv": "^16.4.5",
     "eslint": "^8.57.1",
     "eslint-config-next": "^15.0.0",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.4",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^4.0.16"
   }
 }
