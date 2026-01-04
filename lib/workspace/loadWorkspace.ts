@@ -16,6 +16,7 @@ import { getUserRowById } from "@/lib/onboarding/usersSheet";
 import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
 import { readWorkspaceCookies, validateWorkspaceVersion } from "./workspaceCookies";
 import type { WorkspaceConfig } from "@/types/workspace";
+import type { WorkspaceLabels } from "@/lib/google/gmailLabels";
 
 /**
  * Load workspace configuration (PURE LOADER - no cookie writing).
@@ -43,12 +44,37 @@ export async function loadWorkspace(): Promise<WorkspaceConfig | null> {
       // Return workspace from cookies (fast path, no Sheets calls)
       // Note: FM profiles and templatesConfigured are not in cookies
       // They'll be loaded separately when needed
+      // Construct labels from cookie values (legacy structure)
+      const labels: WorkspaceLabels = {
+        base: {
+          id: wsCookies.gmailWorkOrdersLabelId || "",
+          name: wsCookies.gmailWorkOrdersLabelName || "Work Orders",
+        },
+        queue: {
+          id: wsCookies.gmailWorkOrdersLabelId || "",
+          name: wsCookies.gmailWorkOrdersLabelName || "",
+        },
+        signed: {
+          id: wsCookies.gmailSignedLabelId || "",
+          name: wsCookies.gmailSignedLabelName || "",
+        },
+        processed: wsCookies.gmailProcessedLabelId
+          ? {
+              id: wsCookies.gmailProcessedLabelId,
+              name: wsCookies.gmailProcessedLabelName || "",
+            }
+          : null,
+        needsReview: null, // Not stored in cookies
+      };
+
       return {
         spreadsheetId: wsCookies.spreadsheetId,
         driveFolderId: wsCookies.folderId,
         fmProfiles: [], // Not stored in cookies, load separately
         templatesConfigured: false, // Not stored in cookies, check separately
         onboardingCompletedAt: wsCookies.onboardingCompletedAt || new Date().toISOString(),
+        labels,
+        // Legacy fields for backward compatibility
         gmailWorkOrdersLabelName: wsCookies.gmailWorkOrdersLabelName || "",
         gmailWorkOrdersLabelId: wsCookies.gmailWorkOrdersLabelId || "",
         gmailSignedLabelName: wsCookies.gmailSignedLabelName || "",
@@ -98,18 +124,63 @@ export async function loadWorkspace(): Promise<WorkspaceConfig | null> {
       }
     }
 
+    // Load labels (new structure) or convert from legacy fields
+    let labels: WorkspaceLabels | null = null;
+    if (userRow.labelsJson) {
+      try {
+        labels = JSON.parse(userRow.labelsJson) as WorkspaceLabels;
+      } catch (error) {
+        console.warn("[Workspace] Failed to parse labelsJson, falling back to legacy fields:", error);
+      }
+    }
+
+    // If labels not loaded from JSON, construct from legacy fields (backward compatibility)
+    if (!labels) {
+      if (userRow.gmailWorkOrdersLabelId && userRow.gmailSignedLabelId) {
+        labels = {
+          base: {
+            id: userRow.gmailWorkOrdersLabelId, // Use queue label ID as base (approximation)
+            name: userRow.gmailWorkOrdersLabelName || "Work Orders",
+          },
+          queue: {
+            id: userRow.gmailWorkOrdersLabelId,
+            name: userRow.gmailWorkOrdersLabelName || "",
+          },
+          signed: {
+            id: userRow.gmailSignedLabelId,
+            name: userRow.gmailSignedLabelName || "",
+          },
+          processed: userRow.gmailProcessedLabelId
+            ? {
+                id: userRow.gmailProcessedLabelId,
+                name: userRow.gmailProcessedLabelName || "",
+              }
+            : null,
+          needsReview: null, // Legacy doesn't have needs review
+        };
+      }
+    }
+
     const workspace: WorkspaceConfig = {
       spreadsheetId: userRow.spreadsheetId || userRow.mainSpreadsheetId || mainSpreadsheetId,
       driveFolderId: userRow.driveFolderId || userRow.signedFolderId || "",
       fmProfiles,
       templatesConfigured: userRow.templatesConfigured === "TRUE",
       onboardingCompletedAt: userRow.onboardingCompletedAt || userRow.updatedAt || new Date().toISOString(),
-      gmailWorkOrdersLabelName: userRow.gmailWorkOrdersLabelName || "",
-      gmailWorkOrdersLabelId: userRow.gmailWorkOrdersLabelId || "",
-      gmailSignedLabelName: userRow.gmailSignedLabelName || "",
-      gmailSignedLabelId: userRow.gmailSignedLabelId || "",
-      gmailProcessedLabelName: userRow.gmailProcessedLabelName || null,
-      gmailProcessedLabelId: userRow.gmailProcessedLabelId || null,
+      labels: labels || {
+        base: { id: "", name: "" },
+        queue: { id: "", name: "" },
+        signed: { id: "", name: "" },
+        processed: null,
+        needsReview: null,
+      },
+      // Legacy fields for backward compatibility
+      gmailWorkOrdersLabelName: userRow.gmailWorkOrdersLabelName || labels?.queue.name || "",
+      gmailWorkOrdersLabelId: userRow.gmailWorkOrdersLabelId || labels?.queue.id || "",
+      gmailSignedLabelName: userRow.gmailSignedLabelName || labels?.signed.name || "",
+      gmailSignedLabelId: userRow.gmailSignedLabelId || labels?.signed.id || "",
+      gmailProcessedLabelName: userRow.gmailProcessedLabelName || labels?.processed?.name || null,
+      gmailProcessedLabelId: userRow.gmailProcessedLabelId || labels?.processed?.id || null,
     };
 
     // NOTE: This function does NOT write cookies (pure loader)

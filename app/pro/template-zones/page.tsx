@@ -12,7 +12,7 @@ import {
   assertPdfCropPointsValid,
   type BoundsPt,
   type PdfCropPoints
-} from "@/lib/templates/templateCoordinateConversion";
+} from "@/lib/domain/coordinates/pdfPoints";
 
 // Coordinate system constants
 // Internal: use PDF_POINTS_TOP_LEFT to be explicit about origin

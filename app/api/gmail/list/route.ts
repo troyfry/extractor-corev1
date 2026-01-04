@@ -84,11 +84,16 @@ export async function GET(request: Request) {
       const gmail = createGmailClient(accessToken);
       labelId = await resolveLabelId(gmail, labelName);
       console.log(`[Gmail List API] Label name from query: "${labelName}", resolved labelId: ${labelId || "null"}`);
+    } else if (workspace?.labels?.queue.id) {
+      // Use workspace queue label (new structure)
+      labelId = workspace.labels.queue.id;
+      labelName = workspace.labels.queue.name;
+      console.log(`[Gmail List API] Using workspace queue label: "${labelName}" (ID: ${labelId})`);
     } else if (workspace?.gmailWorkOrdersLabelId) {
-      // Use workspace default label ID
+      // Fallback to legacy label (backward compatibility)
       labelId = workspace.gmailWorkOrdersLabelId;
       labelName = workspace.gmailWorkOrdersLabelName;
-      console.log(`[Gmail List API] Using workspace label: "${labelName}" (ID: ${labelId})`);
+      console.log(`[Gmail List API] Using workspace label (legacy): "${labelName}" (ID: ${labelId})`);
     }
 
     const result = await listWorkOrderEmails(accessToken, labelName, labelId, pageToken, maxResults);

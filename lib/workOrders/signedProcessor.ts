@@ -32,7 +32,7 @@ import {
   assertPdfCropPointsValid,
   type PdfCropPoints,
   type BoundsPt,
-} from "@/lib/templates/templateCoordinateConversion";
+} from "@/lib/domain/coordinates/pdfPoints";
 import {
   uploadPdfToDrive,
   getOrCreateFolder,

@@ -38,6 +38,9 @@ export async function saveWorkspaceConfig(
   // Serialize FM profiles to JSON
   const fmProfilesJson = JSON.stringify(workspace.fmProfiles || []);
 
+  // Serialize labels to JSON (new structure)
+  const labelsJson = JSON.stringify(workspace.labels || null);
+
   // Upsert workspace config in Users sheet
   await upsertUserRow(user.googleAccessToken, mainSpreadsheetId, {
     userId,
@@ -47,12 +50,15 @@ export async function saveWorkspaceConfig(
     fmProfilesJson,
     templatesConfigured: workspace.templatesConfigured ? "TRUE" : "FALSE",
     onboardingCompletedAt: workspace.onboardingCompletedAt,
-    gmailWorkOrdersLabelName: workspace.gmailWorkOrdersLabelName || "",
-    gmailWorkOrdersLabelId: workspace.gmailWorkOrdersLabelId || "",
-    gmailSignedLabelName: workspace.gmailSignedLabelName || "",
-    gmailSignedLabelId: workspace.gmailSignedLabelId || "",
-    gmailProcessedLabelName: workspace.gmailProcessedLabelName || "",
-    gmailProcessedLabelId: workspace.gmailProcessedLabelId || "",
+    // New labels structure (JSON)
+    labelsJson: labelsJson,
+    // Legacy fields for backward compatibility
+    gmailWorkOrdersLabelName: workspace.gmailWorkOrdersLabelName || workspace.labels?.queue.name || "",
+    gmailWorkOrdersLabelId: workspace.gmailWorkOrdersLabelId || workspace.labels?.queue.id || "",
+    gmailSignedLabelName: workspace.gmailSignedLabelName || workspace.labels?.signed.name || "",
+    gmailSignedLabelId: workspace.gmailSignedLabelId || workspace.labels?.signed.id || "",
+    gmailProcessedLabelName: workspace.gmailProcessedLabelName || workspace.labels?.processed?.name || "",
+    gmailProcessedLabelId: workspace.gmailProcessedLabelId || workspace.labels?.processed?.id || "",
     onboardingCompleted: "TRUE",
     updatedAt: new Date().toISOString(),
   }, { allowEnsure: true });

@@ -14,12 +14,7 @@ import { getAllFmProfiles } from "@/lib/templates/fmProfilesSheets";
 import { listTemplatesForUser } from "@/lib/templates/templatesSheets";
 import { normalizeFmKey } from "@/lib/templates/fmProfiles";
 import { cookies } from "next/headers";
-import { ensureLabel } from "@/lib/google/gmail";
-import {
-  WORK_ORDERS_LABEL_NAME,
-  SIGNED_WORK_ORDERS_LABEL_NAME,
-  PROCESSED_WORK_ORDERS_LABEL_NAME,
-} from "@/lib/google/gmailConfig";
+import { createLabelHierarchy } from "@/lib/google/gmailLabels";
 import { validateLabelName } from "@/lib/google/gmailValidation";
 
 export const runtime = "nodejs";
@@ -62,46 +57,26 @@ export async function POST(request: Request) {
     );
     const templatesConfigured = templates.length > 0;
 
-    // Get label names from request body or use defaults
+    // Get base label name from request body or use default
     const body = await request.json().catch(() => ({}));
-    const gmailWorkOrdersLabelName =
-      body.gmailWorkOrdersLabelName || WORK_ORDERS_LABEL_NAME;
-    const gmailSignedLabelName =
-      body.gmailSignedLabelName || SIGNED_WORK_ORDERS_LABEL_NAME;
-    const gmailProcessedLabelName =
-      body.gmailProcessedLabelName || PROCESSED_WORK_ORDERS_LABEL_NAME;
+    const baseLabelName = body.baseLabelName || "Work Orders";
+    const includeNeedsReview = body.includeNeedsReview === true;
 
-    // Validate label names (reject INBOX and other system labels)
-    const workOrdersError = validateLabelName(gmailWorkOrdersLabelName);
-    if (workOrdersError) {
+    // Validate base label name (reject INBOX and other system labels)
+    const baseLabelError = validateLabelName(baseLabelName);
+    if (baseLabelError) {
       return NextResponse.json(
-        { error: `Work Orders Label: ${workOrdersError}` },
+        { error: `Base Label: ${baseLabelError}` },
         { status: 400 }
       );
     }
 
-    const signedError = validateLabelName(gmailSignedLabelName);
-    if (signedError) {
-      return NextResponse.json(
-        { error: `Signed Label: ${signedError}` },
-        { status: 400 }
-      );
-    }
-
-    if (gmailProcessedLabelName) {
-      const processedError = validateLabelName(gmailProcessedLabelName);
-      if (processedError) {
-        return NextResponse.json(
-          { error: `Processed Label: ${processedError}` },
-          { status: 400 }
-        );
-      }
-    }
-
-    // Create/ensure labels exist in Gmail
-    const woLabel = await ensureLabel(user.googleAccessToken, gmailWorkOrdersLabelName);
-    const signedLabel = await ensureLabel(user.googleAccessToken, gmailSignedLabelName);
-    const processedLabel = await ensureLabel(user.googleAccessToken, gmailProcessedLabelName);
+    // Create label hierarchy (base + children)
+    const labels = await createLabelHierarchy(
+      user.googleAccessToken,
+      baseLabelName,
+      includeNeedsReview
+    );
 
     // Save workspace config ONCE (source of truth)
     await saveWorkspaceConfig(user.userId, {
@@ -110,12 +85,14 @@ export async function POST(request: Request) {
       fmProfiles: normalizedFmKeys,
       templatesConfigured,
       onboardingCompletedAt: new Date().toISOString(),
-      gmailWorkOrdersLabelName: woLabel.name,
-      gmailWorkOrdersLabelId: woLabel.id,
-      gmailSignedLabelName: signedLabel.name,
-      gmailSignedLabelId: signedLabel.id,
-      gmailProcessedLabelName: processedLabel.name,
-      gmailProcessedLabelId: processedLabel.id,
+      labels,
+      // Legacy fields for backward compatibility
+      gmailWorkOrdersLabelName: labels.queue.name,
+      gmailWorkOrdersLabelId: labels.queue.id,
+      gmailSignedLabelName: labels.signed.name,
+      gmailSignedLabelId: labels.signed.id,
+      gmailProcessedLabelName: labels.processed?.name || null,
+      gmailProcessedLabelId: labels.processed?.id || null,
     });
     
     // Set workspace cookies (fast path, hints only)
@@ -151,43 +128,45 @@ export async function POST(request: Request) {
       sameSite: "lax",
     });
 
-    // Set Gmail label cookies
-    response.cookies.set("gmailWorkOrdersLabelId", woLabel.id, {
+    // Set Gmail label cookies (legacy support)
+    response.cookies.set("gmailWorkOrdersLabelId", labels.queue.id, {
       maxAge: 30 * 24 * 60 * 60,
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
     });
-    response.cookies.set("gmailWorkOrdersLabelName", woLabel.name, {
+    response.cookies.set("gmailWorkOrdersLabelName", labels.queue.name, {
       maxAge: 30 * 24 * 60 * 60,
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
     });
-    response.cookies.set("gmailSignedLabelId", signedLabel.id, {
+    response.cookies.set("gmailSignedLabelId", labels.signed.id, {
       maxAge: 30 * 24 * 60 * 60,
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
     });
-    response.cookies.set("gmailSignedLabelName", signedLabel.name, {
+    response.cookies.set("gmailSignedLabelName", labels.signed.name, {
       maxAge: 30 * 24 * 60 * 60,
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
     });
-    response.cookies.set("gmailProcessedLabelId", processedLabel.id, {
-      maxAge: 30 * 24 * 60 * 60,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-    });
-    response.cookies.set("gmailProcessedLabelName", processedLabel.name, {
-      maxAge: 30 * 24 * 60 * 60,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-    });
+    if (labels.processed) {
+      response.cookies.set("gmailProcessedLabelId", labels.processed.id, {
+        maxAge: 30 * 24 * 60 * 60,
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+      });
+      response.cookies.set("gmailProcessedLabelName", labels.processed.name, {
+        maxAge: 30 * 24 * 60 * 60,
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+      });
+    }
     
     const apiCalls = getApiCallCount();
     console.log(`[onboarding/complete] Workspace saved. Sheets API calls: ${apiCalls}`);

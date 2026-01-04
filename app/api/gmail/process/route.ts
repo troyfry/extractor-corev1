@@ -10,8 +10,9 @@
 
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { getEmailWithPdfAttachments, removeLabelById, applyLabelById } from "@/lib/google/gmail";
+import { getEmailWithPdfAttachments } from "@/lib/google/gmail";
 import { loadWorkspace } from "@/lib/workspace/loadWorkspace";
+import { transitionToProcessed, transitionToNeedsReview } from "@/lib/google/gmailLabels";
 import { extractWorkOrderNumberFromText } from "@/lib/workOrders/processing";
 import { isAiParsingEnabled, getAiModelName, getIndustryProfile } from "@/lib/config/ai";
 import { getPlanFromRequest } from "@/lib/api/getPlanFromRequest";
@@ -780,22 +781,20 @@ ${pdfText}`;
       // Note: In dev mode without Sheets, we still handle labels since parsing succeeded
       if (autoRemoveLabel) {
         try {
-          // Load workspace to get label IDs
+          // Load workspace to get label configuration
           const workspace = await loadWorkspace();
           
-          if (workspace?.gmailWorkOrdersLabelId) {
-            // Remove source label (work orders label)
-            await removeLabelById(accessToken, messageId, workspace.gmailWorkOrdersLabelId);
-            labelRemoved = true;
-            console.log(`[Gmail Process] Removed source label from message ${messageId}`);
-            
-            // Apply processed label if configured
-            if (workspace.gmailProcessedLabelId) {
-              await applyLabelById(accessToken, messageId, workspace.gmailProcessedLabelId);
-              console.log(`[Gmail Process] Applied processed label to message ${messageId}`);
+          if (workspace?.labels) {
+            // Transition to processed state (idempotent)
+            const success = await transitionToProcessed(accessToken, messageId, workspace.labels);
+            if (success) {
+              labelRemoved = true;
+              console.log(`[Gmail Process] Transitioned message ${messageId} to processed state`);
+            } else {
+              console.warn(`[Gmail Process] Failed to transition message ${messageId} to processed state`);
             }
           } else {
-            console.warn(`[Gmail Process] Workspace label IDs not found, skipping label operations`);
+            console.warn(`[Gmail Process] Workspace labels not found, skipping label operations`);
           }
         } catch (labelError) {
           // Label operations failed - log but don't fail the request since processing succeeded
@@ -805,8 +804,20 @@ ${pdfText}`;
       }
 
     } catch (error) {
-      // Processing failed - DO NOT remove label
+      // Processing failed - transition to needs review (if configured)
       processingError = error instanceof Error ? error : new Error(String(error));
+      
+      // Try to transition to needs review state (idempotent, only if configured)
+      try {
+        const workspace = await loadWorkspace();
+        if (workspace?.labels) {
+          await transitionToNeedsReview(accessToken, messageId, workspace.labels);
+          console.log(`[Gmail Process] Transitioned message ${messageId} to needs review state`);
+        }
+      } catch (labelError) {
+        // Label transition failed - log but don't fail the request
+        console.error(`[Gmail Process] Failed to transition message ${messageId} to needs review:`, labelError);
+      }
       console.error(`[Gmail Process] Processing failed for message ${messageId}:`, {
         message: processingError.message,
         stack: processingError.stack,

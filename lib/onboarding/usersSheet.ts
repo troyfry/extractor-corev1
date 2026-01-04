@@ -173,12 +173,13 @@ export type UserRow = {
   templatesSheet: string | ""; // Usually "Templates" (legacy)
   signedFolderId: string | ""; // Signed PDFs folder (legacy)
   snippetsFolderId: string | ""; // Snippets folder (legacy)
-  gmailWorkOrdersLabelName: string | ""; // Gmail label name for work orders
-  gmailWorkOrdersLabelId: string | ""; // Gmail label ID for work orders
-  gmailSignedLabelName: string | ""; // Gmail label name for signed work orders
-  gmailSignedLabelId: string | ""; // Gmail label ID for signed work orders
-  gmailProcessedLabelName: string | ""; // Gmail label name for processed work orders (optional)
-  gmailProcessedLabelId: string | ""; // Gmail label ID for processed work orders (optional)
+  gmailWorkOrdersLabelName: string | ""; // Gmail label name for work orders (legacy)
+  gmailWorkOrdersLabelId: string | ""; // Gmail label ID for work orders (legacy)
+  gmailSignedLabelName: string | ""; // Gmail label name for signed work orders (legacy)
+  gmailSignedLabelId: string | ""; // Gmail label ID for signed work orders (legacy)
+  gmailProcessedLabelName: string | ""; // Gmail label name for processed work orders (optional, legacy)
+  gmailProcessedLabelId: string | ""; // Gmail label ID for processed work orders (optional, legacy)
+  labelsJson: string | ""; // JSON string of WorkspaceLabels (new structure)
   openaiKeyEncrypted: string | "";
   createdAt: string | "";
   updatedAt: string | "";
