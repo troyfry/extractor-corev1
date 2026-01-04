@@ -15,16 +15,25 @@ import { getColumnRange } from "@/lib/google/sheetsCache";
 
 /**
  * Required columns for template storage in Google Sheets.
+ * 
+ * ⚠️ POINTS-ONLY: PDF points are required. Percentage columns are deprecated.
  */
 const TEMPLATE_COLUMNS = [
   "issuerKey",
   "templateId",
   "label",
   "page",
-  "xPct",
-  "yPct",
-  "wPct",
-  "hPct",
+  "xPct", // Deprecated - always empty string
+  "yPct", // Deprecated - always empty string
+  "wPct", // Deprecated - always empty string
+  "hPct", // Deprecated - always empty string
+  "coordSystem",
+  "pageWidthPt",
+  "pageHeightPt",
+  "xPt",
+  "yPt",
+  "wPt",
+  "hPt",
   "updated_at",
 ] as const;
 
@@ -139,7 +148,15 @@ export async function ensureTemplateSheet(
 export async function upsertTemplateToSheet(params: {
   spreadsheetId: string;
   accessToken: string;
-  template: WorkOrderTemplate;
+  template: WorkOrderTemplate & {
+    pageWidthPt?: number;
+    pageHeightPt?: number;
+    xPt?: number;
+    yPt?: number;
+    wPt?: number;
+    hPt?: number;
+    coordSystem?: string;
+  };
 }): Promise<void> {
   const { spreadsheetId, accessToken, template } = params;
   const sheets = createSheetsClient(accessToken);
@@ -254,12 +271,22 @@ export async function getTemplateFromSheet(params: {
 
 /**
  * Append a new template row to Google Sheets.
+ * 
+ * ⚠️ POINTS-ONLY: All templates must have PDF points. Percentages always set to empty.
  */
 async function appendTemplateRow(
   sheets: ReturnType<typeof createSheetsClient>,
   spreadsheetId: string,
   sheetName: string,
-  template: WorkOrderTemplate
+  template: WorkOrderTemplate & {
+    pageWidthPt?: number;
+    pageHeightPt?: number;
+    xPt?: number;
+    yPt?: number;
+    wPt?: number;
+    hPt?: number;
+    coordSystem?: string;
+  }
 ): Promise<void> {
   // Get headers to determine column order
   const headerResponse = await sheets.spreadsheets.values.get({
@@ -274,15 +301,25 @@ async function appendTemplateRow(
   const rowData: string[] = new Array(headers.length).fill("");
 
   // Map template fields to columns
+  // POINTS-ONLY: All templates must have PDF points. Percentages always set to empty.
   const templateData: Record<string, string> = {
     issuerKey: template.issuerKey,
     templateId: template.templateId,
     label: template.label,
     page: String(template.woNumberZone.page),
-    xPct: String(template.woNumberZone.xPct),
-    yPct: String(template.woNumberZone.yPct),
-    wPct: String(template.woNumberZone.wPct),
-    hPct: String(template.woNumberZone.hPct),
+    // Percentages always empty (deprecated)
+    xPct: "",
+    yPct: "",
+    wPct: "",
+    hPct: "",
+    coordSystem: template.coordSystem || "PDF_POINTS_TOP_LEFT",
+    // PDF points are REQUIRED
+    pageWidthPt: template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "",
+    pageHeightPt: template.pageHeightPt !== undefined ? String(template.pageHeightPt) : "",
+    xPt: template.xPt !== undefined ? String(template.xPt) : "",
+    yPt: template.yPt !== undefined ? String(template.yPt) : "",
+    wPt: template.wPt !== undefined ? String(template.wPt) : "",
+    hPt: template.hPt !== undefined ? String(template.hPt) : "",
     updated_at: new Date().toISOString(),
   };
 
@@ -311,13 +348,23 @@ async function appendTemplateRow(
 
 /**
  * Update an existing template row in Google Sheets.
+ * 
+ * ⚠️ POINTS-ONLY: All templates must have PDF points. Percentages always set to empty.
  */
 async function updateTemplateRow(
   sheets: ReturnType<typeof createSheetsClient>,
   spreadsheetId: string,
   sheetName: string,
   rowIndex: number,
-  template: WorkOrderTemplate
+  template: WorkOrderTemplate & {
+    pageWidthPt?: number;
+    pageHeightPt?: number;
+    xPt?: number;
+    yPt?: number;
+    wPt?: number;
+    hPt?: number;
+    coordSystem?: string;
+  }
 ): Promise<void> {
   // Get headers to determine column order
   const headerResponse = await sheets.spreadsheets.values.get({
@@ -332,15 +379,25 @@ async function updateTemplateRow(
   const rowData: string[] = new Array(headers.length).fill("");
 
   // Map template fields to columns
+  // POINTS-ONLY: All templates must have PDF points. Percentages always set to empty.
   const templateData: Record<string, string> = {
     issuerKey: template.issuerKey,
     templateId: template.templateId,
     label: template.label,
     page: String(template.woNumberZone.page),
-    xPct: String(template.woNumberZone.xPct),
-    yPct: String(template.woNumberZone.yPct),
-    wPct: String(template.woNumberZone.wPct),
-    hPct: String(template.woNumberZone.hPct),
+    // Percentages always empty (deprecated)
+    xPct: "",
+    yPct: "",
+    wPct: "",
+    hPct: "",
+    coordSystem: template.coordSystem || "PDF_POINTS_TOP_LEFT",
+    // PDF points are REQUIRED
+    pageWidthPt: template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "",
+    pageHeightPt: template.pageHeightPt !== undefined ? String(template.pageHeightPt) : "",
+    xPt: template.xPt !== undefined ? String(template.xPt) : "",
+    yPt: template.yPt !== undefined ? String(template.yPt) : "",
+    wPt: template.wPt !== undefined ? String(template.wPt) : "",
+    hPt: template.hPt !== undefined ? String(template.hPt) : "",
     updated_at: new Date().toISOString(),
   };
 
@@ -384,43 +441,68 @@ function parseTemplateFromRow(
   const templateId = getValue("templateId");
   const label = getValue("label");
   const page = getValue("page");
-  const xPct = getValue("xPct");
-  const yPct = getValue("yPct");
-  const wPct = getValue("wPct");
-  const hPct = getValue("hPct");
+  const pageWidthPt = getValue("pageWidthPt");
+  const pageHeightPt = getValue("pageHeightPt");
+  const xPt = getValue("xPt");
+  const yPt = getValue("yPt");
+  const wPt = getValue("wPt");
+  const hPt = getValue("hPt");
 
-  if (!issuerKey || !templateId || !label || !page || !xPct || !yPct || !wPct || !hPct) {
-    console.warn(`[Sheets Templates] Incomplete template row, missing required fields`);
+  // POINTS-ONLY: Require PDF points. No percentage fallback.
+  if (!issuerKey || !templateId || !label || !page || 
+      !pageWidthPt || !pageHeightPt || !xPt || !yPt || !wPt || !hPt) {
+    console.warn(`[Sheets Templates] Incomplete template row, missing required PDF points fields`);
     return undefined;
   }
 
   try {
-    const zone: WorkOrderNumberZone = {
-      page: parseInt(page, 10),
-      xPct: parseFloat(xPct),
-      yPct: parseFloat(yPct),
-      wPct: parseFloat(wPct),
-      hPct: parseFloat(hPct),
-    };
+    const pageNum = parseInt(page, 10);
+    const pageWidthPtNum = parseFloat(pageWidthPt);
+    const pageHeightPtNum = parseFloat(pageHeightPt);
+    const xPtNum = parseFloat(xPt);
+    const yPtNum = parseFloat(yPt);
+    const wPtNum = parseFloat(wPt);
+    const hPtNum = parseFloat(hPt);
 
-    // Validate zone values
+    // Validate points are finite numbers
     if (
-      isNaN(zone.page) ||
-      isNaN(zone.xPct) ||
-      isNaN(zone.yPct) ||
-      isNaN(zone.wPct) ||
-      isNaN(zone.hPct)
+      isNaN(pageNum) ||
+      !Number.isFinite(pageWidthPtNum) || !Number.isFinite(pageHeightPtNum) ||
+      !Number.isFinite(xPtNum) || !Number.isFinite(yPtNum) ||
+      !Number.isFinite(wPtNum) || !Number.isFinite(hPtNum)
     ) {
-      console.warn(`[Sheets Templates] Invalid zone values in template row`);
+      console.warn(`[Sheets Templates] Invalid PDF points values in template row`);
       return undefined;
     }
+
+    // Convert points to percentages for WorkOrderNumberZone (for backward compatibility with type)
+    // But note: percentages are deprecated, points are the source of truth
+    const xPct = xPtNum / pageWidthPtNum;
+    const yPct = yPtNum / pageHeightPtNum;
+    const wPct = wPtNum / pageWidthPtNum;
+    const hPct = hPtNum / pageHeightPtNum;
+
+    const zone: WorkOrderNumberZone = {
+      page: pageNum,
+      xPct,
+      yPct,
+      wPct,
+      hPct,
+    };
 
     return {
       issuerKey,
       templateId,
       label,
       woNumberZone: zone,
-    };
+      // Include points in returned object (extended type)
+      pageWidthPt: pageWidthPtNum,
+      pageHeightPt: pageHeightPtNum,
+      xPt: xPtNum,
+      yPt: yPtNum,
+      wPt: wPtNum,
+      hPt: hPtNum,
+    } as any;
   } catch (error) {
     console.warn(`[Sheets Templates] Error parsing template row:`, error);
     return undefined;

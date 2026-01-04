@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { auth } from "@/auth";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
+import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
+import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 import { createSheetsClient, formatSheetRange } from "@/lib/google/sheets";
 import { SIGNED_NEEDS_REVIEW_SHEET_NAME, SIGNED_NEEDS_REVIEW_COLUMNS } from "@/lib/workOrders/signedSheets";
 import { getColumnRange } from "@/lib/google/sheetsCache";
@@ -24,40 +23,18 @@ export async function GET() {
       );
     }
 
-    // Resolve spreadsheetId
-    const cookieStore = await cookies();
-    const cookieSpreadsheetId =
-      cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
-
-    let spreadsheetId: string | null = null;
-    if (cookieSpreadsheetId) {
-      spreadsheetId = cookieSpreadsheetId;
-    } else {
-      const session = await auth();
-      const sessionSpreadsheetId = session
-        ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId
-        : null;
-      spreadsheetId = await getUserSpreadsheetId(
-        user.userId,
-        sessionSpreadsheetId
-      );
-    }
-
-    if (!spreadsheetId) {
-      return NextResponse.json(
-        { error: "No Google Sheets spreadsheet configured." },
-        { status: 400 }
-      );
-    }
+    // Get workspace (centralized resolution)
+    const workspaceResult = await workspaceRequired();
+    const spreadsheetId = workspaceResult.workspace.spreadsheetId;
 
     // Read Needs_Review_Signed sheet
     const sheets = createSheetsClient(accessToken);
-    const response = await sheets.spreadsheets.values.get({
+    const sheetsResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: formatSheetRange(SIGNED_NEEDS_REVIEW_SHEET_NAME, getColumnRange(SIGNED_NEEDS_REVIEW_COLUMNS.length)),
     });
 
-    const rows = response.data.values || [];
+    const rows = sheetsResponse.data.values || [];
     if (rows.length === 0) {
       return NextResponse.json({ items: [] });
     }
@@ -79,7 +56,12 @@ export async function GET() {
       (item) => (item.resolved || "").toUpperCase() !== "TRUE"
     );
 
-    return NextResponse.json({ items: unresolved });
+    // Rehydrate cookies if workspace was loaded from Users Sheet
+    const response = NextResponse.json({ items: unresolved });
+    if (workspaceResult.source === "users_sheet") {
+      rehydrateWorkspaceCookies(response, workspaceResult.workspace);
+    }
+    return response;
   } catch (error) {
     console.error("Error in GET /api/signed/needs-review", error);
     return NextResponse.json(

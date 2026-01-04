@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { getPlanFromRequest } from "@/lib/api/getPlanFromRequest";
 import { hasFeature } from "@/lib/plan";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
+import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
+import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 import { getTemplateFromSheet } from "@/lib/templates/sheetsTemplates";
 
 export const runtime = "nodejs";
@@ -33,15 +34,9 @@ export async function GET(request: Request) {
       });
     }
 
-    // Get spreadsheet ID
-    const spreadsheetId = await getUserSpreadsheetId(user.userId);
-    if (!spreadsheetId) {
-      // Return 200 with null template instead of error - user just needs to configure
-      return NextResponse.json({
-        template: null,
-        error: "Google Sheets spreadsheet ID not configured",
-      });
-    }
+    // Get workspace (centralized resolution)
+    const workspaceResult = await workspaceRequired();
+    const spreadsheetId = workspaceResult.workspace.spreadsheetId;
 
     // Get issuerKey from query params
     const { searchParams } = new URL(request.url);
@@ -61,9 +56,14 @@ export async function GET(request: Request) {
       issuerKey,
     });
 
-    return NextResponse.json({
+    // Rehydrate cookies if workspace was loaded from Users Sheet
+    const response = NextResponse.json({
       template: template || null,
     });
+    if (workspaceResult.source === "users_sheet") {
+      rehydrateWorkspaceCookies(response, workspaceResult.workspace);
+    }
+    return response;
   } catch (error) {
     console.error("[Templates Get] Error:", error);
     return NextResponse.json(

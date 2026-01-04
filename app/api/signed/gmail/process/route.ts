@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { auth } from "@/auth";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
+import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
+import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 import { processSignedPdf } from "@/lib/workOrders/signedProcessor";
 import { createGmailClient } from "@/lib/google/gmail";
 import { extractPdfAttachments } from "@/lib/google/gmailExtract";
@@ -69,31 +68,9 @@ export async function POST(req: Request) {
       );
     }
 
-    // Resolve spreadsheetId
-    const cookieStore = await cookies();
-    const cookieSpreadsheetId =
-      cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
-
-    let spreadsheetId: string | null = null;
-    if (cookieSpreadsheetId) {
-      spreadsheetId = cookieSpreadsheetId;
-    } else {
-      const session = await auth();
-      const sessionSpreadsheetId = session
-        ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId
-        : null;
-      spreadsheetId = await getUserSpreadsheetId(
-        user.userId,
-        sessionSpreadsheetId
-      );
-    }
-
-    if (!spreadsheetId) {
-      return NextResponse.json(
-        { error: "No Google Sheets spreadsheet configured." },
-        { status: 400 }
-      );
-    }
+    // Get workspace (centralized resolution)
+    const workspaceResult = await workspaceRequired();
+    const spreadsheetId = workspaceResult.workspace.spreadsheetId;
 
     const body: GmailProcessRequest = await req.json();
     const { fmKey, messageIds, query, maxMessages = 25, maxAttachments = 50, newerThanDays = 7, labelIds } = body;
@@ -335,7 +312,12 @@ export async function POST(req: Request) {
       results,
     });
 
-    return NextResponse.json(response, { status: 200 });
+    // Rehydrate cookies if workspace was loaded from Users Sheet
+    const httpResponse = NextResponse.json(response, { status: 200 });
+    if (workspaceResult.source === "users_sheet") {
+      rehydrateWorkspaceCookies(httpResponse, workspaceResult.workspace);
+    }
+    return httpResponse;
   } catch (error) {
     console.error("Error in POST /api/signed/gmail/process", error);
     const message =

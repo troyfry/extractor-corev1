@@ -135,22 +135,20 @@ export async function POST(request: Request) {
       pageHeightPt,
     });
     
-    if (!Number.isFinite(xPt) || !Number.isFinite(yPt) || !Number.isFinite(wPt) || !Number.isFinite(hPt) ||
-        !Number.isFinite(pageWidthPt) || !Number.isFinite(pageHeightPt)) {
-      return NextResponse.json(
-        { error: "Invalid PDF points: all values must be finite numbers" },
-        { status: 400 }
+    // Server-side validation: Use centralized validatePdfPoints function
+    try {
+      const { validatePdfPoints } = await import("@/lib/domain/coordinates/pdfPoints");
+      validatePdfPoints(
+        { xPt, yPt, wPt, hPt },
+        { width: pageWidthPt, height: pageHeightPt },
+        "template"
       );
-    }
-
-    // Prepare template data - PDF_POINTS ONLY (points-only mode)
-    // Validate all points fields are present and finite
-    if (!Number.isFinite(xPt) || !Number.isFinite(yPt) || !Number.isFinite(wPt) || !Number.isFinite(hPt) ||
-        !Number.isFinite(pageWidthPt) || !Number.isFinite(pageHeightPt) ||
-        xPt < 0 || yPt < 0 || wPt <= 0 || hPt <= 0 ||
-        pageWidthPt <= 0 || pageHeightPt <= 0) {
+    } catch (validationError) {
       return NextResponse.json(
-        { error: "Invalid PDF points: all values must be finite positive numbers" },
+        { 
+          error: validationError instanceof Error ? validationError.message : "Invalid PDF points",
+          reason: "INVALID_PDF_POINTS"
+        },
         { status: 400 }
       );
     }

@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { auth } from "@/auth";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
+import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
+import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 import {
   updateJobWithSignedInfoByWorkOrderNumber,
   writeWorkOrderRecord,
@@ -49,31 +48,9 @@ export async function POST(req: Request) {
       );
     }
 
-    // Resolve spreadsheetId
-    const cookieStore = await cookies();
-    const cookieSpreadsheetId =
-      cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
-
-    let spreadsheetId: string | null = null;
-    if (cookieSpreadsheetId) {
-      spreadsheetId = cookieSpreadsheetId;
-    } else {
-      const session = await auth();
-      const sessionSpreadsheetId = session
-        ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId
-        : null;
-      spreadsheetId = await getUserSpreadsheetId(
-        user.userId,
-        sessionSpreadsheetId
-      );
-    }
-
-    if (!spreadsheetId) {
-      return NextResponse.json(
-        { error: "No Google Sheets spreadsheet configured." },
-        { status: 400 }
-      );
-    }
+    // Get workspace (centralized resolution)
+    const workspaceResult = await workspaceRequired();
+    const spreadsheetId = workspaceResult.workspace.spreadsheetId;
 
     const body = await req.json();
     const {
@@ -284,7 +261,8 @@ export async function POST(req: Request) {
       // Don't fail the request if Work_Orders update fails, but log it
     }
 
-    return NextResponse.json(
+    // Rehydrate cookies if workspace was loaded from Users Sheet
+    const response = NextResponse.json(
       {
         success: true,
         mode: "UPDATED",
@@ -292,6 +270,10 @@ export async function POST(req: Request) {
       },
       { status: 200 }
     );
+    if (workspaceResult.source === "users_sheet") {
+      rehydrateWorkspaceCookies(response, workspaceResult.workspace);
+    }
+    return response;
   } catch (error) {
     console.error("Error in POST /api/signed/override", error);
     const message =

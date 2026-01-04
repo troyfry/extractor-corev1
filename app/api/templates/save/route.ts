@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import { getPlanFromRequest } from "@/lib/api/getPlanFromRequest";
 import { hasFeature } from "@/lib/plan";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
+import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
+import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 import { upsertTemplateToSheet } from "@/lib/templates/sheetsTemplates";
+import { cssPixelsToPdfPoints, validatePdfPoints } from "@/lib/domain/coordinates/pdfPoints";
 import type { WorkOrderTemplate } from "@/lib/templates/workOrders";
 
 export const runtime = "nodejs";
@@ -33,14 +35,9 @@ export async function POST(request: Request) {
       );
     }
 
-    // Get spreadsheet ID
-    const spreadsheetId = await getUserSpreadsheetId(user.userId);
-    if (!spreadsheetId) {
-      return NextResponse.json(
-        { error: "Google Sheets spreadsheet ID not configured. Please set it in Settings." },
-        { status: 400 }
-      );
-    }
+    // Get workspace (centralized resolution)
+    const workspaceResult = await workspaceRequired();
+    const spreadsheetId = workspaceResult.workspace.spreadsheetId;
 
     // Parse request body
     const body = await request.json();
@@ -53,9 +50,8 @@ export async function POST(request: Request) {
       );
     }
 
-    // Validate zone values with edge-case guards
     const zone = template.woNumberZone;
-    const { xPct, yPct, wPct, hPct, page } = zone;
+    const { page } = zone;
 
     // Validate page
     if (typeof page !== "number" || page < 1) {
@@ -65,58 +61,127 @@ export async function POST(request: Request) {
       );
     }
 
-    // Validate crop zone is not default sentinel (0/0/1/1)
-    const TOLERANCE = 0.01;
-    const isDefault = Math.abs(xPct) < TOLERANCE && 
-                      Math.abs(yPct) < TOLERANCE && 
-                      Math.abs(wPct - 1) < TOLERANCE && 
-                      Math.abs(hPct - 1) < TOLERANCE;
+    // POINTS-ONLY: Require PDF points or page geometry for conversion
+    // Accept either:
+    // 1. PDF points directly (preferred): xPt, yPt, wPt, hPt, pageWidthPt, pageHeightPt
+    // 2. Percentages + page geometry: xPct, yPct, wPct, hPct + pageWidthPt, pageHeightPt, boundsPt + CSS pixels
+    
+    const hasPoints = body.xPt !== undefined && body.yPt !== undefined && 
+                     body.wPt !== undefined && body.hPt !== undefined &&
+                     body.pageWidthPt !== undefined && body.pageHeightPt !== undefined;
+    
+    const hasPercentages = zone.xPct !== undefined && zone.yPct !== undefined &&
+                          zone.wPct !== undefined && zone.hPct !== undefined;
+    
+    const hasPageGeometry = body.pageWidthPt !== undefined && body.pageHeightPt !== undefined;
+    const hasCssPixels = body.rectPx !== undefined && 
+                        body.rectPx.x !== undefined && body.rectPx.y !== undefined &&
+                        body.rectPx.w !== undefined && body.rectPx.h !== undefined;
+    const hasDisplaySize = body.displayedWidth !== undefined && body.displayedHeight !== undefined;
+    const hasCanvasSize = body.canvasWidth !== undefined && body.canvasHeight !== undefined;
 
-    if (isDefault) {
+    let xPt: number;
+    let yPt: number;
+    let wPt: number;
+    let hPt: number;
+    let pageWidthPt: number;
+    let pageHeightPt: number;
+
+    if (hasPoints) {
+      // Use points directly
+      xPt = body.xPt;
+      yPt = body.yPt;
+      wPt = body.wPt;
+      hPt = body.hPt;
+      pageWidthPt = body.pageWidthPt;
+      pageHeightPt = body.pageHeightPt;
+    } else if (hasPercentages && hasPageGeometry && hasCssPixels && hasDisplaySize && hasCanvasSize) {
+      // Convert percentages to points using conversion function
+      pageWidthPt = body.pageWidthPt;
+      pageHeightPt = body.pageHeightPt;
+      const boundsPt = body.boundsPt ? {
+        x0: body.boundsPt.x0,
+        y0: body.boundsPt.y0,
+        x1: body.boundsPt.x1,
+        y1: body.boundsPt.y1,
+      } : null;
+
+      // Convert CSS pixels to PDF points
+      const pdfPoints = cssPixelsToPdfPoints(
+        {
+          x: body.rectPx.x,
+          y: body.rectPx.y,
+          width: body.rectPx.w,
+          height: body.rectPx.h,
+        },
+        { width: body.displayedWidth, height: body.displayedHeight },
+        { width: body.canvasWidth, height: body.canvasHeight },
+        { width: pageWidthPt, height: pageHeightPt },
+        boundsPt
+      );
+
+      xPt = pdfPoints.xPt;
+      yPt = pdfPoints.yPt;
+      wPt = pdfPoints.wPt;
+      hPt = pdfPoints.hPt;
+    } else {
       return NextResponse.json(
         { 
-          error: "Template crop not configured. Draw a rectangle first.",
-          reason: "TEMPLATE_NOT_CONFIGURED"
+          error: "PDF points are required. Provide either: (1) xPt, yPt, wPt, hPt, pageWidthPt, pageHeightPt directly, or (2) percentages + page geometry (pageWidthPt, pageHeightPt, boundsPt) + CSS pixels (rectPx, displayedWidth/Height, canvasWidth/Height) for conversion.",
+          reason: "MISSING_PDF_POINTS"
         },
         { status: 400 }
       );
     }
 
-    // Validate crop zone is not out of bounds
-    if (xPct < 0 || yPct < 0 || wPct <= 0 || hPct <= 0 || xPct + wPct > 1 || yPct + hPct > 1) {
+    // Server-side validation: Validate PDF points
+    try {
+      validatePdfPoints(
+        { xPt, yPt, wPt, hPt },
+        { width: pageWidthPt, height: pageHeightPt },
+        "template-save"
+      );
+    } catch (validationError) {
       return NextResponse.json(
         { 
-          error: "Crop is out of bounds.",
-          reason: "INVALID_CROP"
+          error: validationError instanceof Error ? validationError.message : "Invalid PDF points",
+          reason: "INVALID_PDF_POINTS"
         },
         { status: 400 }
       );
     }
 
-    // Validate crop zone is not too small
-    const MIN_W = 0.01;
-    const MIN_H = 0.01;
-    if (wPct < MIN_W || hPct < MIN_H) {
-      return NextResponse.json(
-        { 
-          error: "Crop is too small. Make the rectangle bigger.",
-          reason: "CROP_TOO_SMALL"
-        },
-        { status: 400 }
-      );
-    }
-
-    // Note: DPI support for pro templates would require updating WorkOrderTemplate type
-    // For now, DPI is handled in the onboarding templates endpoint only
-
-    // Save template to Sheets
+    // Save template to Sheets with PDF points
+    // Note: upsertTemplateToSheet currently expects WorkOrderTemplate with percentages
+    // We'll update it to accept points, but for now we'll create a modified template
+    // TODO: Update upsertTemplateToSheet to accept points directly
     await upsertTemplateToSheet({
       spreadsheetId,
       accessToken: user.googleAccessToken,
-      template,
+      template: {
+        ...template,
+        // Store points in a way that upsertTemplateToSheet can handle
+        // This is a temporary workaround - we'll update upsertTemplateToSheet next
+        woNumberZone: {
+          ...zone,
+          // Add points as additional properties (will be handled by updated upsertTemplateToSheet)
+        },
+        // Add points to template object for conversion
+        pageWidthPt,
+        pageHeightPt,
+        xPt,
+        yPt,
+        wPt,
+        hPt,
+      } as any,
     });
 
-    return NextResponse.json({ success: true });
+    // Rehydrate cookies if workspace was loaded from Users Sheet
+    const response = NextResponse.json({ success: true });
+    if (workspaceResult.source === "users_sheet") {
+      rehydrateWorkspaceCookies(response, workspaceResult.workspace);
+    }
+    return response;
   } catch (error) {
     console.error("[Templates Save] Error:", error);
     return NextResponse.json(

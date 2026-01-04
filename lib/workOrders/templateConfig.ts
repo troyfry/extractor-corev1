@@ -177,105 +177,45 @@ export async function getTemplateConfigForFmKey(
       ? "PDF_POINTS_TOP_LEFT" 
       : template.coordSystem;
 
-    // Priority rules:
-    // 1. If coordSystem === "PDF_POINTS_TOP_LEFT" AND all pt fields exist → use points (ignore percentages)
-    // 2. Else if % fields exist → legacy fallback
-    // 3. Else → template not configured
+    // POINTS-ONLY: All templates MUST have PDF points. No percentage fallback.
+    // Validate that all required PDF point fields exist and are valid
+    const hasAllPtFields = 
+      template.xPt !== undefined && template.xPt !== null && template.xPt > 0 &&
+      template.yPt !== undefined && template.yPt !== null && template.yPt > 0 &&
+      template.wPt !== undefined && template.wPt !== null && template.wPt > 0 &&
+      template.hPt !== undefined && template.hPt !== null && template.hPt > 0 &&
+      template.pageWidthPt !== undefined && template.pageWidthPt !== null && template.pageWidthPt > 0 &&
+      template.pageHeightPt !== undefined && template.pageHeightPt !== null && template.pageHeightPt > 0;
 
-    let region: TemplateRegion;
-    let usePoints = false;
-
-    if (normalizedCoordSystem === "PDF_POINTS_TOP_LEFT") {
-      // Strict validation: if coordSystem says PDF_POINTS, all pt fields must exist and be > 0
-      // DO NOT block if row exists - only block if points are missing/invalid
-      const hasAllPtFields = 
-        template.xPt !== undefined && template.xPt !== null && template.xPt > 0 &&
-        template.yPt !== undefined && template.yPt !== null && template.yPt > 0 &&
-        template.wPt !== undefined && template.wPt !== null && template.wPt > 0 &&
-        template.hPt !== undefined && template.hPt !== null && template.hPt > 0 &&
-        template.pageWidthPt !== undefined && template.pageWidthPt !== null && template.pageWidthPt > 0 &&
-        template.pageHeightPt !== undefined && template.pageHeightPt !== null && template.pageHeightPt > 0;
-
-      if (!hasAllPtFields) {
-        console.error(`[Template Config] Template row EXISTS but missing or invalid PDF points fields:`, {
-          normalizedFmKey,
-          templateId: template.templateId,
-          coordSystem: template.coordSystem,
-          xPt: template.xPt,
-          yPt: template.yPt,
-          wPt: template.wPt,
-          hPt: template.hPt,
-          pageWidthPt: template.pageWidthPt,
-          pageHeightPt: template.pageHeightPt,
-          note: "Row exists but points are missing/invalid - template not configured for PDF_POINTS mode",
-        });
-        throw new Error("TEMPLATE_NOT_CONFIGURED");
-      }
-
-      // Convert PDF points to percentages for TemplateRegion
-      // (OCR service currently expects percentages, but we're using points as source of truth)
-      const xPct = template.xPt / template.pageWidthPt!;
-      const yPct = template.yPt / template.pageHeightPt!;
-      const wPct = template.wPt / template.pageWidthPt!;
-      const hPct = template.hPt / template.pageHeightPt!;
-
-      region = {
-        xPct,
-        yPct,
-        wPct,
-        hPct,
-      };
-      usePoints = true;
-    } else {
-      // Legacy fallback: use percentages ONLY if points are missing (transition period)
-      // After this refactor, if points missing treat as not configured
-      console.log(`[Template Config] Template row exists but missing PDF points - using legacy pct fallback:`, {
+    if (!hasAllPtFields) {
+      console.error(`[Template Config] Template row EXISTS but missing or invalid PDF points fields:`, {
         normalizedFmKey,
         templateId: template.templateId,
-        hasPoints: false,
-        hasPct: !!(template.xPct !== undefined && template.yPct !== undefined && 
-                   template.wPct !== undefined && template.hPct !== undefined),
+        coordSystem: template.coordSystem,
+        xPt: template.xPt,
+        yPt: template.yPt,
+        wPt: template.wPt,
+        hPt: template.hPt,
+        pageWidthPt: template.pageWidthPt,
+        pageHeightPt: template.pageHeightPt,
+        note: "ALL templates must have PDF points - no percentage fallback allowed",
       });
-      
-      // Guardrail: template exists but page dimensions mismatch (warn, don't auto-correct)
-      if (template.pageWidthPt && template.pageHeightPt) {
-        // Template has dimensions, but we're using pct fallback
-        // This is expected during transition, but log for visibility
-        console.warn("[Template Config] Guardrail: Template has page dimensions but using pct fallback", {
-          normalizedFmKey,
-          templateId: template.templateId,
-          templateDimensions: {
-            pageWidthPt: template.pageWidthPt,
-            pageHeightPt: template.pageHeightPt,
-          },
-        });
-      }
-      
-      // Validate template is not default (0/0/1/1)
-      const TOLERANCE = 0.01;
-      const isDefault = Math.abs(template.xPct || 0) < TOLERANCE &&
-                        Math.abs(template.yPct || 0) < TOLERANCE &&
-                        Math.abs((template.wPct || 0) - 1) < TOLERANCE &&
-                        Math.abs((template.hPct || 0) - 1) < TOLERANCE;
-
-      if (isDefault) {
-        throw new Error("TEMPLATE_NOT_CONFIGURED");
-      }
-
-      // Validate percentages exist
-      if (template.xPct === undefined || template.yPct === undefined || 
-          template.wPct === undefined || template.hPct === undefined) {
-        // Points missing AND pct missing = not configured
-        throw new Error("TEMPLATE_NOT_CONFIGURED");
-      }
-
-      region = {
-        xPct: template.xPct,
-        yPct: template.yPct,
-        wPct: template.wPct,
-        hPct: template.hPct,
-      };
+      throw new Error("TEMPLATE_NOT_CONFIGURED");
     }
+
+    // Convert PDF points to percentages for TemplateRegion
+    // (OCR service currently expects percentages, but we're using points as source of truth)
+    const xPct = template.xPt / template.pageWidthPt!;
+    const yPct = template.yPt / template.pageHeightPt!;
+    const wPct = template.wPt / template.pageWidthPt!;
+    const hPct = template.hPt / template.pageHeightPt!;
+
+    const region: TemplateRegion = {
+      xPct,
+      yPct,
+      wPct,
+      hPct,
+    };
 
     // Sanitize DPI: default 200, clamp 100-400
     let sanitizedDpi = 200;
@@ -291,28 +231,24 @@ export async function getTemplateConfigForFmKey(
       page: template.page,
       region,
       dpi: sanitizedDpi,
-      // Include point fields when available
-      xPt: usePoints ? template.xPt : undefined,
-      yPt: usePoints ? template.yPt : undefined,
-      wPt: usePoints ? template.wPt : undefined,
-      hPt: usePoints ? template.hPt : undefined,
-      pageWidthPt: usePoints ? template.pageWidthPt : undefined,
-      pageHeightPt: usePoints ? template.pageHeightPt : undefined,
+      // PDF points are always included (points-only mode)
+      xPt: template.xPt,
+      yPt: template.yPt,
+      wPt: template.wPt,
+      hPt: template.hPt,
+      pageWidthPt: template.pageWidthPt,
+      pageHeightPt: template.pageHeightPt,
     };
 
-    if (usePoints) {
-      console.log(`[Template Config] Using PDF points for ${normalizedFmKey}:`, {
-        xPt: template.xPt,
-        yPt: template.yPt,
-        wPt: template.wPt,
-        hPt: template.hPt,
-        pageWidthPt: template.pageWidthPt,
-        pageHeightPt: template.pageHeightPt,
-        convertedToPercentages: region,
-      });
-    } else {
-      console.log(`[Template Config] Using legacy percentages for ${normalizedFmKey}:`, region);
-    }
+    console.log(`[Template Config] Using PDF points for ${normalizedFmKey}:`, {
+      xPt: template.xPt,
+      yPt: template.yPt,
+      wPt: template.wPt,
+      hPt: template.hPt,
+      pageWidthPt: template.pageWidthPt,
+      pageHeightPt: template.pageHeightPt,
+      convertedToPercentages: region,
+    });
 
     // Cache the result
     setCachedConfig(spreadsheetId, normalizedFmKey, config);

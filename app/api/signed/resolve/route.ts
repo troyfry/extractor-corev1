@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { auth } from "@/auth";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
+import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
+import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 import {
   updateJobWithSignedInfoByWorkOrderNumber,
   writeWorkOrderRecord,
@@ -48,32 +47,9 @@ export async function POST(req: Request) {
       );
     }
 
-    // Resolve spreadsheetId using cookie → session fallback (same as /api/signed/process)
-    const cookieStore = await cookies();
-    const cookieSpreadsheetId =
-      cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
-
-    let spreadsheetId: string | null = null;
-    if (cookieSpreadsheetId) {
-      spreadsheetId = cookieSpreadsheetId;
-    } else {
-      const session = await auth();
-      const sessionSpreadsheetId = session
-        ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId
-        : null;
-      spreadsheetId = await getUserSpreadsheetId(
-        user.userId,
-        sessionSpreadsheetId
-      );
-    }
-
-    if (!spreadsheetId) {
-      console.log("[Signed Resolve] No spreadsheet ID configured");
-      return NextResponse.json(
-        { error: "No Google Sheets spreadsheet configured." },
-        { status: 400 }
-      );
-    }
+    // Get workspace (centralized resolution)
+    const workspaceResult = await workspaceRequired();
+    const spreadsheetId = workspaceResult.workspace.spreadsheetId;
 
     // Parse request body
     const body = await req.json();
@@ -236,7 +212,8 @@ export async function POST(req: Request) {
       // Get UX mapping for UPDATED mode (success)
       const ux = getNeedsReviewUx("MANUALLY_RESOLVED", fmKey);
       
-      return NextResponse.json({
+      // Rehydrate cookies if workspace was loaded from Users Sheet
+      const response = NextResponse.json({
         mode: "UPDATED",
         data: {
           woNumber,
@@ -248,6 +225,10 @@ export async function POST(req: Request) {
           tone: ux.tone,
         },
       });
+      if (workspaceResult.source === "users_sheet") {
+        rehydrateWorkspaceCookies(response, workspaceResult.workspace);
+      }
+      return response;
     } else {
       // Update Needs_Review_Signed row with manual_work_order_number, reason="NO_MATCHING_JOB_ROW", resolved remains FALSE, reason_note stored
       await updateSignedNeedsReviewUnresolved(
@@ -262,7 +243,8 @@ export async function POST(req: Request) {
       // Get UX mapping for the reason
       const ux = getNeedsReviewUx(NEEDS_REVIEW_REASONS.NO_MATCHING_JOB_ROW, fmKey);
       
-      return NextResponse.json({
+      // Rehydrate cookies if workspace was loaded from Users Sheet
+      const response = NextResponse.json({
         mode: "NEEDS_REVIEW",
         data: {
           reason: NEEDS_REVIEW_REASONS.NO_MATCHING_JOB_ROW,
@@ -274,6 +256,10 @@ export async function POST(req: Request) {
           tone: ux.tone,
         },
       });
+      if (workspaceResult.source === "users_sheet") {
+        rehydrateWorkspaceCookies(response, workspaceResult.workspace);
+      }
+      return response;
     }
   } catch (error) {
     console.error("Error in POST /api/signed/resolve", error);

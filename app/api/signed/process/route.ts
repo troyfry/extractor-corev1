@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { getWorkspace } from "@/lib/workspace/getWorkspace";
+import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
 import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 import { processSignedPdf } from "@/lib/workOrders/signedProcessor";
 
@@ -26,15 +26,8 @@ export async function POST(req: Request) {
       );
     }
 
-    // Get workspace (uses cookie module internally)
-    const workspaceResult = await getWorkspace();
-    if (!workspaceResult) {
-      return NextResponse.json(
-        { error: "Workspace not found. Please complete onboarding." },
-        { status: 400 }
-      );
-    }
-
+    // Get workspace (centralized resolution)
+    const workspaceResult = await workspaceRequired();
     const spreadsheetId = workspaceResult.workspace.spreadsheetId;
 
     const formData = await req.formData();

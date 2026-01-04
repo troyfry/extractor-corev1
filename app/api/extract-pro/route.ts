@@ -427,25 +427,15 @@ CRITICAL:
     // Sheets + Drive is the system of record
     const accessToken = user?.googleAccessToken || null;
     
-    if (accessToken) {
+    // Get workspace for cookie rehydration (if available)
+    let workspaceResult: Awaited<ReturnType<typeof import("@/lib/workspace/workspaceRequired").workspaceRequired>> | null = null;
+    
+    if (accessToken && user) {
       try {
-        const { getUserSpreadsheetId } = await import("@/lib/userSettings/repository");
-        const { auth } = await import("@/auth");
-        const { cookies } = await import("next/headers");
-        
-        // Check cookie first (session-based, no DB)
-        const cookieSpreadsheetId = (await cookies()).get("googleSheetsSpreadsheetId")?.value || null;
-        
-        // Use cookie if available, otherwise check session/JWT token, then DB
-        let spreadsheetId: string | null = null;
-        if (cookieSpreadsheetId) {
-          spreadsheetId = cookieSpreadsheetId;
-        } else {
-          // Then check session/JWT token
-          const session = await auth();
-          const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
-          spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
-        }
+        // Get workspace (centralized resolution)
+        const { workspaceRequired } = await import("@/lib/workspace/workspaceRequired");
+        workspaceResult = await workspaceRequired();
+        const spreadsheetId = workspaceResult.workspace.spreadsheetId;
         
         if (spreadsheetId) {
           console.log("[extract-pro] Writing work orders to Sheets + Drive:", {
@@ -643,10 +633,18 @@ CRITICAL:
     }
 
     // Return parsed work orders (no DB persistence - Sheets + Drive is the system of record)
-    return NextResponse.json(
+    const response = NextResponse.json(
       { workOrders: parsedWorkOrders },
       { status: 200 }
     );
+    
+    // Rehydrate cookies if workspace was loaded from Users Sheet
+    if (workspaceResult && workspaceResult.source === "users_sheet") {
+      const { rehydrateWorkspaceCookies } = await import("@/lib/workspace/workspaceCookies");
+      rehydrateWorkspaceCookies(response, workspaceResult.workspace);
+    }
+    
+    return response;
   } catch (error) {
     console.error("Error in POST /api/extract-pro", error);
     const errorMessage = error instanceof Error ? error.message : "Failed to process PDF";
