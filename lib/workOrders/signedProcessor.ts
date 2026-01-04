@@ -29,6 +29,11 @@ import {
 } from "@/lib/workOrders/signedDecisionEngine";
 import { extractTextFromPdfBuffer } from "@/lib/workOrders/aiParser";
 import {
+  assertPdfCropPointsValid,
+  type PdfCropPoints,
+  type BoundsPt,
+} from "@/lib/templates/templateCoordinateConversion";
+import {
   uploadPdfToDrive,
   getOrCreateFolder,
 } from "@/lib/google/drive";
@@ -807,17 +812,61 @@ export async function processSignedPdf(
   // in computeEffectiveCropAndDimensions(). No need for a separate guard.
 
   // Guard: assert points are valid before calling OCR (if in points mode)
+  // ⚠️ USE LOCKED VALIDATION FUNCTION - DO NOT MODIFY
   if (pointsMode) {
     try {
-      assertPointsCrop({
-        xPt: templateConfig.xPt,
-        yPt: templateConfig.yPt,
-        wPt: templateConfig.wPt,
-        hPt: templateConfig.hPt,
-        pageWidthPt: templateConfig.pageWidthPt,
-        pageHeightPt: templateConfig.pageHeightPt,
-        page: templatePage,
-      });
+      // Get bounds from PDF for complete validation
+      // If bounds not available, use default (points are already normalized to 0-based)
+      const pdfBounds = await (async () => {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          // @ts-expect-error - mupdf module exists at runtime but has no type declarations
+          const mupdfModule: any = await import("mupdf");
+          const init = mupdfModule.default || mupdfModule;
+          let mupdf: any;
+          if (typeof init === "function") {
+            const result = init();
+            mupdf = result instanceof Promise ? await result : result;
+          } else {
+            mupdf = init;
+          }
+          
+          const Document = (mupdf as any).Document;
+          if (!Document) return null;
+          
+          const pdfUint8Array = new Uint8Array(pdfBuffer);
+          const doc = (Document as any).openDocument(pdfUint8Array, "application/pdf");
+          if (!doc) return null;
+          
+          const pdfPage = doc.loadPage(templatePage - 1);
+          if (!pdfPage) return null;
+          
+          const rect = (pdfPage as any).getBounds();
+          return { x0: rect.x0, y0: rect.y0, x1: rect.x1, y1: rect.y1 } as BoundsPt;
+        } catch {
+          return null;
+        }
+      })();
+      
+      // Use actual bounds if available, otherwise default to 0-based (points are normalized)
+      const boundsPt: BoundsPt = pdfBounds || {
+        x0: 0,
+        y0: 0,
+        x1: templateConfig.pageWidthPt!,
+        y1: templateConfig.pageHeightPt!,
+      };
+      
+      const crop: PdfCropPoints = {
+        xPt: templateConfig.xPt!,
+        yPt: templateConfig.yPt!,
+        wPt: templateConfig.wPt!,
+        hPt: templateConfig.hPt!,
+        pageWidthPt: templateConfig.pageWidthPt!,
+        pageHeightPt: templateConfig.pageHeightPt!,
+        boundsPt,
+      };
+      
+      assertPdfCropPointsValid(crop, `Template ${normalizedFmKey}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error(`[Signed Processor] Points validation failed:`, {

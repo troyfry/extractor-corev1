@@ -118,6 +118,31 @@ export type PdfPoints = {
 };
 
 /**
+ * PDF page geometry (complete page information).
+ * Required for all coordinate conversions.
+ */
+export type PdfPageGeometry = {
+  boundsPt: BoundsPt;
+  pageWidthPt: number;
+  pageHeightPt: number;
+  renderPx?: { width: number; height: number }; // Optional: rendered image size in pixels
+};
+
+/**
+ * Complete PDF crop points (points + page geometry).
+ * A saved crop MUST include all of these fields - they are non-optional.
+ */
+export type PdfCropPoints = {
+  xPt: number;
+  yPt: number;
+  wPt: number;
+  hPt: number;
+  pageWidthPt: number;
+  pageHeightPt: number;
+  boundsPt: BoundsPt;
+};
+
+/**
  * ⚠️ LOCKED FUNCTION: CSS Pixels → PDF Points (SAVING)
  * 
  * Converts user-drawn rectangle (CSS pixels) to PDF points for storage.
@@ -277,5 +302,71 @@ export function validatePdfPoints(
       `page=${pageSizePt.width}x${pageSizePt.height}`
     );
   }
+}
+
+/**
+ * ⚠️ LOCKED FUNCTION: Complete Crop Validation
+ * 
+ * Validates that a saved crop is COMPLETE with all required fields.
+ * This is the hard guard that ensures saved crops include points + page geometry.
+ * 
+ * Enforce this:
+ * - BEFORE template save
+ * - AFTER template load
+ * - AT signed OCR entrypoint (fail fast)
+ * 
+ * @param crop - Complete PDF crop points with geometry
+ * @param label - Optional label for error messages
+ * @throws Error if crop is incomplete or invalid
+ */
+export function assertPdfCropPointsValid(
+  crop: PdfCropPoints,
+  label = "crop"
+): void {
+  // Check all required fields exist
+  if (
+    crop.xPt === undefined || crop.yPt === undefined ||
+    crop.wPt === undefined || crop.hPt === undefined ||
+    crop.pageWidthPt === undefined || crop.pageHeightPt === undefined ||
+    crop.boundsPt === undefined
+  ) {
+    throw new Error(
+      `[${label}] Incomplete PDF crop - missing required fields. ` +
+      `Required: xPt, yPt, wPt, hPt, pageWidthPt, pageHeightPt, boundsPt`
+    );
+  }
+
+  // Validate boundsPt structure
+  const { boundsPt } = crop;
+  if (
+    boundsPt.x0 === undefined || boundsPt.y0 === undefined ||
+    boundsPt.x1 === undefined || boundsPt.y1 === undefined ||
+    !Number.isFinite(boundsPt.x0) || !Number.isFinite(boundsPt.y0) ||
+    !Number.isFinite(boundsPt.x1) || !Number.isFinite(boundsPt.y1)
+  ) {
+    throw new Error(
+      `[${label}] Invalid boundsPt structure. ` +
+      `Required: { x0, y0, x1, y1 } all finite numbers`
+    );
+  }
+
+  // Validate page dimensions
+  if (
+    !Number.isFinite(crop.pageWidthPt) || !Number.isFinite(crop.pageHeightPt) ||
+    crop.pageWidthPt <= 0 || crop.pageHeightPt <= 0
+  ) {
+    throw new Error(
+      `[${label}] Invalid page dimensions. ` +
+      `pageWidthPt=${crop.pageWidthPt}, pageHeightPt=${crop.pageHeightPt} ` +
+      `(must be positive finite numbers)`
+    );
+  }
+
+  // Validate points using existing validation
+  validatePdfPoints(
+    { xPt: crop.xPt, yPt: crop.yPt, wPt: crop.wPt, hPt: crop.hPt },
+    { width: crop.pageWidthPt, height: crop.pageHeightPt },
+    label
+  );
 }
 

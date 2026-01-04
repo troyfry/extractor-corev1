@@ -9,7 +9,9 @@ import {
   cssPixelsToPdfPoints, 
   pdfPointsToCssPixels, 
   validatePdfPoints,
-  type BoundsPt 
+  assertPdfCropPointsValid,
+  type BoundsPt,
+  type PdfCropPoints
 } from "@/lib/templates/templateCoordinateConversion";
 
 // Coordinate system constants
@@ -407,22 +409,43 @@ function TemplateZonesPageContent() {
                 template.xPt !== undefined && template.yPt !== undefined &&
                 template.wPt !== undefined && template.hPt !== undefined &&
                 pageWidthPt > 0 && pageHeightPt > 0) {
-              // Convert PDF points to pixels (top-left origin)
-              // DO compute scale from rendered PNG dimensions (imageWidth/imageHeight), NOT container size
-              // This ensures the overlay aligns correctly with the rendered image
-              const scaleX = imageWidth / template.pageWidthPt;
-              const scaleY = imageHeight / template.pageHeightPt;
-              const xPx = template.xPt * scaleX;
-              const yPx = template.yPt * scaleY;
-              const wPx = template.wPt * scaleX;
-              const hPx = template.hPt * scaleY;
-              
-              setCropZone({
-                x: xPx,
-                y: yPx,
-                width: wPx,
-                height: hPx,
-              });
+              // Convert PDF points to CSS pixels (top-left origin)
+              // ⚠️ USE LOCKED CONVERSION FUNCTION - DO NOT MODIFY
+              try {
+                const rect = imageContainerRef.current?.getBoundingClientRect();
+                if (rect && boundsPt) {
+                  // Validate complete crop before conversion
+                  const crop: PdfCropPoints = {
+                    xPt: template.xPt,
+                    yPt: template.yPt,
+                    wPt: template.wPt,
+                    hPt: template.hPt,
+                    pageWidthPt: template.pageWidthPt,
+                    pageHeightPt: template.pageHeightPt,
+                    boundsPt: boundsPt,
+                  };
+                  assertPdfCropPointsValid(crop, `Template ${template.fmKey || "unknown"}`);
+                  
+                  // Use locked conversion function
+                  const cssPx = pdfPointsToCssPixels(
+                    { xPt: template.xPt, yPt: template.yPt, wPt: template.wPt, hPt: template.hPt },
+                    { width: template.pageWidthPt, height: template.pageHeightPt },
+                    { width: imageWidth, height: imageHeight },
+                    { width: rect.width, height: rect.height },
+                    boundsPt
+                  );
+                  
+                  setCropZone({
+                    x: cssPx.x,
+                    y: cssPx.y,
+                    width: cssPx.width,
+                    height: cssPx.height,
+                  });
+                }
+              } catch {
+                // Image not loaded yet, will retry when image loads
+                console.log("[Template Zones] Image rect not available yet for template conversion");
+              }
             } else {
               // Fallback to percentage-based conversion (legacy)
               setCropZone({
@@ -812,27 +835,50 @@ function TemplateZonesPageContent() {
       return;
     }
 
-    // Convert PDF points to percentages, then to pixels
-    const xPct = xPt / pageWidthPt;
-    const yPct = yPt / pageHeightPt;
-    const wPct = wPt / pageWidthPt;
-    const hPct = hPt / pageHeightPt;
-
-    // Clamp values
-    const clampedXPct = Math.max(0, Math.min(1, xPct));
-    const clampedYPct = Math.max(0, Math.min(1, yPct));
-    const clampedWPct = Math.max(0, Math.min(1 - clampedXPct, wPct));
-    const clampedHPct = Math.max(0, Math.min(1 - clampedYPct, hPct));
-
-    setCropZone({
-      x: clampedXPct * imageWidth,
-      y: clampedYPct * imageHeight,
-      width: clampedWPct * imageWidth,
-      height: clampedHPct * imageHeight,
-    });
-    setCoordsPage(selectedPage);
-    setManualPoints(null);
-    setError(null);
+    // Convert PDF points to CSS pixels
+    // ⚠️ USE LOCKED CONVERSION FUNCTION - DO NOT MODIFY
+    try {
+      const rect = imageContainerRef.current?.getBoundingClientRect();
+      if (!rect || !boundsPt) {
+        setError("Image dimensions not available");
+        return;
+      }
+      
+      // Validate complete crop before conversion
+      const crop: PdfCropPoints = {
+        xPt,
+        yPt,
+        wPt,
+        hPt,
+        pageWidthPt,
+        pageHeightPt,
+        boundsPt,
+      };
+      assertPdfCropPointsValid(crop, "Manual points");
+      
+      // Use locked conversion function
+      const cssPx = pdfPointsToCssPixels(
+        { xPt, yPt, wPt, hPt },
+        { width: pageWidthPt, height: pageHeightPt },
+        { width: imageWidth, height: imageHeight },
+        { width: rect.width, height: rect.height },
+        boundsPt
+      );
+      
+      // Use converted CSS pixels directly (conversion function handles bounds)
+      setCropZone({
+        x: cssPx.x,
+        y: cssPx.y,
+        width: cssPx.width,
+        height: cssPx.height,
+      });
+      setCoordsPage(selectedPage);
+      setManualPoints(null);
+      setError(null);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : "Invalid coordinates";
+      setError(`Failed to apply manual points: ${errorMsg}`);
+    }
   }
 
   async function handleSave() {
@@ -873,13 +919,24 @@ function TemplateZonesPageContent() {
     const points = calculatedPoints; // Use stored points, not recalculated
     
     // ⚠️ USE LOCKED VALIDATION FUNCTION - DO NOT MODIFY
-    // See lib/templates/templateCoordinateConversion.ts for implementation details
+    // Enforce complete crop validation (points + page geometry)
+    if (!boundsPt) {
+      setError("PDF bounds not available. Please reload the PDF.");
+      setIsSaving(false);
+      return;
+    }
+    
     try {
-      validatePdfPoints(
-        points,
-        { width: pageWidthPt, height: pageHeightPt },
-        "Template Zones Save"
-      );
+      const crop: PdfCropPoints = {
+        xPt: points.xPt,
+        yPt: points.yPt,
+        wPt: points.wPt,
+        hPt: points.hPt,
+        pageWidthPt,
+        pageHeightPt,
+        boundsPt,
+      };
+      assertPdfCropPointsValid(crop, selectedFmKey || "Template");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Invalid coordinates");
       setIsSaving(false);
