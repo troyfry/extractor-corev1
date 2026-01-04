@@ -561,6 +561,7 @@ ${pdfText}`;
     let labelRemoved = false;
     let processingError: Error | null = null;
     let skipSheets = false; // Track if Sheets writes were skipped (for warning message)
+    let workspaceResult: Awaited<ReturnType<typeof import("@/lib/workspace/getWorkspace").getWorkspace>> | null = null;
 
     try {
       // Validate required configuration
@@ -568,27 +569,16 @@ ${pdfText}`;
         throw new Error("No Google access token available. Cannot process email.");
       }
 
-      const { getUserSpreadsheetId } = await import("@/lib/userSettings/repository");
-      const { auth } = await import("@/auth");
-      const { cookies } = await import("next/headers");
+      // Get workspace (uses cookie module internally)
+      const { getWorkspace } = await import("@/lib/workspace/getWorkspace");
+      workspaceResult = await getWorkspace();
       
-      // Check cookie first (session-based, no DB)
-      const cookieSpreadsheetId = (await cookies()).get("googleSheetsSpreadsheetId")?.value || null;
-      
-      // Use cookie if available, otherwise check session/JWT token, then DB
-      let spreadsheetId: string | null = null;
-      if (cookieSpreadsheetId) {
-        spreadsheetId = cookieSpreadsheetId;
-        console.log(`[Gmail Process] Using spreadsheet ID from cookie: ${spreadsheetId.substring(0, 10)}...`);
-      } else {
-        // Then check session/JWT token
-        const session = await auth();
-        const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
-        spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
-        if (spreadsheetId) {
-          console.log(`[Gmail Process] Using spreadsheet ID from session/DB: ${spreadsheetId.substring(0, 10)}...`);
-        }
+      if (!workspaceResult) {
+        throw new Error("Workspace not found. Please complete onboarding.");
       }
+      
+      const spreadsheetId = workspaceResult.workspace.spreadsheetId;
+      console.log(`[Gmail Process] Using spreadsheet ID: ${spreadsheetId.substring(0, 10)}... (source: ${workspaceResult.source})`);
 
       // Load FM Profiles from Sheets
       const { getAllFmProfiles } = await import("@/lib/templates/fmProfilesSheets");
@@ -833,7 +823,7 @@ ${pdfText}`;
     const csv = await generateCsv(allParsedWorkOrders, issuerKey);
 
     // Return parsed work orders and CSV
-    const response: ManualProcessResponse = {
+    const responseData: ManualProcessResponse = {
       workOrders: allParsedWorkOrders,
       csv,
       meta: {
@@ -856,7 +846,14 @@ ${pdfText}`;
       },
     };
 
-    return NextResponse.json(response, { status: 200 });
+    // Rehydrate cookies if workspace was loaded from Users Sheet
+    const response = NextResponse.json(responseData, { status: 200 });
+    if (workspaceResult && workspaceResult.source === "users_sheet") {
+      const { rehydrateWorkspaceCookies } = await import("@/lib/workspace/workspaceCookies");
+      rehydrateWorkspaceCookies(response, workspaceResult.workspace);
+    }
+
+    return response;
   } catch (error) {
     console.error("Error processing Gmail email:", error);
     const errorMessage = error instanceof Error ? error.message : "Failed to process Gmail email";

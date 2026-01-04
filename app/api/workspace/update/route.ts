@@ -9,7 +9,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { loadWorkspace } from "@/lib/workspace/loadWorkspace";
 import { saveWorkspaceConfig } from "@/lib/workspace/saveWorkspace";
-import { rehydrateCookies } from "@/lib/workspace/rehydrateCookies";
+import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 import { ensureLabel } from "@/lib/google/gmail";
 import { validateLabelName } from "@/lib/google/gmailValidation";
 import {
@@ -95,9 +95,10 @@ export async function POST(request: Request) {
     await saveWorkspaceConfig(user.userId, updatedWorkspace);
 
     // Rehydrate cookies with updated values
-    await rehydrateCookies(updatedWorkspace);
+    const response = NextResponse.json({ success: true, workspace: updatedWorkspace });
+    rehydrateWorkspaceCookies(response, updatedWorkspace);
 
-    return NextResponse.json({ success: true, workspace: updatedWorkspace });
+    return response;
   } catch (error) {
     console.error("[Workspace Update API] Error:", error);
     const errorMessage = error instanceof Error ? error.message : "Failed to update workspace";

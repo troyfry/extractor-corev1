@@ -98,6 +98,7 @@ export async function writeImportedRecords(
           reason: "IMPORT_CONFLICT",
           manual_work_order_number: record.wo_number,
           resolved: "FALSE",
+          resolved_at: null,
           reason_note: `External import conflict. Existing: ${JSON.stringify(dedupe.existingRecord)}. New: ${JSON.stringify(record)}`,
         };
         await appendSignedNeedsReviewRow(accessToken, internalSpreadsheetId, conflictRecord);

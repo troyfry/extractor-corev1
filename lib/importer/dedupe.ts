@@ -132,7 +132,7 @@ export async function dedupeRecords(
   accessToken: string,
   internalSpreadsheetId: string,
   records: CanonicalWorkOrderRecord[]
-): Promise<Map<number, DedupeResult> {
+): Promise<Map<number, DedupeResult>> {
   const results = new Map<number, DedupeResult>();
 
   // Process in batches to avoid quota issues

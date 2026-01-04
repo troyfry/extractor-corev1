@@ -6,10 +6,6 @@ export default defineConfig({
     environment: "node",
     include: ["tests/**/*.test.ts"],
     globals: false,
-    // Fast execution - no coverage by default
-    coverage: {
-      enabled: false,
-    },
   },
   resolve: {
     alias: {

@@ -10,6 +10,7 @@
 import { NextResponse } from "next/server";
 import { loadWorkspace } from "@/lib/workspace/loadWorkspace";
 import { getCurrentUser } from "@/lib/auth/currentUser";
+import { readWorkspaceCookies, rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 import { cookies } from "next/headers";
 
 export const runtime = "nodejs";
@@ -31,44 +32,18 @@ export async function GET() {
       );
     }
 
-    // Set cookies for fast access (even if already set, refresh them)
     const response = NextResponse.json({
       workspace,
       message: "Workspace loaded successfully",
     });
 
+    // Check if cookies need to be set (use cookie module)
     const cookieStore = await cookies();
-    const workspaceReady = cookieStore.get("workspaceReady")?.value;
-
-    // Only set cookies if not already set (avoid unnecessary writes)
-    if (workspaceReady !== "true") {
-      response.cookies.set("workspaceReady", "true", {
-        maxAge: 30 * 24 * 60 * 60, // 30 days
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "lax",
-      });
-
-      response.cookies.set("workspaceSpreadsheetId", workspace.spreadsheetId, {
-        maxAge: 30 * 24 * 60 * 60,
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "lax",
-      });
-
-      response.cookies.set("workspaceDriveFolderId", workspace.driveFolderId, {
-        maxAge: 30 * 24 * 60 * 60,
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "lax",
-      });
-
-      response.cookies.set("onboardingCompletedAt", workspace.onboardingCompletedAt, {
-        maxAge: 30 * 24 * 60 * 60,
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "lax",
-      });
+    const wsCookies = readWorkspaceCookies(cookieStore);
+    
+    // Only rehydrate if workspace was loaded from Users Sheet or cookies are missing
+    if (!wsCookies.workspaceReady || wsCookies.workspaceReady !== "true") {
+      rehydrateWorkspaceCookies(response, workspace);
     }
 
     return response;

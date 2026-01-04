@@ -1,19 +1,22 @@
 /**
- * Universal workspace loader.
+ * Universal workspace loader (PURE - no side effects).
  * 
  * This is the single function that every route uses to get workspace configuration.
  * 
  * Priority order:
- * 1. Cookies (fast, zero API calls)
- * 2. Users Sheet (source of truth, rehydrates cookies)
+ * 1. Cookies (fast, zero API calls) - validated for version
+ * 2. Users Sheet (source of truth)
  * 
+ * NEVER writes cookies - use rehydrateWorkspaceCookies() in API routes instead.
  * Never redirects to onboarding unless BOTH are missing.
  */
 
 import { cookies } from "next/headers";
+import type { ReadonlyRequestCookies } from "next/dist/server/web/spec-extension/adapters/request-cookies";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getUserRowById } from "@/lib/onboarding/usersSheet";
 import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
+import { readWorkspaceCookies, validateWorkspaceVersion } from "./workspaceCookies";
 import type { UserWorkspace } from "./types";
 
 export type WorkspaceResult = {
@@ -22,10 +25,10 @@ export type WorkspaceResult = {
 } | null;
 
 /**
- * Get user workspace configuration.
+ * Get user workspace configuration (PURE LOADER - no cookie writing).
  * 
  * Fast path: Check cookies first (zero API calls)
- * Fallback: Load from Users Sheet and rehydrate cookies
+ * Fallback: Load from Users Sheet (source of truth)
  * 
  * @returns Workspace configuration or null if not found
  */
@@ -38,26 +41,28 @@ export async function getWorkspace(): Promise<WorkspaceResult> {
   }
 
   // 1️⃣ Fast path — cookies (zero API calls)
-  const cookieSpreadsheetId = cookieStore.get("googleSheetsSpreadsheetId")?.value;
-  const cookieOnboardingCompleted = cookieStore.get("onboardingCompleted")?.value;
-  const cookieFolderId = cookieStore.get("googleDriveFolderId")?.value;
+  const wsCookies = readWorkspaceCookies(cookieStore);
   
-  if (cookieSpreadsheetId && cookieOnboardingCompleted === "true") {
-    // We have cookies, construct workspace from cookies
+  // Validate workspace version (if present)
+  if (!validateWorkspaceVersion(cookieStore)) {
+    console.log("[Workspace] Cookie version mismatch - will reload from Users Sheet");
+    // Fall through to Users Sheet load
+  } else if (wsCookies.spreadsheetId && wsCookies.onboardingCompleted === "true") {
+    // We have valid cookies, construct workspace from cookies
     // Note: We don't have all fields in cookies, so we use defaults for missing ones
     return {
       workspace: {
         userId: user.userId,
         email: user.email || "",
-        spreadsheetId: cookieSpreadsheetId,
+        spreadsheetId: wsCookies.spreadsheetId,
         mainSheetName: "Sheet1", // Default
         workOrdersSheetName: "Work_Orders", // Default
         templatesSheetName: "Templates", // Default
-        driveSignedFolderId: cookieFolderId || "",
-        driveSnippetsFolderId: cookieFolderId || "", // Default to same folder
+        driveSignedFolderId: wsCookies.folderId || "",
+        driveSnippetsFolderId: wsCookies.folderId || "", // Default to same folder
         onboardingCompleted: true,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        createdAt: wsCookies.onboardingCompletedAt || new Date().toISOString(),
+        updatedAt: wsCookies.onboardingCompletedAt || new Date().toISOString(),
       },
       source: "cookie",
     };
@@ -74,7 +79,7 @@ export async function getWorkspace(): Promise<WorkspaceResult> {
     // 2. Session/JWT token (persists across cookie expiration) ✅
     // 3. Direct user property (fallback)
     const sessionSpreadsheetId = await getUserSpreadsheetId(user.userId);
-    const mainSpreadsheetId = cookieSpreadsheetId || 
+    const mainSpreadsheetId = wsCookies.spreadsheetId || 
       sessionSpreadsheetId ||
       (user as any).googleSheetsSpreadsheetId || 
       null;
@@ -119,9 +124,8 @@ export async function getWorkspace(): Promise<WorkspaceResult> {
       updatedAt: userRow.updatedAt || new Date().toISOString(),
     };
 
-    // 3️⃣ Rehydrate cookies for next request (note: cookies() is read-only in this context)
-    // Cookies will be set by the calling route/API handler
-    // We return the workspace data so the caller can set cookies
+    // NOTE: This function does NOT write cookies (pure loader)
+    // Callers should use rehydrateWorkspaceCookies() if workspace was loaded from Users Sheet
 
     return {
       workspace,

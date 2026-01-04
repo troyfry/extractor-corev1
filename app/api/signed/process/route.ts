@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { auth } from "@/auth";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
+import { getWorkspace } from "@/lib/workspace/getWorkspace";
+import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 import { processSignedPdf } from "@/lib/workOrders/signedProcessor";
 
 export const runtime = "nodejs";
@@ -27,32 +26,16 @@ export async function POST(req: Request) {
       );
     }
 
-    // Resolve spreadsheetId using the same logic as existing Pro routes
-    const cookieStore = await cookies();
-    const cookieSpreadsheetId =
-      cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
-
-    let spreadsheetId: string | null = null;
-    if (cookieSpreadsheetId) {
-      spreadsheetId = cookieSpreadsheetId;
-    } else {
-      const session = await auth();
-      const sessionSpreadsheetId = session
-        ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId
-        : null;
-      spreadsheetId = await getUserSpreadsheetId(
-        user.userId,
-        sessionSpreadsheetId
-      );
-    }
-
-    if (!spreadsheetId) {
-      console.log("[Signed Process] No spreadsheet ID configured");
+    // Get workspace (uses cookie module internally)
+    const workspaceResult = await getWorkspace();
+    if (!workspaceResult) {
       return NextResponse.json(
-        { error: "No Google Sheets spreadsheet configured." },
+        { error: "Workspace not found. Please complete onboarding." },
         { status: 400 }
       );
     }
+
+    const spreadsheetId = workspaceResult.workspace.spreadsheetId;
 
     const formData = await req.formData();
     const file = formData.get("file");
@@ -96,7 +79,13 @@ export async function POST(req: Request) {
       source: "UPLOAD",
     });
 
-    return NextResponse.json(result, { status: 200 });
+    // Rehydrate cookies if workspace was loaded from Users Sheet
+    const response = NextResponse.json(result, { status: 200 });
+    if (workspaceResult.source === "users_sheet") {
+      rehydrateWorkspaceCookies(response, workspaceResult.workspace);
+    }
+
+    return response;
   } catch (error) {
     console.error("Error in POST /api/signed/process", error);
     const message =

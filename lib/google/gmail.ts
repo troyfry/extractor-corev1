@@ -9,6 +9,11 @@ import { google } from "googleapis";
 import { WORK_ORDER_LABEL_NAME } from "./gmailConfig";
 import { validateLabelName } from "./gmailValidation";
 
+export type GmailLabel = {
+  id: string;
+  name: string;
+};
+
 /**
  * Create a Gmail API client using an OAuth access token.
  */

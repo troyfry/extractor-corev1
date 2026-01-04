@@ -51,28 +51,18 @@ export async function GET(request: Request) {
       );
     }
 
-    // Get spreadsheet ID - check cookie first (session-based, no DB)
-    const { cookies } = await import("next/headers");
-    const cookieSpreadsheetId = (await cookies()).get("googleSheetsSpreadsheetId")?.value || null;
-
-    // Use cookie if available, otherwise check session/JWT token, then DB
-    let spreadsheetId: string | null = null;
-    if (cookieSpreadsheetId) {
-      spreadsheetId = cookieSpreadsheetId;
-    } else {
-      // Then check session/JWT token
-      const { auth } = await import("@/auth");
-      const session = await auth();
-      const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
-      spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
-    }
-
-    if (!spreadsheetId) {
+    // Get workspace (uses cookie module internally)
+    const { getWorkspace } = await import("@/lib/workspace/getWorkspace");
+    const workspaceResult = await getWorkspace();
+    
+    if (!workspaceResult) {
       return NextResponse.json(
-        { error: "Google Sheets spreadsheet ID not configured. Please set it in Settings." },
+        { error: "Workspace not found. Please complete onboarding." },
         { status: 400 }
       );
     }
+
+    const spreadsheetId = workspaceResult.workspace.spreadsheetId;
 
     // Read Work_Orders sheet
     const sheets = createSheetsClient(user.googleAccessToken);
@@ -155,7 +145,14 @@ export async function GET(request: Request) {
     }
 
     console.log(`[Work Orders GET] Returning ${workOrderRows.length} work order(s)`);
-    return NextResponse.json({ rows: workOrderRows });
+    
+    // Rehydrate cookies if workspace was loaded from Users Sheet
+    const response = NextResponse.json({ rows: workOrderRows });
+    if (workspaceResult && workspaceResult.source === "users_sheet") {
+      const { rehydrateWorkspaceCookies } = await import("@/lib/workspace/workspaceCookies");
+      rehydrateWorkspaceCookies(response, workspaceResult.workspace);
+    }
+    return response;
   } catch (error: unknown) {
     console.error("[Work Orders GET] Error:", error);
     return NextResponse.json(

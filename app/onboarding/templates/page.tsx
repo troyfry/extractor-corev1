@@ -290,7 +290,7 @@ export default function OnboardingTemplatesPage() {
           setSavedTemplate(template);
           
           // If we have a PDF loaded, navigate to the saved template's page
-          if (pdfFile && template.page && template.page !== selectedPage) {
+          if (_pdfFile && template.page && template.page !== selectedPage) {
             await handlePageChange(template.page);
           }
           
@@ -560,10 +560,10 @@ export default function OnboardingTemplatesPage() {
   }
 
   async function handlePageChange(newPage: number) {
-    if (!pdfFile || newPage < 1 || newPage > pageCount) return;
+    if (!_pdfFile || newPage < 1 || newPage > pageCount) return;
     
     setSelectedPage(newPage);
-    await renderPage(pdfFile, newPage);
+    await renderPage(_pdfFile, newPage);
   }
 
   function handlePointerUp(e: React.PointerEvent<HTMLDivElement>) {
@@ -686,10 +686,10 @@ export default function OnboardingTemplatesPage() {
     }
   }, [cropZone, pageWidthPt, pageHeightPt, imageLoaded, boundsPt]);
 
-  function handleManualPointsChange(field: "xPt" | "yPt" | "wPt" | "hPt", value: string) {
+  async function handleManualPointsChange(field: "xPt" | "yPt" | "wPt" | "hPt", value: string) {
     if (!pageWidthPt || !pageHeightPt) return;
     
-    const currentPoints = calculatePoints();
+    const currentPoints = await calculatePoints();
     const newManualPoints = manualPoints || (currentPoints ? {
       xPt: currentPoints.xPt.toFixed(2),
       yPt: currentPoints.yPt.toFixed(2),
@@ -753,21 +753,22 @@ export default function OnboardingTemplatesPage() {
         const wCss = cssPx.width;
         const hCss = cssPx.height;
 
-      // Clamp to image bounds
-      const clampedX = Math.max(0, Math.min(xCss, rect.width));
-      const clampedY = Math.max(0, Math.min(yCss, rect.height));
-      const clampedW = Math.max(0, Math.min(wCss, rect.width - clampedX));
-      const clampedH = Math.max(0, Math.min(hCss, rect.height - clampedY));
+        // Clamp to image bounds
+        const clampedX = Math.max(0, Math.min(xCss, rect.width));
+        const clampedY = Math.max(0, Math.min(yCss, rect.height));
+        const clampedW = Math.max(0, Math.min(wCss, rect.width - clampedX));
+        const clampedH = Math.max(0, Math.min(hCss, rect.height - clampedY));
 
-      setCropZone({
-        x: clampedX,
-        y: clampedY,
-        width: clampedW,
-        height: clampedH,
-      });
-      setCoordsPage(selectedPage);
-      setManualPoints(null);
-      setError(null);
+        setCropZone({
+          x: clampedX,
+          y: clampedY,
+          width: clampedW,
+          height: clampedH,
+        });
+        setCoordsPage(selectedPage);
+        setManualPoints(null);
+        setError(null);
+      }
     } catch (err) {
       setError("Failed to convert points to pixels. Please try again.");
       console.error("Error converting points:", err);

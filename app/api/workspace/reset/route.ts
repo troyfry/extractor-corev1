@@ -12,7 +12,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
 import { upsertUserRow, getUserRowById } from "@/lib/onboarding/usersSheet";
-import { cookies } from "next/headers";
+import { clearWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 
 export const runtime = "nodejs";
 
@@ -70,14 +70,7 @@ export async function POST() {
       message: "Workspace reset successfully. Please complete onboarding again.",
     });
 
-    response.cookies.delete("workspaceReady");
-    response.cookies.delete("workspaceSpreadsheetId");
-    response.cookies.delete("workspaceDriveFolderId");
-    response.cookies.delete("onboardingCompleted");
-    response.cookies.delete("onboardingCompletedAt");
-    response.cookies.delete("googleSheetsSpreadsheetId");
-    response.cookies.delete("googleDriveFolderId");
-    response.cookies.delete("workspaceReady");
+    clearWorkspaceCookies(response);
 
     console.log(`[Workspace Reset] Workspace reset for user ${user.userId}`);
     return response;

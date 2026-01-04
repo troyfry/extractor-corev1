@@ -1,10 +1,11 @@
 /**
- * Load workspace configuration.
+ * Load workspace configuration (PURE - no side effects).
  * 
  * Priority:
  * 1. Cookie (workspaceReady=true) → trust it, return cached values
- * 2. Users Sheet → load once, set cookies, return
+ * 2. Users Sheet → load once, return
  * 
+ * NEVER writes cookies - use rehydrateWorkspaceCookies() in API routes instead.
  * Never reads Sheets if cookie exists.
  * Never redirects on quota errors.
  */
@@ -13,10 +14,11 @@ import { cookies } from "next/headers";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getUserRowById } from "@/lib/onboarding/usersSheet";
 import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
+import { readWorkspaceCookies, validateWorkspaceVersion } from "./workspaceCookies";
 import type { WorkspaceConfig } from "@/types/workspace";
 
 /**
- * Load workspace configuration.
+ * Load workspace configuration (PURE LOADER - no cookie writing).
  * 
  * @returns Workspace configuration or null if not found
  */
@@ -29,30 +31,30 @@ export async function loadWorkspace(): Promise<WorkspaceConfig | null> {
   }
 
   // 1️⃣ Fast path — cookie says workspaceReady=true → trust it
-  const workspaceReady = cookieStore.get("workspaceReady")?.value;
-  if (workspaceReady === "true") {
+  const wsCookies = readWorkspaceCookies(cookieStore);
+  
+  // Validate workspace version (if present)
+  if (!validateWorkspaceVersion(cookieStore)) {
+    console.log("[Workspace] Cookie version mismatch - will reload from Users Sheet");
+    // Fall through to Users Sheet load
+  } else if (wsCookies.workspaceReady === "true") {
     // Get cached values from cookies (hints, not truth)
-    const spreadsheetId = cookieStore.get("workspaceSpreadsheetId")?.value ||
-      cookieStore.get("googleSheetsSpreadsheetId")?.value;
-    const driveFolderId = cookieStore.get("workspaceDriveFolderId")?.value ||
-      cookieStore.get("googleDriveFolderId")?.value;
-
-    if (spreadsheetId && driveFolderId) {
+    if (wsCookies.spreadsheetId && wsCookies.folderId) {
       // Return workspace from cookies (fast path, no Sheets calls)
       // Note: FM profiles and templatesConfigured are not in cookies
       // They'll be loaded separately when needed
       return {
-        spreadsheetId,
-        driveFolderId,
+        spreadsheetId: wsCookies.spreadsheetId,
+        driveFolderId: wsCookies.folderId,
         fmProfiles: [], // Not stored in cookies, load separately
         templatesConfigured: false, // Not stored in cookies, check separately
-        onboardingCompletedAt: cookieStore.get("onboardingCompletedAt")?.value || new Date().toISOString(),
-        gmailWorkOrdersLabelName: cookieStore.get("gmailWorkOrdersLabelName")?.value || "",
-        gmailWorkOrdersLabelId: cookieStore.get("gmailWorkOrdersLabelId")?.value || "",
-        gmailSignedLabelName: cookieStore.get("gmailSignedLabelName")?.value || "",
-        gmailSignedLabelId: cookieStore.get("gmailSignedLabelId")?.value || "",
-        gmailProcessedLabelName: cookieStore.get("gmailProcessedLabelName")?.value || null,
-        gmailProcessedLabelId: cookieStore.get("gmailProcessedLabelId")?.value || null,
+        onboardingCompletedAt: wsCookies.onboardingCompletedAt || new Date().toISOString(),
+        gmailWorkOrdersLabelName: wsCookies.gmailWorkOrdersLabelName || "",
+        gmailWorkOrdersLabelId: wsCookies.gmailWorkOrdersLabelId || "",
+        gmailSignedLabelName: wsCookies.gmailSignedLabelName || "",
+        gmailSignedLabelId: wsCookies.gmailSignedLabelId || "",
+        gmailProcessedLabelName: wsCookies.gmailProcessedLabelName || null,
+        gmailProcessedLabelId: wsCookies.gmailProcessedLabelId || null,
       };
     }
   }
@@ -82,7 +84,7 @@ export async function loadWorkspace(): Promise<WorkspaceConfig | null> {
     }
 
     // Guardrail: workspaceReady=true but Users sheet missing
-    if (workspaceReady === "true" && !userRow.spreadsheetId) {
+    if (wsCookies.workspaceReady === "true" && !userRow.spreadsheetId) {
       console.warn("[Workspace] Guardrail: workspaceReady=true but Users sheet missing workspace data");
     }
 
@@ -110,9 +112,8 @@ export async function loadWorkspace(): Promise<WorkspaceConfig | null> {
       gmailProcessedLabelId: userRow.gmailProcessedLabelId || null,
     };
 
-    // Re-set cookies for next request (fast path)
-    // Note: cookies() is read-only in this context, so cookies will be set by calling route
-    // Return workspace data so caller can set cookies via NextResponse
+    // NOTE: This function does NOT write cookies (pure loader)
+    // Callers should use rehydrateWorkspaceCookies() if workspace was loaded from Users Sheet
 
     return workspace;
   } catch (error) {

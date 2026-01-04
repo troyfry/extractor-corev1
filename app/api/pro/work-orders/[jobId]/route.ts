@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { getPlanFromRequest } from "@/lib/api/getPlanFromRequest";
 import { hasFeature } from "@/lib/plan";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
 import { findWorkOrderRecordByJobId } from "@/lib/google/sheets";
 import { getErrorMessage } from "@/lib/utils/error";
 
@@ -48,28 +47,18 @@ export async function GET(
       );
     }
 
-    // Get spreadsheet ID - check cookie first (session-based, no DB)
-    const { cookies } = await import("next/headers");
-    const cookieSpreadsheetId = (await cookies()).get("googleSheetsSpreadsheetId")?.value || null;
-
-    // Use cookie if available, otherwise check session/JWT token
-    let spreadsheetId: string | null = null;
-    if (cookieSpreadsheetId) {
-      spreadsheetId = cookieSpreadsheetId;
-    } else {
-      // Then check session/JWT token
-      const { auth } = await import("@/auth");
-      const session = await auth();
-      const sessionSpreadsheetId = session ? (session as { googleSheetsSpreadsheetId?: string }).googleSheetsSpreadsheetId : null;
-      spreadsheetId = await getUserSpreadsheetId(user.userId, sessionSpreadsheetId);
-    }
-
-    if (!spreadsheetId) {
+    // Get workspace (uses cookie module internally)
+    const { getWorkspace } = await import("@/lib/workspace/getWorkspace");
+    const workspaceResult = await getWorkspace();
+    
+    if (!workspaceResult) {
       return NextResponse.json(
-        { error: "Google Sheets spreadsheet ID not configured. Please set it in Settings." },
+        { error: "Workspace not found. Please complete onboarding." },
         { status: 400 }
       );
     }
+
+    const spreadsheetId = workspaceResult.workspace.spreadsheetId;
 
     // Find work order by jobId
     const workOrder = await findWorkOrderRecordByJobId(
@@ -86,7 +75,13 @@ export async function GET(
       );
     }
 
-    return NextResponse.json({ workOrder });
+    // Rehydrate cookies if workspace was loaded from Users Sheet
+    const response = NextResponse.json({ workOrder });
+    if (workspaceResult && workspaceResult.source === "users_sheet") {
+      const { rehydrateWorkspaceCookies } = await import("@/lib/workspace/workspaceCookies");
+      rehydrateWorkspaceCookies(response, workspaceResult.workspace);
+    }
+    return response;
   } catch (error: unknown) {
     console.error("[Work Order GET] Error:", error);
     return NextResponse.json(

@@ -1,11 +1,16 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/layout/AppShell";
 import MainNavigation from "@/components/layout/MainNavigation";
 import BYOKKeyInput from "@/components/plan/BYOKKeyInput";
+import {
+  WORK_ORDERS_LABEL_NAME,
+  SIGNED_WORK_ORDERS_LABEL_NAME,
+  PROCESSED_WORK_ORDERS_LABEL_NAME,
+} from "@/lib/google/gmailConfig";
 
 export default function ProSettingsPage() {
   const router = useRouter();
@@ -13,6 +18,73 @@ export default function ProSettingsPage() {
   const [resetError, setResetError] = useState<string | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetConfirmText, setResetConfirmText] = useState("");
+  
+  // Gmail label state
+  const [isLoadingGmail, setIsLoadingGmail] = useState(true);
+  const [isSavingGmail, setIsSavingGmail] = useState(false);
+  const [gmailError, setGmailError] = useState<string | null>(null);
+  const [gmailSuccess, setGmailSuccess] = useState<string | null>(null);
+  const [gmailWorkOrdersLabelName, setGmailWorkOrdersLabelName] = useState("");
+  const [gmailSignedLabelName, setGmailSignedLabelName] = useState("");
+  const [gmailProcessedLabelName, setGmailProcessedLabelName] = useState("");
+  
+  // Load Gmail labels on mount
+  useEffect(() => {
+    loadGmailLabels();
+  }, []);
+  
+  const loadGmailLabels = async () => {
+    setIsLoadingGmail(true);
+    setGmailError(null);
+    
+    try {
+      const response = await fetch("/api/workspace/bootstrap");
+      if (!response.ok) {
+        throw new Error("Failed to load workspace");
+      }
+      
+      const data = await response.json();
+      if (data.workspace) {
+        setGmailWorkOrdersLabelName(data.workspace.gmailWorkOrdersLabelName || WORK_ORDERS_LABEL_NAME);
+        setGmailSignedLabelName(data.workspace.gmailSignedLabelName || SIGNED_WORK_ORDERS_LABEL_NAME);
+        setGmailProcessedLabelName(data.workspace.gmailProcessedLabelName || PROCESSED_WORK_ORDERS_LABEL_NAME || "");
+      }
+    } catch (err) {
+      setGmailError(err instanceof Error ? err.message : "Failed to load Gmail labels");
+    } finally {
+      setIsLoadingGmail(false);
+    }
+  };
+  
+  const handleSaveGmailLabels = async () => {
+    setIsSavingGmail(true);
+    setGmailError(null);
+    setGmailSuccess(null);
+    
+    try {
+      const response = await fetch("/api/workspace/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          gmailWorkOrdersLabelName: gmailWorkOrdersLabelName.trim(),
+          gmailSignedLabelName: gmailSignedLabelName.trim(),
+          gmailProcessedLabelName: gmailProcessedLabelName.trim() || null,
+        }),
+      });
+      
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to save Gmail labels");
+      }
+      
+      setGmailSuccess("Gmail labels saved successfully!");
+      setTimeout(() => setGmailSuccess(null), 3000);
+    } catch (err) {
+      setGmailError(err instanceof Error ? err.message : "Failed to save Gmail labels");
+    } finally {
+      setIsSavingGmail(false);
+    }
+  };
 
   const handleResetWorkspace = async () => {
     if (resetConfirmText !== "RESET") {

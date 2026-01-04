@@ -1,8 +1,8 @@
 /**
- * Rehydrate cookies from workspace data.
+ * @deprecated Use rehydrateWorkspaceCookies() from workspaceCookies.ts instead.
  * 
- * This is called when workspace is loaded from Users Sheet to set cookies
- * for faster access on subsequent requests.
+ * This file is kept for backward compatibility but should not be used in new code.
+ * The new implementation uses NextResponse.cookies which works correctly in route handlers.
  */
 
 import { cookies } from "next/headers";
@@ -16,8 +16,10 @@ const COOKIE_OPTIONS = {
 };
 
 /**
- * Set workspace cookies from workspace data.
- * This makes subsequent requests faster (cookie path).
+ * @deprecated Use rehydrateWorkspaceCookies() from workspaceCookies.ts instead.
+ * 
+ * This function doesn't work in Next.js App Router route handlers because cookies() is read-only.
+ * Use rehydrateWorkspaceCookies(response, workspace) with a NextResponse instead.
  */
 export async function rehydrateCookies(workspace: WorkspaceConfig): Promise<void> {
   const cookieStore = await cookies();
