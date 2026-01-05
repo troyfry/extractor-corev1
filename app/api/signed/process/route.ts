@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
 import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
-import { processSignedPdf } from "@/lib/workOrders/signedProcessor";
+import { processSignedPdfUnified } from "@/lib/signed/processor";
 import { normalizePdfBuffer } from "@/lib/pdf/normalizePdf";
 
 export const runtime = "nodejs";
@@ -54,7 +54,7 @@ export async function POST(req: Request) {
       (formData.get("woNumber") as string | null) || null;
     const manualReason = (formData.get("reason") as string | null) || null;
     const pageOverride = formData.get("page");
-    const pageNumber = pageOverride ? parseInt(String(pageOverride), 10) : null;
+    const pageNumber = pageOverride ? parseInt(String(pageOverride), 10) : 1;
 
     const arrayBuffer = await file.arrayBuffer();
     const originalPdfBuffer = Buffer.from(arrayBuffer);
@@ -87,21 +87,61 @@ export async function POST(req: Request) {
       });
     }
 
-    // Call shared processor with normalized PDF
-    const result = await processSignedPdf({
-      accessToken,
-      spreadsheetId,
-      fmKey: rawFmKey, // Processor will normalize internally
-      pdfBuffer: normalizedPdfBuffer,
+    // Call unified processor with normalized PDF
+    const result = await processSignedPdfUnified({
+      pdfBytes: normalizedPdfBuffer,
       originalFilename,
-      woNumberOverride,
-      manualReason,
-      pageNumberOverride: pageNumber,
+      page: pageNumber,
+      fmKey: rawFmKey,
+      spreadsheetId,
+      accessToken,
       source: "UPLOAD",
+      dpi: 200,
+      woNumberOverride: woNumberOverride || undefined,
+      manualReason: manualReason || undefined,
     });
 
+    // Map unified result to existing response format for compatibility
+    const responseData = {
+      mode: result.needsReview ? "NEEDS_REVIEW" as const : "UPDATED" as const,
+      data: {
+        fmKey: rawFmKey,
+        woNumber: result.workOrderNumber,
+        ocrConfidenceLabel: result.confidenceLabel,
+        ocrConfidenceRaw: result.confidence,
+        confidenceLabel: result.confidenceLabel,
+        confidenceRaw: result.confidence,
+        automationStatus: result.needsReview ? "REVIEW" as const : "APPLIED" as const,
+        automationBlocked: false,
+        automationBlockReason: null,
+        signedPdfUrl: result.signedPdfUrl || null,
+        snippetImageUrl: result.snippetImageUrl || null,
+        snippetDriveUrl: result.snippetDriveUrl || null,
+        jobExistsInSheet1: false, // Will be determined by processor
+        retryAttempted: false,
+        alternatePageAttempted: false,
+        reason: result.needsReview ? "Low confidence or no work order number extracted" : null,
+        templateUsed: {
+          templateId: result.debug?.templateId || null,
+          fmKey: rawFmKey,
+          page: result.debug?.page || null,
+          region: null,
+          dpi: 200,
+          coordSystem: null,
+          xPt: null,
+          yPt: null,
+          wPt: null,
+          hPt: null,
+          pageWidthPt: null,
+          pageHeightPt: null,
+        },
+        chosenPage: result.debug?.page || null,
+        attemptedPages: String(result.debug?.page || ""),
+      },
+    };
+
     // Rehydrate cookies if workspace was loaded from Users Sheet
-    const response = NextResponse.json(result, { status: 200 });
+    const response = NextResponse.json(responseData, { status: 200 });
     if (workspaceResult.source === "users_sheet") {
       rehydrateWorkspaceCookies(response, workspaceResult.workspace);
     }

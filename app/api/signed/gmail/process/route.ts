@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
 import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
-import { processSignedPdf } from "@/lib/workOrders/signedProcessor";
+import { processSignedPdfUnified } from "@/lib/signed/processor";
 import { createGmailClient } from "@/lib/google/gmail";
 import { extractPdfAttachments } from "@/lib/google/gmailExtract";
 
@@ -209,62 +209,67 @@ export async function POST(req: Request) {
             // Gmail uses URL-safe base64, convert to standard base64
             const pdfBuffer = Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 
-            // Call shared processor with matched fmKey and source metadata
-            const processResult = await processSignedPdf({
-              accessToken,
-              spreadsheetId,
-              fmKey: effectiveFmKey,
-              pdfBuffer,
-              originalFilename: filename,
-              source: "GMAIL",
-              sourceMeta: {
-                gmailMessageId: message.id,
-                gmailAttachmentId: pdfRef.attachmentId,
-                gmailThreadId: threadId || undefined,
-                gmailFrom: emailFrom,
-                gmailSubject: emailSubject,
-                gmailDate: emailDate,
-              },
-            });
+            // Call unified processor with matched fmKey and source metadata
+            let processResult;
+            try {
+              processResult = await processSignedPdfUnified({
+                pdfBytes: pdfBuffer,
+                originalFilename: filename,
+                page: 1, // Default to page 1, can be made configurable
+                fmKey: effectiveFmKey,
+                spreadsheetId,
+                accessToken,
+                source: "GMAIL",
+                sourceMeta: {
+                  gmailMessageId: message.id,
+                  gmailAttachmentId: pdfRef.attachmentId,
+                  gmailThreadId: threadId || undefined,
+                  gmailFrom: emailFrom,
+                  gmailSubject: emailSubject,
+                  gmailDate: emailDate,
+                },
+                dpi: 200,
+              });
+            } catch (error) {
+              // Handle errors (e.g., template not configured)
+              const errorMessage = error instanceof Error ? error.message : String(error);
+              console.error(`[Gmail Process] Error processing ${filename}:`, errorMessage);
+              results.errors++;
+              items.push({
+                filename,
+                messageId: message.id,
+                status: "ERROR",
+                woNumber: null,
+                reason: errorMessage,
+              });
+              continue;
+            }
 
             // Interpret status from processor response
             let status: GmailProcessItem["status"];
-            if (processResult.mode === "ALREADY_PROCESSED") {
-              status = "ALREADY_PROCESSED";
-              results.alreadyProcessed++;
-            } else if (processResult.mode === "UPDATED") {
+            if (processResult.needsReview) {
+              status = "NEEDS_REVIEW";
+              results.needsReview++;
+            } else {
               status = "UPDATED";
               results.updated++;
-            } else if (processResult.mode === "NEEDS_REVIEW") {
-              // Check if it's blocked (template issues)
-              if (processResult.data.automationStatus === "BLOCKED") {
-                status = "BLOCKED";
-                results.blocked++;
-              } else {
-                status = "NEEDS_REVIEW";
-                results.needsReview++;
-              }
-            } else {
-              status = "ERROR";
-              results.errors++;
             }
 
             items.push({
               filename,
               messageId: message.id,
               status,
-              woNumber: processResult.data.woNumber,
-              reason: processResult.data.reason || null,
-              signedPdfUrl: processResult.data.signedPdfUrl || null,
-               fileHash: processResult.data.fileHash || undefined,
-               filenameHint: hint && hint !== effectiveFmKey ? hint : null, // Include hint if it doesn't match
-               fixHref: processResult.data.fixHref || null,
-               fixAction: processResult.data.fixAction || null,
-               reasonTitle: processResult.data.reasonTitle || null,
-               reasonMessage: processResult.data.reasonMessage || null,
-               snippetImageUrl: processResult.data.snippetImageUrl || null,
-               snippetDriveUrl: processResult.data.snippetDriveUrl || null,
-               fmKey: effectiveFmKey,
+              woNumber: processResult.workOrderNumber,
+              reason: processResult.needsReview ? "Low confidence or no work order number extracted" : null,
+              signedPdfUrl: processResult.signedPdfUrl || null,
+              filenameHint: hint && hint !== effectiveFmKey ? hint : null,
+              fixHref: null,
+              fixAction: null,
+              reasonTitle: null,
+              reasonMessage: null,
+              snippetImageUrl: processResult.snippetImageUrl || null,
+              snippetDriveUrl: processResult.snippetDriveUrl || null,
+              fmKey: effectiveFmKey,
             });
 
             console.log(`[Gmail Process] Processed ${filename}: ${status}`, {
