@@ -148,15 +148,7 @@ export async function ensureTemplateSheet(
 export async function upsertTemplateToSheet(params: {
   spreadsheetId: string;
   accessToken: string;
-  template: WorkOrderTemplate & {
-    pageWidthPt?: number;
-    pageHeightPt?: number;
-    xPt?: number;
-    yPt?: number;
-    wPt?: number;
-    hPt?: number;
-    coordSystem?: string;
-  };
+  template: WorkOrderTemplate;
 }): Promise<void> {
   const { spreadsheetId, accessToken, template } = params;
   const sheets = createSheetsClient(accessToken);
@@ -278,15 +270,7 @@ async function appendTemplateRow(
   sheets: ReturnType<typeof createSheetsClient>,
   spreadsheetId: string,
   sheetName: string,
-  template: WorkOrderTemplate & {
-    pageWidthPt?: number;
-    pageHeightPt?: number;
-    xPt?: number;
-    yPt?: number;
-    wPt?: number;
-    hPt?: number;
-    coordSystem?: string;
-  }
+  template: WorkOrderTemplate
 ): Promise<void> {
   // Get headers to determine column order
   const headerResponse = await sheets.spreadsheets.values.get({
@@ -300,26 +284,28 @@ async function appendTemplateRow(
   // Build row data in the correct column order
   const rowData: string[] = new Array(headers.length).fill("");
 
+  const zone = template.woNumberZone;
+
   // Map template fields to columns
   // POINTS-ONLY: All templates must have PDF points. Percentages always set to empty.
   const templateData: Record<string, string> = {
     issuerKey: template.issuerKey,
     templateId: template.templateId,
     label: template.label,
-    page: String(template.woNumberZone.page),
-    // Percentages always empty (deprecated)
+    page: String(zone.page),
+    // Percentages always empty (deprecated columns, leave untouched)
     xPct: "",
     yPct: "",
     wPct: "",
     hPct: "",
-    coordSystem: template.coordSystem || "PDF_POINTS_TOP_LEFT",
-    // PDF points are REQUIRED
-    pageWidthPt: template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "",
-    pageHeightPt: template.pageHeightPt !== undefined ? String(template.pageHeightPt) : "",
-    xPt: template.xPt !== undefined ? String(template.xPt) : "",
-    yPt: template.yPt !== undefined ? String(template.yPt) : "",
-    wPt: template.wPt !== undefined ? String(template.wPt) : "",
-    hPt: template.hPt !== undefined ? String(template.hPt) : "",
+    coordSystem: "PDF_POINTS_TOP_LEFT",
+    // PDF points from woNumberZone (REQUIRED)
+    pageWidthPt: String(zone.pageWidthPt),
+    pageHeightPt: String(zone.pageHeightPt),
+    xPt: String(zone.xPt),
+    yPt: String(zone.yPt),
+    wPt: String(zone.wPt),
+    hPt: String(zone.hPt),
     updated_at: new Date().toISOString(),
   };
 
@@ -356,15 +342,7 @@ async function updateTemplateRow(
   spreadsheetId: string,
   sheetName: string,
   rowIndex: number,
-  template: WorkOrderTemplate & {
-    pageWidthPt?: number;
-    pageHeightPt?: number;
-    xPt?: number;
-    yPt?: number;
-    wPt?: number;
-    hPt?: number;
-    coordSystem?: string;
-  }
+  template: WorkOrderTemplate
 ): Promise<void> {
   // Get headers to determine column order
   const headerResponse = await sheets.spreadsheets.values.get({
@@ -378,26 +356,28 @@ async function updateTemplateRow(
   // Build row data in the correct column order
   const rowData: string[] = new Array(headers.length).fill("");
 
+  const zone = template.woNumberZone;
+
   // Map template fields to columns
   // POINTS-ONLY: All templates must have PDF points. Percentages always set to empty.
   const templateData: Record<string, string> = {
     issuerKey: template.issuerKey,
     templateId: template.templateId,
     label: template.label,
-    page: String(template.woNumberZone.page),
-    // Percentages always empty (deprecated)
+    page: String(zone.page),
+    // Percentages always empty (deprecated columns, leave untouched)
     xPct: "",
     yPct: "",
     wPct: "",
     hPct: "",
-    coordSystem: template.coordSystem || "PDF_POINTS_TOP_LEFT",
-    // PDF points are REQUIRED
-    pageWidthPt: template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "",
-    pageHeightPt: template.pageHeightPt !== undefined ? String(template.pageHeightPt) : "",
-    xPt: template.xPt !== undefined ? String(template.xPt) : "",
-    yPt: template.yPt !== undefined ? String(template.yPt) : "",
-    wPt: template.wPt !== undefined ? String(template.wPt) : "",
-    hPt: template.hPt !== undefined ? String(template.hPt) : "",
+    coordSystem: "PDF_POINTS_TOP_LEFT",
+    // PDF points from woNumberZone (REQUIRED)
+    pageWidthPt: String(zone.pageWidthPt),
+    pageHeightPt: String(zone.pageHeightPt),
+    xPt: String(zone.xPt),
+    yPt: String(zone.yPt),
+    wPt: String(zone.wPt),
+    hPt: String(zone.hPt),
     updated_at: new Date().toISOString(),
   };
 
@@ -475,19 +455,15 @@ function parseTemplateFromRow(
       return undefined;
     }
 
-    // Convert points to percentages for WorkOrderNumberZone (for backward compatibility with type)
-    // But note: percentages are deprecated, points are the source of truth
-    const xPct = xPtNum / pageWidthPtNum;
-    const yPct = yPtNum / pageHeightPtNum;
-    const wPct = wPtNum / pageWidthPtNum;
-    const hPct = hPtNum / pageHeightPtNum;
-
+    // Return template with points in woNumberZone
     const zone: WorkOrderNumberZone = {
       page: pageNum,
-      xPct,
-      yPct,
-      wPct,
-      hPct,
+      xPt: xPtNum,
+      yPt: yPtNum,
+      wPt: wPtNum,
+      hPt: hPtNum,
+      pageWidthPt: pageWidthPtNum,
+      pageHeightPt: pageHeightPtNum,
     };
 
     return {
@@ -495,14 +471,7 @@ function parseTemplateFromRow(
       templateId,
       label,
       woNumberZone: zone,
-      // Include points in returned object (extended type)
-      pageWidthPt: pageWidthPtNum,
-      pageHeightPt: pageHeightPtNum,
-      xPt: xPtNum,
-      yPt: yPtNum,
-      wPt: wPtNum,
-      hPt: hPtNum,
-    } as any;
+    };
   } catch (error) {
     console.warn(`[Sheets Templates] Error parsing template row:`, error);
     return undefined;

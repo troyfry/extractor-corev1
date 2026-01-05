@@ -147,12 +147,24 @@ export async function callSignedOcrService(
   formData.append("dpi", String(dpi));
   
   // Send clamped PDF points to Python (Python will handle rasterization)
+  // NOTE: Providing pageWidthPt and pageHeightPt triggers automatic normalization in Python service
+  // if the PDF size doesn't match. The response includes cropDebug.normalized to indicate if normalization occurred.
   formData.append("xPt", String(finalXPt));
   formData.append("yPt", String(finalYPt));
   formData.append("wPt", String(finalWPt));
   formData.append("hPt", String(finalHPt));
   formData.append("pageWidthPt", String(pageWidthPt));
   formData.append("pageHeightPt", String(pageHeightPt));
+  
+  console.log("🔧 [NORMALIZATION] Calling Python OCR service with page dimensions (triggers auto-normalization if size mismatch):", {
+    requestId: config.requestId,
+    templateId: config.templateId,
+    page: config.page,
+    pageWidthPt,
+    pageHeightPt,
+    note: "Python service will normalize automatically if PDF size doesn't match these dimensions",
+    timestamp: new Date().toISOString(),
+  });
   
   // Add requestId if provided (for correlated logging)
   if (config.requestId) {
@@ -238,6 +250,11 @@ export async function callSignedOcrService(
     usedVisionFallback: boolean;
     method: "local" | "vision";
     snippetImageUrl?: string | null;
+    cropDebug?: {
+      normalized?: boolean;
+      pagePt?: { w: number; h: number };
+      providedPagePt?: { w: number; h: number };
+    };
   };
 
   try {
@@ -248,6 +265,32 @@ export async function callSignedOcrService(
     throw new Error(`Failed to parse OCR service response: ${parseError instanceof Error ? parseError.message : "Unknown error"}`);
   }
 
+  // Log normalization status from Python service response
+  if (data.cropDebug) {
+    const normalized = data.cropDebug.normalized === true;
+    if (normalized) {
+      console.log("✅ [NORMALIZATION] Python OCR service APPLIED NORMALIZATION during OCR processing:", {
+        requestId: config.requestId,
+        templateId: config.templateId,
+        page: config.page,
+        providedPagePt: data.cropDebug.providedPagePt,
+        actualPagePt: data.cropDebug.pagePt,
+        normalized: true,
+        timestamp: new Date().toISOString(),
+      });
+    } else {
+      console.log("ℹ️ [NORMALIZATION] Python OCR service did not normalize (PDF size matched expected dimensions):", {
+        requestId: config.requestId,
+        templateId: config.templateId,
+        page: config.page,
+        pagePt: data.cropDebug.pagePt,
+        providedPagePt: data.cropDebug.providedPagePt,
+        normalized: false,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+
   // Log raw OCR response for debugging
   console.log("[Signed OCR] Parsed OCR service response:", {
     workOrderNumber: data.workOrderNumber,
@@ -256,8 +299,8 @@ export async function callSignedOcrService(
     confidenceType: typeof data.confidence,
     rawText: data.rawText?.substring(0, 50),
     hasSnippetImageUrl: !!data.snippetImageUrl,
+    hasCropDebug: !!data.cropDebug,
   });
-  console.log("[Signed OCR] Calling OCR endpoint:", endpoint);
 
   // Ensure confidence is a number
   let confidenceValue: number;

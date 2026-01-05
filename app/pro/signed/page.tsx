@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import AppShell from "@/components/layout/AppShell";
 import MainNavigation from "@/components/layout/MainNavigation";
+import type { FmProfile } from "@/lib/templates/fmProfiles";
 
 type FileInfo = {
   id: string;
@@ -93,6 +94,8 @@ function getStatusLabel(status: string): string {
 
 export default function SignedWorkOrdersPage() {
   const [fmKey, setFmKey] = useState("");
+  const [fmProfiles, setFmProfiles] = useState<FmProfile[]>([]);
+  const [isLoadingFmProfiles, setIsLoadingFmProfiles] = useState(true);
   const [files, setFiles] = useState<FileInfo[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [processingFiles, setProcessingFiles] = useState<Set<string>>(new Set());
@@ -114,6 +117,30 @@ export default function SignedWorkOrdersPage() {
   const [sourceMode, setSourceMode] = useState<"upload" | "gmail">("upload"); // Step 2: Source selection
   const [showMismatchModal, setShowMismatchModal] = useState(false);
   const [mismatchModalData, setMismatchModalData] = useState<{ selectedFm: string; detectedFm: string; emailSubject: string } | null>(null);
+
+  // Load FM profiles on mount
+  useEffect(() => {
+    loadFmProfiles();
+  }, []);
+
+  async function loadFmProfiles() {
+    setIsLoadingFmProfiles(true);
+    try {
+      const response = await fetch("/api/fm-profiles");
+      if (response.ok) {
+        const data = await response.json();
+        const profiles = (data.profiles || []) as FmProfile[];
+        setFmProfiles(profiles);
+        console.log(`[Signed Page] Loaded ${profiles.length} FM profile(s)`);
+      } else {
+        console.error("[Signed Page] Failed to load FM profiles:", response.status);
+      }
+    } catch (err) {
+      console.error("[Signed Page] Failed to load FM profiles:", err);
+    } finally {
+      setIsLoadingFmProfiles(false);
+    }
+  }
 
   // Clear all processing results when FM key changes
   // This ensures old results from wrong template don't persist
@@ -401,15 +428,26 @@ export default function SignedWorkOrdersPage() {
                 Step 1 — Select Facility Manager (FM)
               </h2>
                 <div>
-                  <select
-                    value={fmKey}
-                    onChange={(e) => setFmKey(e.target.value)}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                  <option value="">-- Select FM Key --</option>
-                    <option value="superclean">superclean</option>
-                    <option value="23rdgroup">23rdgroup</option>
-                  </select>
+                  {isLoadingFmProfiles ? (
+                    <div className="text-gray-400">Loading facility senders...</div>
+                  ) : fmProfiles.length === 0 ? (
+                    <div className="text-yellow-400">
+                      No facility senders found. Please add FM profiles first.
+                    </div>
+                  ) : (
+                    <select
+                      value={fmKey}
+                      onChange={(e) => setFmKey(e.target.value)}
+                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">-- Select FM Key --</option>
+                      {fmProfiles.map((profile) => (
+                        <option key={profile.fmKey} value={profile.fmKey}>
+                          {profile.fmLabel || profile.fmKey}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 {fmKey && (
                   <p className="mt-2 text-sm text-gray-300">
                     You are processing signed work orders for this FM only.

@@ -11,6 +11,7 @@
 
 import { NextResponse } from "next/server";
 import { renderPdfPageToPng } from "@/lib/pdf/renderPdfPage";
+import { normalizePdfBuffer } from "@/lib/pdf/normalizePdf";
 
 export const runtime = "nodejs";
 
@@ -30,17 +31,37 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid page" }, { status: 400 });
     }
 
-    const buf = Buffer.from(await file.arrayBuffer());
+    const originalBuf = Buffer.from(await file.arrayBuffer());
+    
+    // Normalize PDF before rendering (fixes coordinate systems and bounds)
+    console.log("[PDF Render API] Normalizing PDF before rendering:", {
+      filename: file.name,
+      originalSize: originalBuf.length,
+    });
+    
+    const normalizedBuf = await normalizePdfBuffer(originalBuf);
+    
+    if (normalizedBuf !== originalBuf) {
+      console.log("[PDF Render API] PDF was normalized:", {
+        filename: file.name,
+        originalSize: originalBuf.length,
+        normalizedSize: normalizedBuf.length,
+      });
+    }
 
-    const out = await renderPdfPageToPng(buf, page);
+    const out = await renderPdfPageToPng(normalizedBuf, page);
 
+    // Return geometry matching the rendered image
+    // - boundsPt: PDF box bounds (CropBox if available, else MediaBox)
+    // - pageWidthPt/pageHeightPt: dimensions of the PDF box
+    // - widthPx/heightPx: actual rendered image pixel dimensions (renderPx)
     return NextResponse.json({
       pngDataUrl: `data:image/png;base64,${out.pngBase64}`,
-      widthPx: out.width,
-      heightPx: out.height,
-      boundsPt: out.boundsPt,
-      pageWidthPt: out.pageWidthPt,
-      pageHeightPt: out.pageHeightPt,
+      widthPx: out.width,  // renderPx.width - actual rendered image dimensions
+      heightPx: out.height, // renderPx.height - actual rendered image dimensions
+      boundsPt: out.boundsPt, // PDF box bounds (CropBox if available, else MediaBox)
+      pageWidthPt: out.pageWidthPt, // PDF box width in points
+      pageHeightPt: out.pageHeightPt, // PDF box height in points
     });
   } catch (error) {
     console.error("[PDF Render API] Error:", error);

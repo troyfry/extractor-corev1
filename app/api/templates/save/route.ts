@@ -61,17 +61,14 @@ export async function POST(request: Request) {
       );
     }
 
-    // POINTS-ONLY: Require PDF points or page geometry for conversion
+    // POINTS-ONLY: Accept only PDF points or CSS pixels + geometry for conversion
     // Accept either:
-    // 1. PDF points directly (preferred): xPt, yPt, wPt, hPt, pageWidthPt, pageHeightPt
-    // 2. Percentages + page geometry: xPct, yPct, wPct, hPct + pageWidthPt, pageHeightPt, boundsPt + CSS pixels
+    // A) Direct PDF points: xPt, yPt, wPt, hPt, pageWidthPt, pageHeightPt (and optional boundsPt)
+    // B) CSS pixels + geometry: rectPx + displayedWidth/Height + canvasWidth/Height + pageWidthPt/pageHeightPt (+ optional boundsPt)
     
     const hasPoints = body.xPt !== undefined && body.yPt !== undefined && 
                      body.wPt !== undefined && body.hPt !== undefined &&
                      body.pageWidthPt !== undefined && body.pageHeightPt !== undefined;
-    
-    const hasPercentages = zone.xPct !== undefined && zone.yPct !== undefined &&
-                          zone.wPct !== undefined && zone.hPct !== undefined;
     
     const hasPageGeometry = body.pageWidthPt !== undefined && body.pageHeightPt !== undefined;
     const hasCssPixels = body.rectPx !== undefined && 
@@ -86,6 +83,7 @@ export async function POST(request: Request) {
     let hPt: number;
     let pageWidthPt: number;
     let pageHeightPt: number;
+    let boundsPt: { x0: number; y0: number; x1: number; y1: number } | null = null;
 
     if (hasPoints) {
       // Use points directly
@@ -95,18 +93,27 @@ export async function POST(request: Request) {
       hPt = body.hPt;
       pageWidthPt = body.pageWidthPt;
       pageHeightPt = body.pageHeightPt;
-    } else if (hasPercentages && hasPageGeometry && hasCssPixels && hasDisplaySize && hasCanvasSize) {
-      // Convert percentages to points using conversion function
+      if (body.boundsPt) {
+        boundsPt = {
+          x0: body.boundsPt.x0,
+          y0: body.boundsPt.y0,
+          x1: body.boundsPt.x1,
+          y1: body.boundsPt.y1,
+        };
+      }
+    } else if (hasPageGeometry && hasCssPixels && hasDisplaySize && hasCanvasSize) {
+      // Convert CSS pixels to PDF points
       pageWidthPt = body.pageWidthPt;
       pageHeightPt = body.pageHeightPt;
-      const boundsPt = body.boundsPt ? {
-        x0: body.boundsPt.x0,
-        y0: body.boundsPt.y0,
-        x1: body.boundsPt.x1,
-        y1: body.boundsPt.y1,
-      } : null;
+      if (body.boundsPt) {
+        boundsPt = {
+          x0: body.boundsPt.x0,
+          y0: body.boundsPt.y0,
+          x1: body.boundsPt.x1,
+          y1: body.boundsPt.y1,
+        };
+      }
 
-      // Convert CSS pixels to PDF points
       const pdfPoints = cssPixelsToPdfPoints(
         {
           x: body.rectPx.x,
@@ -127,7 +134,7 @@ export async function POST(request: Request) {
     } else {
       return NextResponse.json(
         { 
-          error: "PDF points are required. Provide either: (1) xPt, yPt, wPt, hPt, pageWidthPt, pageHeightPt directly, or (2) percentages + page geometry (pageWidthPt, pageHeightPt, boundsPt) + CSS pixels (rectPx, displayedWidth/Height, canvasWidth/Height) for conversion.",
+          error: "PDF points are required. Provide either: (1) xPt, yPt, wPt, hPt, pageWidthPt, pageHeightPt directly, or (2) CSS pixels (rectPx) + display size (displayedWidth/Height) + canvas size (canvasWidth/Height) + page geometry (pageWidthPt, pageHeightPt, optional boundsPt) for conversion.",
           reason: "MISSING_PDF_POINTS"
         },
         { status: 400 }
@@ -151,29 +158,23 @@ export async function POST(request: Request) {
       );
     }
 
-    // Save template to Sheets with PDF points
-    // Note: upsertTemplateToSheet currently expects WorkOrderTemplate with percentages
-    // We'll update it to accept points, but for now we'll create a modified template
-    // TODO: Update upsertTemplateToSheet to accept points directly
+    // Save template to Sheets with PDF points in woNumberZone
     await upsertTemplateToSheet({
       spreadsheetId,
       accessToken: user.googleAccessToken,
       template: {
         ...template,
-        // Store points in a way that upsertTemplateToSheet can handle
-        // This is a temporary workaround - we'll update upsertTemplateToSheet next
         woNumberZone: {
-          ...zone,
-          // Add points as additional properties (will be handled by updated upsertTemplateToSheet)
+          page,
+          xPt,
+          yPt,
+          wPt,
+          hPt,
+          pageWidthPt,
+          pageHeightPt,
+          ...(boundsPt && { boundsPt }),
         },
-        // Add points to template object for conversion
-        pageWidthPt,
-        pageHeightPt,
-        xPt,
-        yPt,
-        wPt,
-        hPt,
-      } as any,
+      },
     });
 
     // Rehydrate cookies if workspace was loaded from Users Sheet

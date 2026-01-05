@@ -258,7 +258,16 @@ export async function processSignedPdf(
     };
   }
 
-  // Upload signed PDF to Drive into a dedicated folder
+  // Upload PDF to Drive into a dedicated folder
+  // Note: PDF is already normalized in the API route before reaching this processor
+  console.log("📤 [UPLOAD] Uploading PDF to Drive:", {
+    requestId,
+    filename: originalFilename,
+    pdfSize: pdfBuffer.length,
+    note: "PDF should already be normalized from API route",
+    timestamp: new Date().toISOString(),
+  });
+  
   const signedFolderId = await getOrCreateFolder(
     accessToken,
     SIGNED_DRIVE_FOLDER_NAME
@@ -266,10 +275,18 @@ export async function processSignedPdf(
 
   const uploaded = await uploadPdfToDrive(
     accessToken,
-    pdfBuffer,
+    pdfBuffer, // Already normalized from API route
     originalFilename,
     signedFolderId
   );
+  
+  console.log("✅ [UPLOAD] PDF uploaded to Drive successfully:", {
+    requestId,
+    filename: originalFilename,
+    fileId: uploaded.fileId,
+    webViewLink: uploaded.webViewLink,
+    timestamp: new Date().toISOString(),
+  });
 
   const signedPdfUrl = uploaded.webViewLink || uploaded.webContentLink;
 
@@ -628,12 +645,13 @@ export async function processSignedPdf(
   /**
    * Get actual PDF page dimensions in points using MuPDF.
    * Returns dimensions from PDF user space (72 DPI points).
-   * Same pattern as renderPdfPage.ts.
+   * Falls back to template dimensions if MuPDF is not available.
    */
   async function getActualPdfPageDimensionsPt(
     pdfBuffer: Buffer,
     pageNumber: number
   ): Promise<{ pageWidthPt: number; pageHeightPt: number } | null> {
+    // Try MuPDF first (most accurate)
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // @ts-expect-error - mupdf module exists at runtime but has no type declarations
@@ -652,34 +670,111 @@ export async function processSignedPdf(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const Document = (mupdf as any).Document;
       if (!Document || typeof (Document as any).openDocument !== "function") {
-        return null;
+        throw new Error("MuPDF Document.openDocument not available");
       }
       
       const pdfUint8Array = new Uint8Array(pdfBuffer);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const doc = (Document as any).openDocument(pdfUint8Array, "application/pdf");
-      if (!doc) return null;
+      if (!doc) throw new Error("Failed to open PDF document");
       
       const docPageCount = doc.countPages();
-      if (pageNumber < 1 || pageNumber > docPageCount) return null;
+      if (pageNumber < 1 || pageNumber > docPageCount) {
+        throw new Error(`Page ${pageNumber} out of range (document has ${docPageCount} pages)`);
+      }
       
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pdfPage = doc.loadPage(pageNumber - 1);
-      if (!pdfPage) return null;
+      if (!pdfPage) throw new Error("Failed to load PDF page");
       
+      // ⚠️ CRITICAL: Always use PDF page size, never embedded image size
       // Get page dimensions in points (PDF user space, 72 DPI)
+      // This is the canonical size - never use image width/height or DPI
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rect = (pdfPage as any).getBounds();
       const pageWidthPt = Math.ceil(rect.x1 - rect.x0);
       const pageHeightPt = Math.ceil(rect.y1 - rect.y0);
       
-      return { pageWidthPt, pageHeightPt };
-    } catch (error) {
-      console.warn(`[Signed Processor] Failed to get actual PDF page dimensions:`, {
+      // Log PDF page size for debugging (original PDF vs signed PDF)
+      console.log("[Signed Processor] PDF page dimensions from MuPDF (points):", {
         requestId,
         page: pageNumber,
-        error: error instanceof Error ? error.message : String(error),
+        pageWidthPt,
+        pageHeightPt,
+        bounds: { x0: rect.x0, y0: rect.y0, x1: rect.x1, y1: rect.y1 },
       });
+      
+      return { pageWidthPt, pageHeightPt };
+    } catch (mupdfError) {
+      // MuPDF failed - try fallback: parse PDF buffer directly for MediaBox/CropBox
+      try {
+        const pdfText = pdfBuffer.toString("binary");
+        
+        // Find MediaBox for the specified page
+        // MediaBox format: /MediaBox [x0 y0 x1 y1]
+        const mediaBoxRegex = /\/MediaBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/;
+        const match = pdfText.match(mediaBoxRegex);
+        
+        if (match) {
+          const x0 = parseFloat(match[1]);
+          const y0 = parseFloat(match[2]);
+          const x1 = parseFloat(match[3]);
+          const y1 = parseFloat(match[4]);
+          
+          const pageWidthPt = Math.ceil(Math.abs(x1 - x0));
+          const pageHeightPt = Math.ceil(Math.abs(y1 - y0));
+          
+          if (pageWidthPt > 0 && pageHeightPt > 0) {
+            console.log("[Signed Processor] PDF page dimensions from MediaBox (points):", {
+              requestId,
+              page: pageNumber,
+              pageWidthPt,
+              pageHeightPt,
+              mediaBox: { x0, y0, x1, y1 },
+              note: "MuPDF unavailable, used fallback parsing",
+            });
+            
+            return { pageWidthPt, pageHeightPt };
+          }
+        }
+        
+        // If MediaBox not found, try CropBox
+        const cropBoxRegex = /\/CropBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/;
+        const cropMatch = pdfText.match(cropBoxRegex);
+        
+        if (cropMatch) {
+          const x0 = parseFloat(cropMatch[1]);
+          const y0 = parseFloat(cropMatch[2]);
+          const x1 = parseFloat(cropMatch[3]);
+          const y1 = parseFloat(cropMatch[4]);
+          
+          const pageWidthPt = Math.ceil(Math.abs(x1 - x0));
+          const pageHeightPt = Math.ceil(Math.abs(y1 - y0));
+          
+          if (pageWidthPt > 0 && pageHeightPt > 0) {
+            console.log("[Signed Processor] PDF page dimensions from CropBox (points):", {
+              requestId,
+              page: pageNumber,
+              pageWidthPt,
+              pageHeightPt,
+              cropBox: { x0, y0, x1, y1 },
+              note: "MuPDF unavailable, used fallback parsing",
+            });
+            
+            return { pageWidthPt, pageHeightPt };
+          }
+        }
+      } catch (parseError) {
+        // Fallback parsing also failed
+        console.warn(`[Signed Processor] Failed to get actual PDF page dimensions (MuPDF and fallback both failed):`, {
+          requestId,
+          page: pageNumber,
+          mupdfError: mupdfError instanceof Error ? mupdfError.message : String(mupdfError),
+          parseError: parseError instanceof Error ? parseError.message : String(parseError),
+        });
+      }
+      
+      // Both methods failed - return null to use template dimensions
       return null;
     }
   }
@@ -744,15 +839,19 @@ export async function processSignedPdf(
   /**
    * Compute effective crop points and page dimensions for a given page.
    * 
-   * CRITICAL: Use template coordinates EXACTLY as saved - NO SCALING.
-   * The coordinates saved during template configuration must match exactly what's used here.
-   * The OCR service handles dimension differences internally when rasterizing.
+   * CRITICAL: If the signed PDF has different dimensions than the template, we MUST:
+   * 1. Get the actual PDF page dimensions from the signed PDF
+   * 2. Scale crop points proportionally to match the actual PDF size
+   * 3. Return the actual PDF dimensions (not template dimensions) for Python OCR service
    * 
-   * @param _pageNumber - 1-indexed page number (unused, kept for API compatibility)
-   * @returns Object with effective crop points and page dimensions (always from template, never scaled)
+   * The Python OCR service validates that provided dimensions match the actual PDF,
+   * so we must send the actual dimensions and scale the crop points accordingly.
+   * 
+   * @param pageNumber - 1-indexed page number
+   * @returns Object with effective crop points (scaled if needed) and actual PDF page dimensions
    */
   async function computeEffectiveCropAndDimensions(
-    _pageNumber: number
+    pageNumber: number
   ): Promise<{
     xPt: number;
     yPt: number;
@@ -764,52 +863,109 @@ export async function processSignedPdf(
     scaleX: number;
     scaleY: number;
   }> {
-    // ALWAYS use template coordinates EXACTLY as saved - NO SCALING
-    // The OCR service will handle any dimension differences when rasterizing the PDF
-    const effectivePageWidthPt = templateConfig.pageWidthPt || 0;
-    const effectivePageHeightPt = templateConfig.pageHeightPt || 0;
+    // Get template dimensions (from original capture)
+    const templatePageWidthPt = templateConfig.pageWidthPt || 0;
+    const templatePageHeightPt = templateConfig.pageHeightPt || 0;
     
-    // Use template crop points directly - these match what was saved during template configuration
-    const xPtEff = templateConfig.xPt ?? 0;
-    const yPtEff = templateConfig.yPt ?? 0;
-    const wPtEff = templateConfig.wPt ?? 0;
-    const hPtEff = templateConfig.hPt ?? 0;
+    // Get actual PDF page dimensions from the signed PDF
+    const actualPdfDimensions = await getActualPdfPageDimensionsPt(pdfBuffer, pageNumber);
     
-    console.log(`[Signed Processor] Using template coordinates EXACTLY as saved (no scaling):`, {
-      requestId,
-      fmKey: normalizedFmKey,
-      templateCropPoints: {
-        xPt: xPtEff,
-        yPt: yPtEff,
-        wPt: wPtEff,
-        hPt: hPtEff,
-      },
-      templatePageDimensions: {
-        pageWidthPt: effectivePageWidthPt,
-        pageHeightPt: effectivePageHeightPt,
-      },
-    });
+    if (!actualPdfDimensions) {
+      // Fallback to template dimensions if we can't get actual dimensions
+      console.warn(`[Signed Processor] Could not get actual PDF dimensions, using template dimensions:`, {
+        requestId,
+        fmKey: normalizedFmKey,
+        page: pageNumber,
+      });
+      
+      return {
+        xPt: templateConfig.xPt ?? 0,
+        yPt: templateConfig.yPt ?? 0,
+        wPt: templateConfig.wPt ?? 0,
+        hPt: templateConfig.hPt ?? 0,
+        pageWidthPt: templatePageWidthPt,
+        pageHeightPt: templatePageHeightPt,
+        scaled: false,
+        scaleX: 1.0,
+        scaleY: 1.0,
+      };
+    }
     
+    const actualPageWidthPt = actualPdfDimensions.pageWidthPt;
+    const actualPageHeightPt = actualPdfDimensions.pageHeightPt;
+    
+    // Calculate scale factors if dimensions differ
+    const scaleX = templatePageWidthPt > 0 ? actualPageWidthPt / templatePageWidthPt : 1.0;
+    const scaleY = templatePageHeightPt > 0 ? actualPageHeightPt / templatePageHeightPt : 1.0;
+    const needsScaling = Math.abs(scaleX - 1.0) > 0.01 || Math.abs(scaleY - 1.0) > 0.01;
+    
+    // Scale crop points proportionally if dimensions differ
+    let xPtEff = templateConfig.xPt ?? 0;
+    let yPtEff = templateConfig.yPt ?? 0;
+    let wPtEff = templateConfig.wPt ?? 0;
+    let hPtEff = templateConfig.hPt ?? 0;
+    
+    if (needsScaling) {
+      xPtEff = xPtEff * scaleX;
+      yPtEff = yPtEff * scaleY;
+      wPtEff = wPtEff * scaleX;
+      hPtEff = hPtEff * scaleY;
+      
+      console.log(`[Signed Processor] Scaling crop points to match actual PDF dimensions:`, {
+        requestId,
+        fmKey: normalizedFmKey,
+        page: pageNumber,
+        templateDimensions: {
+          pageWidthPt: templatePageWidthPt,
+          pageHeightPt: templatePageHeightPt,
+        },
+        actualDimensions: {
+          pageWidthPt: actualPageWidthPt,
+          pageHeightPt: actualPageHeightPt,
+        },
+        scaleFactors: { scaleX, scaleY },
+        templateCropPoints: {
+          xPt: templateConfig.xPt,
+          yPt: templateConfig.yPt,
+          wPt: templateConfig.wPt,
+          hPt: templateConfig.hPt,
+        },
+        scaledCropPoints: {
+          xPt: xPtEff,
+          yPt: yPtEff,
+          wPt: wPtEff,
+          hPt: hPtEff,
+        },
+      });
+    } else {
+      console.log(`[Signed Processor] PDF dimensions match template, no scaling needed:`, {
+        requestId,
+        fmKey: normalizedFmKey,
+        page: pageNumber,
+        pageWidthPt: actualPageWidthPt,
+        pageHeightPt: actualPageHeightPt,
+      });
+    }
+    
+    // Return actual PDF dimensions (Python OCR service requires these to match the PDF)
     return {
       xPt: xPtEff,
       yPt: yPtEff,
       wPt: wPtEff,
       hPt: hPtEff,
-      pageWidthPt: effectivePageWidthPt,
-      pageHeightPt: effectivePageHeightPt,
-      scaled: false, // Never scale - use template coordinates as-is
-      scaleX: 1.0,
-      scaleY: 1.0,
+      pageWidthPt: actualPageWidthPt, // Use actual PDF dimensions, not template
+      pageHeightPt: actualPageHeightPt, // Use actual PDF dimensions, not template
+      scaled: needsScaling,
+      scaleX,
+      scaleY,
     };
   }
 
   // Compute effective crop and dimensions for template page
+  // This function gets actual PDF dimensions and scales crop points proportionally if needed
   const templatePageEffective = await computeEffectiveCropAndDimensions(templatePage);
   const effectivePageWidthPt = templatePageEffective.pageWidthPt;
   const effectivePageHeightPt = templatePageEffective.pageHeightPt;
-
-  // Note: Page dimension mismatches are now handled automatically by scaling crop points
-  // in computeEffectiveCropAndDimensions(). No need for a separate guard.
 
   // Guard: assert points are valid before calling OCR (if in points mode)
   // ⚠️ USE LOCKED VALIDATION FUNCTION - DO NOT MODIFY

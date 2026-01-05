@@ -412,9 +412,65 @@ export default function OnboardingTemplatesPage() {
       setCurrentViewport(null); // Clear viewport (no longer used)
 
     try {
-      // Render first page using MuPDF API
+      // Normalize PDF using Python OCR service before rendering
+      let fileToRender = file;
+      const originalSize = file.size;
+      
+      console.log("🔧 [NORMALIZATION] Starting PDF normalization before template capture:", {
+        filename: file.name,
+        originalSize,
+        timestamp: new Date().toISOString(),
+      });
+      
+      try {
+        const formData = new FormData();
+        formData.append("pdf", file);
+        
+        const normalizeResponse = await fetch("/api/pdf/normalize", {
+          method: "POST",
+          body: formData,
+        });
+        
+        if (normalizeResponse.ok) {
+          const normalizedBlob = await normalizeResponse.blob();
+          if (normalizedBlob.size > 0) {
+            const normalizedSize = normalizedBlob.size;
+            console.log("✅ [NORMALIZATION] PDF NORMALIZED SUCCESSFULLY before template capture:", {
+              filename: file.name,
+              originalSize,
+              normalizedSize,
+              sizeChange: normalizedSize - originalSize,
+              timestamp: new Date().toISOString(),
+            });
+            // Create a new File object from the normalized blob
+            fileToRender = new File([normalizedBlob], file.name, { type: "application/pdf" });
+          } else {
+            console.log("ℹ️ [NORMALIZATION] Normalization returned empty blob, using original PDF:", {
+              filename: file.name,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        } else {
+          const errorText = await normalizeResponse.text().catch(() => "Unknown error");
+          console.log("⚠️ [NORMALIZATION] Normalization endpoint returned error, using original PDF:", {
+            filename: file.name,
+            status: normalizeResponse.status,
+            error: errorText.substring(0, 200),
+            timestamp: new Date().toISOString(),
+          });
+        }
+      } catch (normalizeError) {
+        // If normalization fails, continue with original PDF
+        console.warn("⚠️ [NORMALIZATION] PDF normalization failed, using original PDF:", {
+          filename: file.name,
+          error: normalizeError instanceof Error ? normalizeError.message : String(normalizeError),
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      // Render first page using MuPDF API with normalized PDF
       // TODO: Get page count from API or first render response
-      await renderPage(file, 1);
+      await renderPage(fileToRender, 1);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Failed to render PDF";
       console.error("[PDF Render] Error:", err);

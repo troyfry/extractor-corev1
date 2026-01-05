@@ -2,7 +2,9 @@
  * API route for saving template crop zones during onboarding.
  * 
  * POST /api/onboarding/templates/save
- * Body: { fmKey: string, page: number, xPct: number, yPct: number, wPct: number, hPct: number, templateId?: string }
+ * Body: { fmKey: string, page: number, xPt: number, yPt: number, wPt: number, hPt: number, pageWidthPt: number, pageHeightPt: number, templateId?: string }
+ * 
+ * ⚠️ POINTS-ONLY: This route rejects any payload containing xPct/yPct/wPct/hPct fields.
  */
 
 import { NextResponse } from "next/server";
@@ -30,8 +32,19 @@ export async function POST(request: Request) {
 
     const body = await request.json();
     
+    // Reject any payload containing percentage fields
+    if (body.xPct !== undefined || body.yPct !== undefined || 
+        body.wPct !== undefined || body.hPct !== undefined) {
+      return NextResponse.json(
+        { 
+          error: "Percentage fields (xPct, yPct, wPct, hPct) are not allowed. Use PDF points (xPt, yPt, wPt, hPt, pageWidthPt, pageHeightPt) instead.",
+          reason: "PERCENTAGE_FIELDS_REJECTED"
+        },
+        { status: 400 }
+      );
+    }
+    
     // PDF_POINTS only: require points directly (computed client-side using viewport conversion)
-    // Also accept rectPx for validation/debugging
     const hasPoints = body.xPt !== undefined && body.yPt !== undefined && 
                      body.wPt !== undefined && body.hPt !== undefined &&
                      body.pageWidthPt !== undefined && body.pageHeightPt !== undefined;
@@ -158,10 +171,6 @@ export async function POST(request: Request) {
       fmKey: string;
       templateId: string;
       page: number;
-      xPct: string; // Set to "" to avoid accidental fallback
-      yPct: string;
-      wPct: string;
-      hPct: string;
       dpi?: number;
       coordSystem: string;
       pageWidthPt: number;
@@ -175,12 +184,6 @@ export async function POST(request: Request) {
       fmKey: normalizedFmKey, // Always save normalized fmKey
       templateId: templateId || normalizedFmKey,
       page,
-      // Legacy pct columns: set to "" to avoid future accidental fallback
-      // Points are the only source of truth
-      xPct: "",
-      yPct: "",
-      wPct: "",
-      hPct: "",
       dpi: sanitizedDpi,
       // PDF points (source of truth) - saved in explicit x,y,w,h order to named columns
       coordSystem: "PDF_POINTS",

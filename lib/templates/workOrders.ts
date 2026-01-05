@@ -7,20 +7,27 @@
  */
 
 /**
- * Zone definition for work order number extraction (percentages 0..1).
- * All values are percentages of page dimensions.
+ * Zone definition for work order number extraction (PDF points).
+ * 
+ * ⚠️ POINTS-ONLY: All values are PDF points. No percentages.
  */
 export type WorkOrderNumberZone = {
   /** Page number (1-indexed) */
   page: number;
-  /** X position as percentage of page width (0 = left, 1 = right) */
-  xPct: number;
-  /** Y position as percentage of page height (0 = top, 1 = bottom) */
-  yPct: number;
-  /** Width as percentage of page width */
-  wPct: number;
-  /** Height as percentage of page height */
-  hPct: number;
+  /** X position in PDF points */
+  xPt: number;
+  /** Y position in PDF points */
+  yPt: number;
+  /** Width in PDF points */
+  wPt: number;
+  /** Height in PDF points */
+  hPt: number;
+  /** Page width in PDF points */
+  pageWidthPt: number;
+  /** Page height in PDF points */
+  pageHeightPt: number;
+  /** Optional PDF bounds offset */
+  boundsPt?: { x0: number; y0: number; x1: number; y1: number };
 };
 
 /**
@@ -57,47 +64,9 @@ export const ISSUER_ALIASES: Record<string, string> = {
  * Starter templates with placeholder zones.
  * These are safe "first guesses" that can be refined later with actual OCR rectangle selection.
  */
-export const WORK_ORDER_TEMPLATES: WorkOrderTemplate[] = [
-  {
-    issuerKey: "servicechannel",
-    templateId: "servicechannel_v1",
-    label: "ServiceChannel",
-    woNumberZone: {
-      page: 1,
-      xPct: 0.62, // Top-right block
-      yPct: 0.05,
-      wPct: 0.33,
-      hPct: 0.10,
-    },
-    notes: "WO number often near top right",
-  },
-  {
-    issuerKey: "nambar",
-    templateId: "nambar_v1",
-    label: "Nambar",
-    woNumberZone: {
-      page: 1,
-      xPct: 0.05, // Left, about a third down
-      yPct: 0.18,
-      wPct: 0.45,
-      hPct: 0.12,
-    },
-    notes: "WO number often left third down",
-  },
-  {
-    issuerKey: "service_trade",
-    templateId: "service_trade_v1",
-    label: "ServiceTrade",
-    woNumberZone: {
-      page: 1,
-      xPct: 0.62, // Top-right summary panel
-      yPct: 0.14,
-      wPct: 0.33,
-      hPct: 0.20,
-    },
-    notes: "WO ref can appear bottom-left + top-right; using top zone for now",
-  },
-];
+// Note: WORK_ORDER_TEMPLATES removed - templates must be configured per-user with actual PDF geometry
+// Starter templates are no longer valid without page dimensions
+export const WORK_ORDER_TEMPLATES: WorkOrderTemplate[] = [];
 
 /**
  * Normalize an issuer key for template matching.
@@ -192,7 +161,7 @@ export function debugTemplateMatching(): void {
     console.log(`  Normalized: "${normalized}"`);
     if (template) {
       console.log(`  ✓ Found template: ${template.label} (${template.templateId})`);
-      console.log(`    Zone: page ${template.woNumberZone.page}, (${(template.woNumberZone.xPct * 100).toFixed(0)}%, ${(template.woNumberZone.yPct * 100).toFixed(0)}%) ${(template.woNumberZone.wPct * 100).toFixed(0)}%×${(template.woNumberZone.hPct * 100).toFixed(0)}%`);
+      console.log(`    Zone: page ${template.woNumberZone.page}, (${template.woNumberZone.xPt}, ${template.woNumberZone.yPt}) ${template.woNumberZone.wPt}×${template.woNumberZone.hPt} pt`);
     } else {
       console.log(`  ✗ No template found`);
     }

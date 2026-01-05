@@ -47,7 +47,7 @@ function formatSheetRange(sheetName: string, range: string = "1:1"): string {
  * Template crop zone data structure.
  * 
  * ⚠️ POINTS-ONLY: Templates MUST store PDF points (xPt, yPt, wPt, hPt + page geometry).
- * Percentage fields (xPct, yPct, wPct, hPct) are deprecated and stored as empty strings.
+ * Percentage fields are completely removed from the type - they only exist as deprecated sheet columns.
  * 
  * ALL templates must have PDF points - no exceptions, including default FM.
  */
@@ -56,14 +56,6 @@ export type Template = {
   fmKey: string;
   templateId: string;
   page: number;
-  /** @deprecated - Always 0 for backward compatibility. Use xPt instead. */
-  xPct: number;
-  /** @deprecated - Always 0 for backward compatibility. Use yPt instead. */
-  yPct: number;
-  /** @deprecated - Always 0 for backward compatibility. Use wPt instead. */
-  wPct: number;
-  /** @deprecated - Always 0 for backward compatibility. Use hPt instead. */
-  hPct: number;
   dpi?: number;
   coordSystem: string; // Must be "PDF_POINTS" or "PDF_POINTS_TOP_LEFT"
   // PDF points fields (REQUIRED for all templates - no exceptions)
@@ -252,10 +244,6 @@ export async function getTemplateRowDataForLogging(
     fmKey: string;
     templateId: string;
     page: number;
-    xPct: string | number;
-    yPct: string | number;
-    wPct: string | number;
-    hPct: string | number;
     dpi?: number;
     coordSystem: string;
     pageWidthPt: number;
@@ -283,24 +271,26 @@ export async function getTemplateRowDataForLogging(
   const rowData: string[] = new Array(headers.length).fill("");
 
   // Map template fields to columns
-  // POINTS-ONLY: xPct/yPct/wPct/hPct may be empty strings
+  // POINTS-ONLY: pct columns write empty strings (deprecated columns for backward compatibility)
   const templateData: Record<string, string> = {
     userId: template.userId,
     fmKey: template.fmKey,
     templateId: template.templateId,
     page: String(template.page),
-    xPct: template.xPct === "" ? "" : String(template.xPct),
-    yPct: template.yPct === "" ? "" : String(template.yPct),
-    wPct: template.wPct === "" ? "" : String(template.wPct),
-    hPct: template.hPct === "" ? "" : String(template.hPct),
+    // Deprecated pct columns - always empty strings
+    xPct: "",
+    yPct: "",
+    wPct: "",
+    hPct: "",
     dpi: template.dpi !== undefined ? String(template.dpi) : "",
-    coordSystem: template.coordSystem || "",
-    pageWidthPt: template.pageWidthPt !== undefined ? String(template.pageWidthPt) : "",
-    pageHeightPt: template.pageHeightPt !== undefined ? String(template.pageHeightPt) : "",
-    xPt: template.xPt !== undefined ? String(template.xPt) : "",
-    yPt: template.yPt !== undefined ? String(template.yPt) : "",
-    wPt: template.wPt !== undefined ? String(template.wPt) : "",
-    hPt: template.hPt !== undefined ? String(template.hPt) : "",
+    coordSystem: template.coordSystem || "PDF_POINTS_TOP_LEFT",
+    // PDF points are REQUIRED
+    pageWidthPt: String(template.pageWidthPt),
+    pageHeightPt: String(template.pageHeightPt),
+    xPt: String(template.xPt),
+    yPt: String(template.yPt),
+    wPt: String(template.wPt),
+    hPt: String(template.hPt),
     updated_at: template.updated_at || new Date().toISOString(),
   };
 
@@ -387,11 +377,6 @@ function convertToTemplate(
     fmKey: normalizedFmKey,
     templateId,
     page: template.page,
-    // Percentages always 0 (deprecated, stored as empty strings)
-    xPct: 0,
-    yPct: 0,
-    wPct: 0,
-    hPct: 0,
     dpi: template.dpi,
     coordSystem: template.coordSystem || "PDF_POINTS_TOP_LEFT",
     // PDF points are REQUIRED (no optional)
@@ -713,10 +698,6 @@ function parseTemplateFromRow(
   const fmKey = getValue("fmKey");
   const templateId = getValue("templateId");
   const page = getValue("page");
-  const xPct = getValue("xPct");
-  const yPct = getValue("yPct");
-  const wPct = getValue("wPct");
-  const hPct = getValue("hPct");
   const dpi = getValue("dpi");
   const coordSystem = getValue("coordSystem");
   const pageWidthPt = getValue("pageWidthPt");
@@ -727,6 +708,7 @@ function parseTemplateFromRow(
   const hPt = getValue("hPt");
 
   // POINTS-ONLY: Require PDF points for ALL templates. No percentage fallback.
+  // Note: xPct/yPct/wPct/hPct columns may exist in sheet but are ignored
   const hasPoints = xPt && xPt.trim() !== "" && 
                     yPt && yPt.trim() !== "" && 
                     wPt && wPt.trim() !== "" && 
@@ -745,11 +727,6 @@ function parseTemplateFromRow(
       fmKey,
       templateId: templateId || fmKey,
       page: parseInt(page, 10),
-      // Percentages always 0 (deprecated, stored as empty strings)
-      xPct: 0,
-      yPct: 0,
-      wPct: 0,
-      hPct: 0,
       dpi: dpi ? parseFloat(dpi) : undefined,
       // Normalize coordSystem: "PDF_POINTS" from sheet -> "PDF_POINTS_TOP_LEFT" internally
       coordSystem: coordSystem === "PDF_POINTS" ? "PDF_POINTS_TOP_LEFT" : (coordSystem || "PDF_POINTS_TOP_LEFT"),

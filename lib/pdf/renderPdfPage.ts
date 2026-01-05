@@ -123,23 +123,53 @@ export async function renderPdfPageToPng(
       throw new Error("Failed to load PDF page");
     }
 
+    // ⚠️ CRITICAL: Always render using PDF page size, never embedded image size
     // Get page dimensions in PDF points (source of truth)
-    // GUARD: Always convert CSS→natural→points. Never divide by imageWidth/imageHeight directly.
-    console.log("[renderPdfPage] Getting page bounds");
-    const rect = pdfPage.getBounds();
+    // This is the canonical size - never use image width/height or DPI
+    // 
+    // MuPDF getBounds() returns CropBox if available, otherwise MediaBox.
+    // We need to ensure we ALWAYS use the same box for consistency.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rect = (pdfPage as any).getBounds();
+    
+    // Ensure we're using the full box (not auto-zoomed to content)
+    // getBounds() should return the full page box, but we verify it's consistent
     const boundsPt = { x0: rect.x0, y0: rect.y0, x1: rect.x1, y1: rect.y1 };
     const pageWidthPt = Math.ceil(rect.x1 - rect.x0);
     const pageHeightPt = Math.ceil(rect.y1 - rect.y0);
     
-    // Use points for scale calculation
+    // Log which box we're using for debugging
+    console.log("[renderPdfPage] PDF box bounds (CropBox if available, else MediaBox):", {
+      boundsPt,
+      pageWidthPt,
+      pageHeightPt,
+      note: "getBounds() returns CropBox if available, otherwise MediaBox",
+    });
+    
+    // Use points for scale calculation (never use image dimensions)
     const pageWidth = pageWidthPt;
     const pageHeight = pageHeightPt;
 
     // Calculate scale to cap width at MAX_RENDERED_WIDTH
+    // Scale is based on PDF page size, not image size
     let scale = 2.0; // Default scale for quality
     if (pageWidth * scale > MAX_RENDERED_WIDTH) {
       scale = MAX_RENDERED_WIDTH / pageWidth;
     }
+    
+    // Calculate canvas dimensions based on scaled PDF viewport
+    const canvasWidth = Math.ceil(pageWidth * scale);
+    const canvasHeight = Math.ceil(pageHeight * scale);
+    
+    // Log PDF page size vs canvas size for debugging
+    console.log("[renderPdfPage] PDF page size (points) vs canvas size (pixels):", {
+      pageWidthPt,
+      pageHeightPt,
+      canvasWidth,
+      canvasHeight,
+      scale,
+      boundsOrigin: { x0: boundsPt.x0, y0: boundsPt.y0 },
+    });
 
     // Create a scale matrix for rendering
     // mupdf requires a Matrix object and ColorSpace
@@ -155,14 +185,42 @@ export async function renderPdfPageToPng(
       throw new Error("mupdf ColorSpace is not available");
     }
     
-    console.log("[renderPdfPage] Creating scale matrix");
-    let scaleMatrix;
+    // ✅ IMPORTANT: normalize box origin to (0,0) before scaling
+    // If boundsPt.x0/y0 != 0, failing to translate causes apparent zoom/shift/crop.
+    console.log("[renderPdfPage] Building render matrix (translate + scale)");
+    const hasTranslate = typeof (Matrix as any).translate === "function";
+    const hasConcat = typeof (Matrix as any).concat === "function" || typeof (Matrix as any).multiply === "function";
+    
+    let renderMatrix;
     try {
-      scaleMatrix = Matrix.scale(scale, scale);
-      console.log("[renderPdfPage] Scale matrix created:", typeof scaleMatrix);
+      // Start with scale matrix
+      renderMatrix = Matrix.scale(scale, scale);
+      
+      // If box has non-zero origin, translate first, then scale
+      if ((boundsPt.x0 !== 0 || boundsPt.y0 !== 0) && hasTranslate && hasConcat) {
+        console.log("[renderPdfPage] Translating to normalize box origin:", {
+          translateBy: { x: -boundsPt.x0, y: -boundsPt.y0 },
+          originalBounds: boundsPt,
+        });
+        
+        const translateMatrix = (Matrix as any).translate(-boundsPt.x0, -boundsPt.y0);
+        const concatFn = (Matrix as any).concat ?? (Matrix as any).multiply;
+        
+        // renderMatrix = scale ∘ translate (translate first, then scale)
+        renderMatrix = concatFn(renderMatrix, translateMatrix);
+      } else if (boundsPt.x0 !== 0 || boundsPt.y0 !== 0) {
+        // If translate/concat isn't supported, we can't normalize origin safely.
+        console.warn("[renderPdfPage] Matrix.translate/concat not available; zoom may persist for non-zero bounds origin", {
+          boundsPt,
+          hasTranslate,
+          hasConcat,
+        });
+      }
+      
+      console.log("[renderPdfPage] Render matrix created:", typeof renderMatrix);
     } catch (err) {
-      console.error("[renderPdfPage] Error creating scale matrix:", err);
-      throw new Error(`Failed to create scale matrix: ${err instanceof Error ? err.message : String(err)}`);
+      console.error("[renderPdfPage] Error creating render matrix:", err);
+      throw new Error(`Failed to create render matrix: ${err instanceof Error ? err.message : String(err)}`);
     }
     
     // Use RGB color space for PNG output
@@ -176,13 +234,17 @@ export async function renderPdfPageToPng(
       throw new Error(`Failed to get RGB color space: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    // Create a pixmap (image) from the page with scale matrix and RGB color space
+    // Create a pixmap (image) from the page with render matrix and RGB color space
     // toPixmap signature: toPixmap(matrix, colorspace, alpha = false, showExtras = true)
-    console.log("[renderPdfPage] Creating pixmap with scale", scale, "matrix type:", typeof scaleMatrix, "colorspace type:", typeof rgbColorSpace);
+    // 
+    // CRITICAL: We render the FULL page box (CropBox/MediaBox) without auto-zoom to content.
+    // The renderMatrix translates (if needed) then scales the entire boundsPt box, ensuring consistent rendering.
+    console.log("[renderPdfPage] Creating pixmap with render matrix, scale:", scale);
     let pixmap;
     try {
-      // Try with alpha=false and showExtras=true (defaults)
-      pixmap = pdfPage.toPixmap(scaleMatrix, rgbColorSpace, false, true);
+      // Render with showExtras=true to include all page content (not just visible content)
+      // This ensures scanned PDFs render the full page, not auto-zoomed to content
+      pixmap = pdfPage.toPixmap(renderMatrix, rgbColorSpace, false, true);
       console.log("[renderPdfPage] Pixmap created:", typeof pixmap);
     } catch (err) {
       console.error("[renderPdfPage] Error creating pixmap:", err);
@@ -215,14 +277,71 @@ export async function renderPdfPageToPng(
     // Convert to base64
     const pngBase64 = nodeBuffer.toString("base64");
 
-    // Calculate scaled dimensions
-    const scaledWidth = Math.ceil(pageWidth * scale);
-    const scaledHeight = Math.ceil(pageHeight * scale);
+    // Get actual pixmap dimensions (these are the actual rendered dimensions)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const actualW = (pixmap as any).width;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const actualH = (pixmap as any).height;
+    
+    const expectedW = Math.round(pageWidthPt * scale);
+    const expectedH = Math.round(pageHeightPt * scale);
+    
+    // If we are off by more than a few pixels, the renderer is not honoring our chosen box.
+    // In that case, we MUST return geometry that matches what was actually rendered.
+    if (Math.abs(actualW - expectedW) > 8 || Math.abs(actualH - expectedH) > 8) {
+      console.warn("[renderPdfPage] Rendered pixmap size does not match expected box; using EFFECTIVE bounds from getBounds()", {
+        expected: { width: expectedW, height: expectedH },
+        actual: { width: actualW, height: actualH },
+        scale,
+        boundsPt,
+        pageWidthPt,
+        pageHeightPt,
+      });
 
+      // Fall back to the effective box that toPixmap is actually using
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const eff = (pdfPage as any).getBounds();
+      const effBoundsPt = { x0: eff.x0, y0: eff.y0, x1: eff.x1, y1: eff.y1 };
+      const effWPt = Math.round(effBoundsPt.x1 - effBoundsPt.x0);
+      const effHPt = Math.round(effBoundsPt.y1 - effBoundsPt.y0);
+
+      // Override what we return so downstream mapping matches the image users see
+      // NOTE: Keep a log so you know this PDF cannot be normalized without a different render API
+      console.warn("[renderPdfPage] Returning effective bounds that match actual rendered image:", {
+        effectiveBoundsPt: effBoundsPt,
+        effectivePageSize: { widthPt: effWPt, heightPt: effHPt },
+        actualRenderSize: { width: actualW, height: actualH },
+      });
+      
+      return {
+        pngBase64,
+        width: actualW,
+        height: actualH,
+        boundsPt: effBoundsPt,
+        pageWidthPt: effWPt,
+        pageHeightPt: effHPt,
+      };
+    }
+    
+    // Log PDF page size vs rendered image size for debugging
+    console.log("[renderPdfPage] PDF page size (points) vs rendered image size (pixels):", {
+      pageWidthPt,
+      pageHeightPt,
+      boundsPt,
+      renderPx: { width: actualW, height: actualH },
+      scale,
+      expected: { width: expectedW, height: expectedH },
+      match: Math.abs(actualW - expectedW) <= 8 && Math.abs(actualH - expectedH) <= 8,
+    });
+
+    // Return geometry matching the rendered image
+    // - boundsPt: PDF box bounds (CropBox if available, else MediaBox)
+    // - pageWidthPt/pageHeightPt: dimensions of the PDF box
+    // - width/height: actual rendered image pixel dimensions
     return {
       pngBase64,
-      width: scaledWidth,
-      height: scaledHeight,
+      width: actualW,
+      height: actualH,
       boundsPt,
       pageWidthPt,
       pageHeightPt,

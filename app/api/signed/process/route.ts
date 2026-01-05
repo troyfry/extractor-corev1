@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/auth/currentUser";
 import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
 import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 import { processSignedPdf } from "@/lib/workOrders/signedProcessor";
+import { normalizePdfBuffer } from "@/lib/pdf/normalizePdf";
 
 export const runtime = "nodejs";
 
@@ -56,15 +57,42 @@ export async function POST(req: Request) {
     const pageNumber = pageOverride ? parseInt(String(pageOverride), 10) : null;
 
     const arrayBuffer = await file.arrayBuffer();
-    const pdfBuffer = Buffer.from(arrayBuffer);
+    const originalPdfBuffer = Buffer.from(arrayBuffer);
     const originalFilename = file.name || "signed-work-order.pdf";
+    const originalSize = originalPdfBuffer.length;
 
-    // Call shared processor
+    // Normalize PDF before processing (fixes coordinate systems and bounds)
+    console.log("🔧 [NORMALIZATION] Starting PDF normalization before signed processing:", {
+      filename: originalFilename,
+      originalSize,
+      timestamp: new Date().toISOString(),
+    });
+    
+    const normalizedPdfBuffer = await normalizePdfBuffer(originalPdfBuffer);
+    const normalizedSize = normalizedPdfBuffer.length;
+    
+    if (normalizedPdfBuffer !== originalPdfBuffer) {
+      console.log("✅ [NORMALIZATION] PDF NORMALIZED SUCCESSFULLY before signed processing:", {
+        filename: originalFilename,
+        originalSize,
+        normalizedSize,
+        sizeChange: normalizedSize - originalSize,
+        timestamp: new Date().toISOString(),
+      });
+    } else {
+      console.log("ℹ️ [NORMALIZATION] PDF did not require normalization (already normalized or normalization not available):", {
+        filename: originalFilename,
+        size: originalSize,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Call shared processor with normalized PDF
     const result = await processSignedPdf({
       accessToken,
       spreadsheetId,
       fmKey: rawFmKey, // Processor will normalize internally
-      pdfBuffer,
+      pdfBuffer: normalizedPdfBuffer,
       originalFilename,
       woNumberOverride,
       manualReason,

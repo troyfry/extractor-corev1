@@ -503,6 +503,62 @@ function TemplateZonesPageContent() {
     setPdfDoc(null);
 
     try {
+      // Read file as ArrayBuffer
+      let arrayBuffer = await file.arrayBuffer();
+      const originalSize = arrayBuffer.byteLength;
+      
+      // Normalize PDF using Python OCR service before rendering
+      console.log("🔧 [NORMALIZATION] Starting PDF normalization before template capture:", {
+        filename: file.name,
+        originalSize,
+        timestamp: new Date().toISOString(),
+      });
+      
+      try {
+        const formData = new FormData();
+        formData.append("pdf", file);
+        
+        const normalizeResponse = await fetch("/api/pdf/normalize", {
+          method: "POST",
+          body: formData,
+        });
+        
+        if (normalizeResponse.ok) {
+          const normalizedArrayBuffer = await normalizeResponse.arrayBuffer();
+          if (normalizedArrayBuffer.byteLength > 0) {
+            const normalizedSize = normalizedArrayBuffer.byteLength;
+            console.log("✅ [NORMALIZATION] PDF NORMALIZED SUCCESSFULLY before template capture:", {
+              filename: file.name,
+              originalSize,
+              normalizedSize,
+              sizeChange: normalizedSize - originalSize,
+              timestamp: new Date().toISOString(),
+            });
+            arrayBuffer = normalizedArrayBuffer;
+          } else {
+            console.log("ℹ️ [NORMALIZATION] Normalization returned empty buffer, using original PDF:", {
+              filename: file.name,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        } else {
+          const errorText = await normalizeResponse.text().catch(() => "Unknown error");
+          console.log("⚠️ [NORMALIZATION] Normalization endpoint returned error, using original PDF:", {
+            filename: file.name,
+            status: normalizeResponse.status,
+            error: errorText.substring(0, 200),
+            timestamp: new Date().toISOString(),
+          });
+        }
+      } catch (normalizeError) {
+        // If normalization fails, continue with original PDF
+        console.warn("⚠️ [NORMALIZATION] PDF normalization failed, using original PDF:", {
+          filename: file.name,
+          error: normalizeError instanceof Error ? normalizeError.message : String(normalizeError),
+          timestamp: new Date().toISOString(),
+        });
+      }
+
       // Ensure pdf.js is loaded (uses shared helper)
       const pdfjsLib = await initPdfJsLib();
 
@@ -510,8 +566,6 @@ function TemplateZonesPageContent() {
         throw new Error("PDF.js library not loaded correctly");
       }
 
-      // Read file as ArrayBuffer
-      const arrayBuffer = await file.arrayBuffer();
       const uint8Array = new Uint8Array(arrayBuffer);
 
       // Validate PDF header
