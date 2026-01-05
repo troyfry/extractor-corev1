@@ -253,3 +253,78 @@ export async function POST(request: Request) {
   }
 }
 
+/**
+ * DELETE /api/onboarding/templates/save?fmKey=...
+ * Delete a template by fmKey.
+ * 
+ * Rules:
+ * - Only deletes if template exists (returns 404 if not found)
+ * - No cascade deletion (FM profile remains)
+ * - Invalidates template cache after deletion
+ */
+export async function DELETE(request: Request) {
+  try {
+    const user = await getCurrentUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    if (!user.googleAccessToken) {
+      return NextResponse.json(
+        { error: "Google OAuth token not available. Please sign in again." },
+        { status: 401 }
+      );
+    }
+
+    // Get fmKey from query params
+    const { searchParams } = new URL(request.url);
+    const fmKey = searchParams.get("fmKey");
+
+    if (!fmKey) {
+      return NextResponse.json(
+        { error: "fmKey query parameter is required" },
+        { status: 400 }
+      );
+    }
+
+    // Get spreadsheet ID
+    const cookieStore = await cookies();
+    const mainSpreadsheetId = cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
+
+    if (!mainSpreadsheetId) {
+      return NextResponse.json(
+        { error: "Spreadsheet ID not configured. Please complete the Google step first." },
+        { status: 400 }
+      );
+    }
+
+    // Delete template
+    const { deleteTemplate } = await import("@/lib/templates/templatesSheets");
+    const deleted = await deleteTemplate(
+      user.googleAccessToken,
+      mainSpreadsheetId,
+      fmKey
+    );
+
+    if (!deleted) {
+      return NextResponse.json(
+        { error: "Template not found" },
+        { status: 404 }
+      );
+    }
+
+    // Invalidate template cache
+    const { invalidateTemplateCache } = await import("@/lib/workOrders/templateConfig");
+    const { normalizeFmKey } = await import("@/lib/templates/fmProfiles");
+    invalidateTemplateCache(mainSpreadsheetId, normalizeFmKey(fmKey));
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("Error deleting template:", error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Internal server error" },
+      { status: 500 }
+    );
+  }
+}
+

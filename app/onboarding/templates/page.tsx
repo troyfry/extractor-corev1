@@ -396,71 +396,66 @@ export default function OnboardingTemplatesPage() {
       return;
     }
 
-  // ⚠️ VALIDATION: Block signed/phone-scan PDFs from template capture
-  // Template capture must use ORIGINAL DIGITAL PDF only
-  // Normalize filename: lowercase, spaces to underscores, remove special chars
-  const fileNameLower = file.name
-    .toLowerCase()
-    .replace(/\s+/g, "_")
-    .replace(/[^a-z0-9_\.]/g, "");
-  const signedIndicators = [
-    "signed",
-    "signoff",
-    "sign",
-    "signature",
-    "completed",
-    "final",
-    "executed",
-    "proof",
-    "kent", // Test files often include this
-    "photo_scan",
-    "scan_",
-    "signed_",
-    "scan",
-    "scanned",
-    "phone",
-    "mobile",
-    "camera",
-    "photo",
-    "image",
-    "picture",
-    "screenshot",
-    "capture",
-    "img_",
-    "dsc",
-    "pict",
-  ];
-  
-  const appearsToBeSigned = signedIndicators.some(indicator => 
-    fileNameLower.includes(indicator)
-  );
-  
-  // Debug logging
-  console.log("[Onboarding] Filename check:", {
-    original: file.name,
-    normalized: fileNameLower,
-    appearsToBeSigned,
-    matchedIndicators: signedIndicators.filter(ind => fileNameLower.includes(ind)),
-  });
-    
-  if (appearsToBeSigned) {
-    console.warn("[Onboarding] BLOCKED: Signed/scan PDF detected by filename:", file.name);
-    setError(
-      "Signed scans cannot be used for template capture. " +
-      "Please upload the original digital work order PDF (the PDF file you received from the facility management system, not a phone scan or signed copy)."
-    );
-    setPdfFile(null);
-    setPreviewImage(null);
-    setCropZone(null);
-    // Clear the file input
-    e.target.value = "";
-    return;
-  }
+    // Helper function to block upload and clear state
+    const blockUpload = (reason: string, errorMessage: string) => {
+      console.log("[Onboarding] Rejecting PDF for capture", { reason, filename: file.name });
+      setError(errorMessage);
+      setPdfFile(null);
+      setPreviewImage(null);
+      setCropZone(null);
+      e.target.value = "";
+    };
 
-    // ⚠️ RASTER DETECTION: Check if PDF is raster/scan-only (no text layer)
-    // This is a client-side pre-check; server will also validate
+    // ⚠️ STEP 1: Filename heuristic check (helper, not main gate)
+    // This is a quick pre-check; raster detection is the authoritative blocker
+    const fileNameLower = file.name
+      .toLowerCase()
+      .replace(/\s+/g, "_")
+      .replace(/[^a-z0-9_\.]/g, "");
+    const signedIndicators = [
+      "signed",
+      "signoff",
+      "sign",
+      "signature",
+      "completed",
+      "final",
+      "executed",
+      "proof",
+      "kent", // Test files often include this
+      "photo_scan",
+      "scan_",
+      "signed_",
+      "scan",
+      "scanned",
+      "phone",
+      "mobile",
+      "camera",
+      "photo",
+      "image",
+      "picture",
+      "screenshot",
+      "capture",
+      "img_",
+      "dsc",
+      "pict",
+    ];
+    
+    const appearsToBeSigned = signedIndicators.some(indicator => 
+      fileNameLower.includes(indicator)
+    );
+    
+    if (appearsToBeSigned) {
+      blockUpload(
+        "filename_heuristic",
+        "Signed scans cannot be used for template capture. " +
+        "Please upload the original digital work order PDF (the PDF file you received from the facility management system, not a phone scan or signed copy)."
+      );
+      return; // HARD BLOCK: Do not proceed to raster detection or renderPage
+    }
+
+    // ⚠️ STEP 2: RASTER DETECTION (AUTHORITATIVE BLOCKER)
+    // This is the primary validation - checks if PDF has no text layer (raster/scan-only)
     try {
-      // Call server endpoint to detect raster-only PDF
       const formData = new FormData();
       formData.append("pdf", file);
       
@@ -470,50 +465,105 @@ export default function OnboardingTemplatesPage() {
       });
       
       if (!detectResponse.ok) {
-        // If detection API fails, show error and block upload
+        // If detection API fails, block upload (fail closed)
         const errorData = await detectResponse.json().catch(() => ({ error: "Failed to validate PDF" }));
-        setError(
+        blockUpload(
+          "raster_detection_api_failed",
           `PDF validation failed: ${errorData.error || "Unknown error"}. ` +
           "Please ensure you're uploading the original digital work order PDF."
         );
-        setPdfFile(null);
-        setPreviewImage(null);
-        setCropZone(null);
-        e.target.value = "";
-        return;
+        return; // HARD BLOCK: Do not proceed to renderPage
       }
       
       const detectData = await detectResponse.json();
-      if (detectData.isRasterOnly) {
+      if (detectData.isRasterOnly === true) {
+        // Check for override flag (debug only)
         const allowOverride = new URLSearchParams(window.location.search).get("allowRaster") === "true";
         if (!allowOverride) {
-          setError(
+          blockUpload(
+            "raster_only_detected",
             "Template capture requires a digital PDF with text content. " +
             "This PDF appears to be raster/scan-only (no text layer). " +
             "Please use the original digital work order PDF from your facility management system."
           );
-          setPdfFile(null);
-          setPreviewImage(null);
-          setCropZone(null);
-          e.target.value = "";
-          return;
+          return; // HARD BLOCK: Do not proceed to renderPage
         } else {
           console.warn("[Onboarding] Raster-only PDF allowed due to override flag");
         }
       }
     } catch (detectError) {
-      // If detection fails, block upload to be safe
-      console.error("[Onboarding] Raster detection failed:", detectError);
-      setError(
+      // If detection throws, block upload (fail closed)
+      console.error("[Onboarding] Raster detection error:", detectError);
+      blockUpload(
+        "raster_detection_error",
         "Failed to validate PDF. Please ensure you're uploading the original digital work order PDF (not a scan or signed copy)."
       );
-      setPdfFile(null);
-      setPreviewImage(null);
-      setCropZone(null);
-      e.target.value = "";
-      return;
+      return; // HARD BLOCK: Do not proceed to renderPage
     }
 
+    // ⚠️ STEP 3: PAGE DIMENSION VALIDATION (BLOCK NON-STANDARD SIZES)
+    // Phone photo scans and unusual PDFs have non-standard page dimensions
+    // Standard sizes: Letter (612x792), A4 (595x842), Legal (612x1008), etc.
+    try {
+      const pdfjs = await initPdfJsLib();
+      const arrayBuffer = await file.arrayBuffer();
+      const pdfDoc = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+      
+      if (pdfDoc.numPages < 1) {
+        blockUpload(
+          "no_pages",
+          "PDF has no pages. Please upload a valid work order PDF."
+        );
+        return; // HARD BLOCK
+      }
+
+      // Get first page dimensions
+      const firstPage = await pdfDoc.getPage(1);
+      const viewport = firstPage.getViewport({ scale: 1 });
+      const pageWidthPt = viewport.width;
+      const pageHeightPt = viewport.height;
+
+      // Use client-safe page dimension validation (doesn't import server-side code)
+      const { validatePageDimensions } = await import("@/lib/templates/pageDimensions");
+      const dimensionResult = validatePageDimensions(pageWidthPt, pageHeightPt);
+      const matchesStandard = dimensionResult.isStandard;
+
+      if (!matchesStandard) {
+        // Check for override flag (debug only)
+        const allowOverride = new URLSearchParams(window.location.search).get("allowNonStandardSize") === "true";
+        if (!allowOverride) {
+          blockUpload(
+            "non_standard_page_size",
+            `This PDF has non-standard page dimensions (${pageWidthPt.toFixed(1)} x ${pageHeightPt.toFixed(1)} points). ` +
+            "Template capture requires standard page sizes (Letter, A4, Legal, etc.). " +
+            "Phone photo scans and unusual PDFs are not supported. Please use the original digital work order PDF."
+          );
+          return; // HARD BLOCK: Do not proceed to renderPage
+        } else {
+          console.warn("[Onboarding] Non-standard page size allowed due to override flag", {
+            width: pageWidthPt,
+            height: pageHeightPt,
+          });
+        }
+      } else {
+        console.log("[Onboarding] Page dimensions validated:", {
+          width: pageWidthPt,
+          height: pageHeightPt,
+          matchesStandard: true,
+        });
+      }
+    } catch (dimError) {
+      // If dimension check fails, block upload (fail closed)
+      console.error("[Onboarding] Page dimension validation error:", dimError);
+      blockUpload(
+        "page_dimension_check_error",
+        "Failed to validate PDF page dimensions. Please ensure you're uploading the original digital work order PDF."
+      );
+      return; // HARD BLOCK: Do not proceed to renderPage
+    }
+
+    // ✅ VALIDATION PASSED: PDF is digital (has text layer), filename is clean, and page size is standard
+    // Now proceed to render and allow template capture
     setPdfFile(file);
     setError(null);
     setSuccess(null);

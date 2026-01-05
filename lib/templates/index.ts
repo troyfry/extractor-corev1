@@ -268,6 +268,14 @@ export function isSignedPdfFilename(filename: string): boolean {
 }
 
 /**
+ * Re-export page dimension validation from client-safe module.
+ * 
+ * Note: Client components should import directly from @/lib/templates/pageDimensions
+ * to avoid bundling server-side dependencies. This re-export is for server-side code.
+ */
+export { STANDARD_PAGE_SIZES, validatePageDimensions } from "./pageDimensions";
+
+/**
  * Validate that a PDF is suitable for template capture.
  * Throws if PDF is raster-only and override is not enabled, or if filename indicates signed/scan.
  * 

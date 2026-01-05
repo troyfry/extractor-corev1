@@ -11,6 +11,7 @@
 
 import { NextResponse } from "next/server";
 import { renderPdfPageToPng } from "@/lib/pdf/renderPdfPage";
+import { detectRasterOnlyPdf } from "@/lib/templates";
 
 export const runtime = "nodejs";
 
@@ -41,6 +42,19 @@ export async function POST(req: Request) {
         filename: file.name,
         size: pdfBuffer.length,
       });
+      
+      // ⚠️ SERVER-SIDE VALIDATION: Reject raster-only PDFs for template capture
+      // Template capture requires the original digital PDF (text-based)
+      // Scans/signed photos are not allowed
+      const isRasterOnly = await detectRasterOnlyPdf(pdfBuffer);
+      if (isRasterOnly) {
+        return NextResponse.json(
+          { 
+            error: "Template capture requires the original digital PDF (text-based). Scans/signed photos are not allowed." 
+          },
+          { status: 400 }
+        );
+      }
     }
 
     const out = await renderPdfPageToPng(pdfBuffer, page);

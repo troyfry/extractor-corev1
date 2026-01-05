@@ -130,6 +130,8 @@ function TemplateZonesPageContent() {
   const [isSelecting, setIsSelecting] = useState(false);
   const [startPos, setStartPos] = useState<{ x: number; y: number } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [isLoadingProfiles, setIsLoadingProfiles] = useState(true);
@@ -198,6 +200,17 @@ function TemplateZonesPageContent() {
       setSavedTemplate(null);
     }
   }, [selectedFmKey]);
+
+  // Auto-dismiss success messages after 3 seconds
+  useEffect(() => {
+    if (success) {
+      const timeoutId = setTimeout(() => {
+        setSuccess(null);
+      }, 3000); // 3 seconds
+
+      return () => clearTimeout(timeoutId);
+    }
+  }, [success]);
 
   // When image loads, convert saved template to pixels (only if on the correct page)
   // Prefer PDF points if available, otherwise fallback to percentages
@@ -531,20 +544,137 @@ function TemplateZonesPageContent() {
       matchedIndicators: signedIndicators.filter(ind => fileNameLower.includes(ind)),
     });
       
-    if (appearsToBeSigned) {
-      console.warn("[Template Zones] BLOCKED: Signed/scan PDF detected by filename:", file.name);
-      setError(
-        "Signed scans cannot be used for template capture. " +
-        "Please upload the original digital work order PDF (the PDF file you received from the facility management system, not a phone scan or signed copy)."
-      );
+    // Helper function to block upload and clear state
+    const blockUpload = (reason: string, errorMessage: string) => {
+      console.log("[Template Zones] Rejecting PDF for capture", { reason, filename: file.name });
+      setError(errorMessage);
       setPdfFile(null);
       setPreviewImage(null);
       setCropZone(null);
-      // Clear the file input
       e.target.value = "";
-      return;
+    };
+
+    if (appearsToBeSigned) {
+      blockUpload(
+        "filename_heuristic",
+        "Signed scans cannot be used for template capture. " +
+        "Please upload the original digital work order PDF (the PDF file you received from the facility management system, not a phone scan or signed copy)."
+      );
+      return; // HARD BLOCK: Do not proceed to raster detection or renderPage
     }
 
+    // ⚠️ STEP 2: RASTER DETECTION (AUTHORITATIVE BLOCKER)
+    // This is the primary validation - checks if PDF has no text layer (raster/scan-only)
+    try {
+      const formData = new FormData();
+      formData.append("pdf", file);
+      
+      const detectResponse = await fetch("/api/pdf/detect-raster", {
+        method: "POST",
+        body: formData,
+      });
+      
+      if (!detectResponse.ok) {
+        // If detection API fails, block upload (fail closed)
+        const errorData = await detectResponse.json().catch(() => ({ error: "Failed to validate PDF" }));
+        blockUpload(
+          "raster_detection_api_failed",
+          `PDF validation failed: ${errorData.error || "Unknown error"}. ` +
+          "Please ensure you're uploading the original digital work order PDF."
+        );
+        return; // HARD BLOCK: Do not proceed to renderPage
+      }
+      
+      const detectData = await detectResponse.json();
+      if (detectData.isRasterOnly === true) {
+        // Check for override flag (debug only)
+        const allowOverride = new URLSearchParams(window.location.search).get("allowRaster") === "true";
+        if (!allowOverride) {
+          blockUpload(
+            "raster_only_detected",
+            "Template capture requires a digital PDF with text content. " +
+            "This PDF appears to be raster/scan-only (no text layer). " +
+            "Please use the original digital work order PDF from your facility management system."
+          );
+          return; // HARD BLOCK: Do not proceed to renderPage
+        } else {
+          console.warn("[Template Zones] Raster-only PDF allowed due to override flag");
+        }
+      }
+    } catch (detectError) {
+      // If detection throws, block upload (fail closed)
+      console.error("[Template Zones] Raster detection error:", detectError);
+      blockUpload(
+        "raster_detection_error",
+        "Failed to validate PDF. Please ensure you're uploading the original digital work order PDF (not a scan or signed copy)."
+      );
+      return; // HARD BLOCK: Do not proceed to renderPage
+    }
+
+    // ⚠️ STEP 3: PAGE DIMENSION VALIDATION (BLOCK NON-STANDARD SIZES)
+    // Phone photo scans and unusual PDFs have non-standard page dimensions
+    // Standard sizes: Letter (612x792), A4 (595x842), Legal (612x1008), etc.
+    try {
+      const pdfjs = await initPdfJsLib();
+      const arrayBuffer = await file.arrayBuffer();
+      const pdfDoc = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+      
+      if (pdfDoc.numPages < 1) {
+        blockUpload(
+          "no_pages",
+          "PDF has no pages. Please upload a valid work order PDF."
+        );
+        return; // HARD BLOCK
+      }
+
+      // Get first page dimensions
+      const firstPage = await pdfDoc.getPage(1);
+      const viewport = firstPage.getViewport({ scale: 1 });
+      const pageWidthPt = viewport.width;
+      const pageHeightPt = viewport.height;
+
+      // Use client-safe page dimension validation (doesn't import server-side code)
+      const { validatePageDimensions } = await import("@/lib/templates/pageDimensions");
+      const dimensionResult = validatePageDimensions(pageWidthPt, pageHeightPt);
+      const matchesStandard = dimensionResult.isStandard;
+
+      if (!matchesStandard) {
+        // Check for override flag (debug only)
+        const allowOverride = new URLSearchParams(window.location.search).get("allowNonStandardSize") === "true";
+        if (!allowOverride) {
+          blockUpload(
+            "non_standard_page_size",
+            `This PDF has non-standard page dimensions (${pageWidthPt.toFixed(1)} x ${pageHeightPt.toFixed(1)} points). ` +
+            "Template capture requires standard page sizes (Letter, A4, Legal, etc.). " +
+            "Phone photo scans and unusual PDFs are not supported. Please use the original digital work order PDF."
+          );
+          return; // HARD BLOCK: Do not proceed to renderPage
+        } else {
+          console.warn("[Template Zones] Non-standard page size allowed due to override flag", {
+            width: pageWidthPt,
+            height: pageHeightPt,
+          });
+        }
+      } else {
+        console.log("[Template Zones] Page dimensions validated:", {
+          width: pageWidthPt,
+          height: pageHeightPt,
+          matchesStandard: true,
+          matchedSize: dimensionResult.matchedSize,
+        });
+      }
+    } catch (dimError) {
+      // If dimension check fails, block upload (fail closed)
+      console.error("[Template Zones] Page dimension validation error:", dimError);
+      blockUpload(
+        "page_dimension_check_error",
+        "Failed to validate PDF page dimensions. Please ensure you're uploading the original digital work order PDF."
+      );
+      return; // HARD BLOCK: Do not proceed to renderPage
+    }
+
+    // ✅ VALIDATION PASSED: PDF is digital (has text layer), filename is clean, and page size is standard
+    // Now proceed to render and allow template capture
     setPdfFile(file);
     setError(null);
     setSuccess(null);
@@ -1053,6 +1183,43 @@ function TemplateZonesPageContent() {
     setCurrentViewport(null);
   }
 
+  async function handleDelete() {
+    if (!selectedFmKey || !savedTemplate) {
+      setError("No template selected to delete");
+      return;
+    }
+
+    setIsDeleting(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `/api/onboarding/templates/save?fmKey=${encodeURIComponent(selectedFmKey)}`,
+        { method: "DELETE" }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to delete template");
+      }
+
+      setSuccess("Template deleted successfully!");
+      setSavedTemplate(null);
+      setCropZone(null);
+      setShowDeleteConfirm(false);
+      
+      // Clear form
+      setPreviewImage(null);
+      setPdfFile(null);
+      setPageWidthPt(0);
+      setPageHeightPt(0);
+      setBoundsPt(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete template");
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
   function handleApplyCalibratedCoords() {
     if (!selectedFmKey || !imageWidth || !imageHeight) {
       setError("Please select a facility sender and upload a PDF first");
@@ -1471,7 +1638,7 @@ function TemplateZonesPageContent() {
             )}
 
             {/* Actions */}
-            <div className="flex gap-4 flex-wrap">
+            <div className="flex gap-4 flex-wrap items-center">
               <button
                 onClick={handleSave}
                 disabled={
@@ -1494,6 +1661,37 @@ function TemplateZonesPageContent() {
                 >
                   Clear Rectangle
                 </button>
+              )}
+              {savedTemplate && (
+                <>
+                  {!showDeleteConfirm ? (
+                    <button
+                      onClick={() => setShowDeleteConfirm(true)}
+                      disabled={isDeleting}
+                      className="px-6 py-3 bg-red-600 hover:bg-red-700 disabled:bg-red-800 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+                    >
+                      Delete Template
+                    </button>
+                  ) : (
+                    <div className="flex gap-2 items-center">
+                      <span className="text-sm text-slate-300">Delete this template?</span>
+                      <button
+                        onClick={handleDelete}
+                        disabled={isDeleting}
+                        className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-800 disabled:cursor-not-allowed text-white rounded text-sm font-medium transition-colors"
+                      >
+                        {isDeleting ? "Deleting..." : "Confirm"}
+                      </button>
+                      <button
+                        onClick={() => setShowDeleteConfirm(false)}
+                        disabled={isDeleting}
+                        className="px-4 py-2 bg-slate-600 hover:bg-slate-700 disabled:bg-slate-800 disabled:cursor-not-allowed text-white rounded text-sm font-medium transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
               {previewImage && selectedFmKey && calibratedCoordinates[selectedFmKey] && (
                 <button

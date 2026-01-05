@@ -779,3 +779,112 @@ function parseTemplateFromRow(
   }
 }
 
+/**
+ * Helper to get sheet ID by name.
+ */
+async function getSheetId(
+  sheets: ReturnType<typeof createSheetsClient>,
+  spreadsheetId: string,
+  sheetName: string
+): Promise<number> {
+  const spreadsheetResponse = await sheets.spreadsheets.get({
+    spreadsheetId,
+  });
+
+  const sheet = spreadsheetResponse.data.sheets?.find(
+    (s) => s.properties?.title === sheetName
+  );
+
+  if (!sheet?.properties?.sheetId) {
+    throw new Error(`Sheet "${sheetName}" not found`);
+  }
+
+  return sheet.properties.sheetId;
+}
+
+/**
+ * Delete a template by fmKey.
+ * Templates are shared per spreadsheet - deletion affects all users of that spreadsheet.
+ * 
+ * Rules:
+ * - Only deletes if template exists
+ * - No cascade deletion (FM profile remains)
+ * - Returns true if deleted, false if not found
+ */
+export async function deleteTemplate(
+  accessToken: string,
+  spreadsheetId: string,
+  fmKey: string
+): Promise<boolean> {
+  const sheets = createSheetsClient(accessToken);
+  const sheetName = "Templates";
+  const normalizedFmKey = normalizeFmKey(fmKey);
+
+  try {
+    // Get all data to find row by fmKey
+    const allDataResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: formatSheetRange(sheetName, getColumnRange(TEMPLATE_COLUMNS.length)),
+    });
+
+    const rows = allDataResponse.data.values || [];
+    if (rows.length <= 1) {
+      // Only headers or no data
+      return false;
+    }
+
+    const headers = rows[0] as string[];
+    const fmKeyColIndex = headers.findIndex(
+      (h) => h.toLowerCase().trim() === "fmkey"
+    );
+
+    if (fmKeyColIndex === -1) {
+      return false;
+    }
+
+    // Find row index by fmKey (use normalizeFmKey for consistent comparison)
+    let rowIndexToDelete = -1;
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const rowFmKeyRaw = (row?.[fmKeyColIndex] || "").trim();
+      const rowFmKeyNormalized = normalizeFmKey(rowFmKeyRaw);
+      if (rowFmKeyNormalized === normalizedFmKey) {
+        rowIndexToDelete = i + 1; // +1 because Sheets is 1-indexed
+        break;
+      }
+    }
+
+    if (rowIndexToDelete === -1) {
+      return false; // Template not found
+    }
+
+    // Get sheet ID for deletion
+    const sheetId = await getSheetId(sheets, spreadsheetId, sheetName);
+
+    // Delete the row
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            deleteDimension: {
+              range: {
+                sheetId,
+                dimension: "ROWS",
+                startIndex: rowIndexToDelete - 1, // 0-indexed
+                endIndex: rowIndexToDelete,
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    console.log(`[Templates] Deleted template for fmKey: ${normalizedFmKey}`);
+    return true;
+  } catch (error) {
+    console.error(`[Templates] Error deleting template:`, error);
+    throw error;
+  }
+}
+
