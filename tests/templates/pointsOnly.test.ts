@@ -83,8 +83,11 @@ describe("Templates: Points-only enforcement", () => {
       try {
         const content = readFileSync(fullPath, "utf-8");
         
-        // Check for validatePdfPoints call
-        const hasValidation = /validatePdfPoints/.test(content);
+        // Check for domain layer validation (validateTemplateRegion) or legacy validatePdfPoints
+        // Domain layer is preferred, but legacy is acceptable during migration
+        const hasDomainValidation = /validateTemplateRegion/.test(content);
+        const hasLegacyValidation = /validatePdfPoints/.test(content);
+        const hasValidation = hasDomainValidation || hasLegacyValidation;
         
         expect(hasValidation).toBe(true);
       } catch (error) {

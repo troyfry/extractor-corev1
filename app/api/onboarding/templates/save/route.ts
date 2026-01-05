@@ -32,59 +32,37 @@ export async function POST(request: Request) {
 
     const body = await request.json();
     
-    // Reject any payload containing percentage fields
-    if (body.xPct !== undefined || body.yPct !== undefined || 
-        body.wPct !== undefined || body.hPct !== undefined) {
+    // Use domain layer for region validation
+    const { validateTemplateRegion, normalizeTemplateRegion, validatePdfForTemplateCapture } = await import("@/lib/templates");
+    
+    // Validate region using domain layer
+    let normalizedRegion;
+    try {
+      validateTemplateRegion(body);
+      normalizedRegion = normalizeTemplateRegion(body);
+    } catch (validationError) {
+      const errorMessage = validationError instanceof Error ? validationError.message : "Invalid template region";
       return NextResponse.json(
         { 
-          error: "Percentage fields (xPct, yPct, wPct, hPct) are not allowed. Use PDF points (xPt, yPt, wPt, hPt, pageWidthPt, pageHeightPt) instead.",
-          reason: "PERCENTAGE_FIELDS_REJECTED"
+          error: errorMessage,
+          reason: validationError instanceof Error && errorMessage.includes("Percentage") 
+            ? "PERCENTAGE_FIELDS_REJECTED" 
+            : "INVALID_TEMPLATE_REGION"
         },
         { status: 400 }
       );
     }
-    
-    // PDF_POINTS only: require points directly (computed client-side using viewport conversion)
-    const hasPoints = body.xPt !== undefined && body.yPt !== undefined && 
-                     body.wPt !== undefined && body.hPt !== undefined &&
-                     body.pageWidthPt !== undefined && body.pageHeightPt !== undefined;
-    
-    if (!hasPoints) {
-      return NextResponse.json(
-        { error: "PDF_POINTS format required: xPt, yPt, wPt, hPt, pageWidthPt, and pageHeightPt are required" },
-        { status: 400 }
-      );
-    }
-    
-    let fmKey: string;
-    let page: number;
-    let xPt: number;
-    let yPt: number;
-    let wPt: number;
-    let hPt: number;
-    let pageWidthPt: number;
-    let pageHeightPt: number;
-    let templateId: string | undefined;
-    let dpi: number | undefined;
-    let rectPx: { x: number; y: number; w: number; h: number } | undefined;
-    let renderWidthPx: number | undefined;
-    let renderHeightPx: number | undefined;
 
-    // PDF_POINTS format - points are computed client-side using viewport conversion
-    fmKey = body.fmKey;
-    page = body.page;
-    xPt = body.xPt;
-    yPt = body.yPt;
-    wPt = body.wPt;
-    hPt = body.hPt;
-    pageWidthPt = body.pageWidthPt;
-    pageHeightPt = body.pageHeightPt;
-    templateId = body.templateId;
-    dpi = body.dpi;
-    // Optional: rectPx for validation/debugging
-    rectPx = body.rectPx;
-    renderWidthPx = body.renderWidthPx;
-    renderHeightPx = body.renderHeightPx;
+    // Extract fields from normalized region
+    const { xPt, yPt, wPt, hPt, pageWidthPt, pageHeightPt } = normalizedRegion;
+    
+    // Extract other fields
+    const fmKey = body.fmKey;
+    const page = body.page;
+    const templateId = body.templateId;
+    const dpi = body.dpi;
+    const pdfBufferBase64 = body.pdfBuffer; // Optional: PDF buffer for raster detection
+    const originalFilename = body.originalFilename || body.filename; // Optional: filename for validation
 
     // Validate required fields
     if (!fmKey || typeof fmKey !== "string" || !fmKey.trim()) {
@@ -137,35 +115,43 @@ export async function POST(request: Request) {
       normalizedFmKey,
     });
     
-    // Points are already computed client-side using viewport.convertToPdfPoint()
-    // Validate they're finite and in correct x,y,w,h order
-    console.log(`[onboarding/templates/save] Received points from client:`, {
-      xPt,
-      yPt,
-      wPt,
-      hPt,
-      pageWidthPt,
-      pageHeightPt,
-    });
-    
-    // Server-side validation: Use centralized validatePdfPoints function
+    // ⚠️ SERVER-SIDE VALIDATION: Block signed/scan PDFs by filename (even if no buffer provided)
+    // This prevents bypassing client-side checks
     try {
-      const { validatePdfPoints } = await import("@/lib/domain/coordinates/pdfPoints");
-      validatePdfPoints(
-        { xPt, yPt, wPt, hPt },
-        { width: pageWidthPt, height: pageHeightPt },
-        "template"
-      );
+      const allowRasterOverride = body.allowRasterOverride === true; // Debug flag from client
+      
+      // Step 1: Validate filename if provided (always check, even without buffer)
+      if (originalFilename && typeof originalFilename === "string") {
+        await validatePdfForTemplateCapture(undefined, { 
+          filename: originalFilename,
+          allowRasterOverride 
+        });
+      }
+      
+      // Step 2: Validate PDF buffer if provided (raster detection)
+      if (pdfBufferBase64) {
+        const pdfBuffer = Buffer.from(pdfBufferBase64, "base64");
+        await validatePdfForTemplateCapture(pdfBuffer, { 
+          filename: originalFilename,
+          allowRasterOverride 
+        });
+      }
     } catch (validationError) {
+      const errorMessage = validationError instanceof Error ? validationError.message : "PDF validation failed";
+      const reason = errorMessage.includes("Signed scans") 
+        ? "SIGNED_PDF_REJECTED" 
+        : "RASTER_ONLY_PDF_REJECTED";
+      
       return NextResponse.json(
-        { 
-          error: validationError instanceof Error ? validationError.message : "Invalid PDF points",
-          reason: "INVALID_PDF_POINTS"
+        {
+          error: errorMessage,
+          reason
         },
         { status: 400 }
       );
     }
 
+    // Use normalized region from domain layer (already rounded)
     const templateData: {
       userId: string;
       fmKey: string;
@@ -187,14 +173,13 @@ export async function POST(request: Request) {
       dpi: sanitizedDpi,
       // PDF points (source of truth) - saved in explicit x,y,w,h order to named columns
       coordSystem: "PDF_POINTS",
-      // Points rounded to 2 decimals (minimal rounding for accuracy)
-      pageWidthPt: Math.round(pageWidthPt * 100) / 100,
-      pageHeightPt: Math.round(pageHeightPt * 100) / 100,
-      // Explicit x,y,w,h order - saved to named columns (xPt, yPt, wPt, hPt)
-      xPt: Math.round(xPt * 100) / 100,
-      yPt: Math.round(yPt * 100) / 100,
-      wPt: Math.round(wPt * 100) / 100,
-      hPt: Math.round(hPt * 100) / 100,
+      // Use normalized region values (already rounded to 2 decimals)
+      pageWidthPt: normalizedRegion.pageWidthPt,
+      pageHeightPt: normalizedRegion.pageHeightPt,
+      xPt: normalizedRegion.xPt,
+      yPt: normalizedRegion.yPt,
+      wPt: normalizedRegion.wPt,
+      hPt: normalizedRegion.hPt,
     };
     
     console.log(`[onboarding/templates/save] Computed points before saving (x,y,w,h order):`, {

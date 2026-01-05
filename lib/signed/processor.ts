@@ -16,7 +16,7 @@
 import { getTemplateConfigForFmKey, type TemplateConfig } from "@/lib/workOrders/templateConfig";
 import { callSignedOcrService, type SignedOcrResult } from "@/lib/workOrders/signedOcr";
 import { appendSignedNeedsReviewRow, type SignedNeedsReviewRecord } from "@/lib/workOrders/signedSheets";
-import { writeWorkOrderRecord, findWorkOrderRecordByJobId, updateJobWithSignedInfoByWorkOrderNumber, type WorkOrderRecord } from "@/lib/google/sheets";
+import { writeWorkOrderRecord, findWorkOrderRecordByJobId, updateJobWithSignedInfoByWorkOrderNumber, createSheetsClient, type WorkOrderRecord } from "@/lib/google/sheets";
 import { generateJobId } from "@/lib/workOrders/sheetsIngestion";
 import { uploadPdfToDrive, getOrCreateFolder } from "@/lib/google/drive";
 import { uploadSnippetImageToDrive } from "@/lib/drive-snippets";
@@ -49,13 +49,16 @@ export interface ProcessSignedPdfParams {
 
 export interface ProcessSignedPdfResult {
   workOrderNumber: string | null;
+  woNumber: string | null; // Alias for workOrderNumber (standardized field name)
   confidence: number;
   confidenceLabel: "high" | "medium" | "low";
   snippetImageUrl?: string | null;
   snippetDriveUrl?: string | null;
+  snippetUrl?: string | null; // Standardized: prefers snippetDriveUrl, falls back to snippetImageUrl
   signedPdfUrl?: string | null;
   normalized?: boolean | null;
   needsReview: boolean;
+  needsReviewReason?: string | null; // Reason why review is needed (only when needsReview === true)
   sheetRowId?: string | null;
   debug?: {
     templateId?: string;
@@ -172,73 +175,159 @@ export async function processSignedPdfUnified(
   let workOrderNumber: string | null = ocrResult.woNumber;
   let needsReview: boolean;
 
-  // If override provided, use it and skip review
+  // If override provided, use it
   if (woNumberOverride) {
     workOrderNumber = woNumberOverride.trim();
-    needsReview = false;
+  }
+
+  // Check if work order exists in Sheet1 or Work_Orders before deciding
+  let workOrderExists = false;
+  if (workOrderNumber) {
+    const jobId = generateJobId(null, workOrderNumber);
+    
+    // Check Work_Orders sheet
+    const existingWorkOrder = await findWorkOrderRecordByJobId(
+      accessToken,
+      spreadsheetId,
+      WORK_ORDERS_SHEET_NAME,
+      jobId
+    );
+    
+    if (existingWorkOrder) {
+      workOrderExists = true;
+    } else {
+      // Check Sheet1 by wo_number
+      try {
+        // Use a lightweight check: try to find the row by wo_number
+        const sheets = createSheetsClient(accessToken);
+        const allDataResponse = await sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: `${MAIN_SHEET_NAME}!A:Z`, // Get first 26 columns
+        });
+        
+        const rows = allDataResponse.data.values || [];
+        if (rows.length > 0) {
+          const headers = rows[0] as string[];
+          const headersLower = headers.map((h) => h.toLowerCase().trim());
+          const woColIndex = headersLower.indexOf("wo_number");
+          
+          if (woColIndex !== -1) {
+            const normalizedTarget = workOrderNumber.trim();
+            for (let i = 1; i < rows.length; i++) {
+              const row = rows[i];
+              const cellValue = (row?.[woColIndex] || "").trim();
+              if (cellValue && cellValue === normalizedTarget) {
+                workOrderExists = true;
+                break;
+              }
+            }
+          }
+        }
+      } catch (error) {
+        // Non-fatal: if we can't check Sheet1, assume it doesn't exist
+        console.warn("[Signed Processor] Could not check Sheet1 for work order existence:", error);
+      }
+    }
+  }
+
+  // Decide needsReview:
+  // - If no work order number OR low confidence → needs review
+  // - If work order number but work order doesn't exist in sheets → needs review (original work order not found)
+  // - If work order exists and (high/medium confidence OR override) → no review needed
+  if (!workOrderNumber || ocrResult.confidenceLabel === "low") {
+    needsReview = true;
+  } else if (!workOrderExists) {
+    needsReview = true; // Original work order not found
   } else {
-    // Decide based on OCR result
-    // High/medium confidence with work order number = no review needed
-    // Low confidence or no work order number = needs review
-    needsReview = !workOrderNumber || ocrResult.confidenceLabel === "low";
+    // Work order exists and we have a valid work order number
+    needsReview = false;
   }
 
   // Log before sheets write
   console.log("[Signed Processor] Writing to sheets:", {
     needsReview,
     workOrderNumber,
+    workOrderExists,
+    confidenceLabel: ocrResult.confidenceLabel,
   });
 
   // Step 5: Write to Sheets
-  // Upload PDF to Drive first
-  const signedFolderId = await getOrCreateFolder(accessToken, SIGNED_DRIVE_FOLDER_NAME);
-  const signedPdfUpload = await uploadPdfToDrive(
-    accessToken,
-    pdfBuffer,
-    originalFilename,
-    signedFolderId
-  );
-  const signedPdfUrl = signedPdfUpload.webViewLink || signedPdfUpload.webContentLink;
-
-  // Upload snippet image if available (OCR service returns data URL with base64)
+  // Only upload PDF to Drive if work order exists (signed PDFs should only be attached to existing work orders)
+  let signedPdfUrl: string | null = null;
   let snippetDriveUrl: string | null = null;
-  if (ocrResult.snippetImageUrl) {
-    try {
-      // Extract base64 from data URL (format: "data:image/png;base64,<base64>")
-      const [, base64Part] = ocrResult.snippetImageUrl.split(",", 2);
-      if (base64Part) {
-        const pngBuffer = Buffer.from(base64Part, "base64");
-        const fileNameParts = [
-          "snippet",
-          normalizedFmKey || "unknown",
-          workOrderNumber || "no-wo",
-          Date.now().toString(),
-        ];
-        const fileName = fileNameParts.join("-") + ".png";
+  
+  if (!needsReview && workOrderExists) {
+    // Upload PDF to Drive only if work order exists
+    const signedFolderId = await getOrCreateFolder(accessToken, SIGNED_DRIVE_FOLDER_NAME);
+    const signedPdfUpload = await uploadPdfToDrive(
+      accessToken,
+      pdfBuffer,
+      originalFilename,
+      signedFolderId
+    );
+    signedPdfUrl = signedPdfUpload.webViewLink || signedPdfUpload.webContentLink;
 
-        snippetDriveUrl = await uploadSnippetImageToDrive({
-          accessToken,
-          fileName,
-          pngBuffer,
-          folderIdOverride: signedFolderId,
-        });
+    // Upload snippet image if available (OCR service returns data URL with base64)
+    if (ocrResult.snippetImageUrl) {
+      try {
+        // Extract base64 from data URL (format: "data:image/png;base64,<base64>")
+        const [, base64Part] = ocrResult.snippetImageUrl.split(",", 2);
+        if (base64Part) {
+          const pngBuffer = Buffer.from(base64Part, "base64");
+          const fileNameParts = [
+            "snippet",
+            normalizedFmKey || "unknown",
+            workOrderNumber || "no-wo",
+            Date.now().toString(),
+          ];
+          const fileName = fileNameParts.join("-") + ".png";
+
+          snippetDriveUrl = await uploadSnippetImageToDrive({
+            accessToken,
+            fileName,
+            pngBuffer,
+            folderIdOverride: signedFolderId,
+          });
+        }
+      } catch (error) {
+        console.warn("[Signed Processor] Failed to upload snippet image:", error);
       }
-    } catch (error) {
-      console.warn("[Signed Processor] Failed to upload snippet image:", error);
     }
   }
 
   let sheetRowId: string | null = null;
 
+  // Compute needsReviewReason (standardized field for return value)
+  const needsReviewReason: string | null = needsReview ? (
+    manualReason || (
+      !workOrderNumber ? "No work order number extracted" :
+      !workOrderExists ? "Original work order not found in Sheet1 or Work_Orders" :
+      ocrResult.confidenceLabel === "low" ? "Low confidence" :
+      "Low confidence or no work order number extracted"
+    )
+  ) : null;
+
   if (needsReview) {
     // Write to Needs Review sheet
+    // Determine confidence: if work order doesn't exist, mark as "blocked"
+    // Otherwise, use OCR confidence (quality only)
+    let reviewConfidence: "high" | "medium" | "low" | "unknown" | "blocked" | null;
+    if (!workOrderExists && workOrderNumber) {
+      // Work order doesn't exist - this is a blocking issue, not an OCR quality issue
+      reviewConfidence = "blocked";
+    } else {
+      // Use OCR confidence to reflect extraction quality
+      reviewConfidence = ocrResult.confidenceLabel;
+    }
+
     const reviewRecord: SignedNeedsReviewRecord = {
       fmKey: normalizedFmKey,
       signed_pdf_url: signedPdfUrl,
       preview_image_url: snippetDriveUrl,
       raw_text: ocrResult.rawText,
-      confidence: ocrResult.confidenceLabel,
-      reason: manualReason || (needsReview ? "Low confidence or no work order number extracted" : null),
+      confidence: reviewConfidence, // "blocked" if work order doesn't exist, otherwise OCR confidence
+      ocr_confidence_raw: ocrResult.confidenceRaw, // Always store OCR quality separately
+      reason: needsReviewReason, // Use computed reason
       manual_work_order_number: null,
       resolved: null,
       resolved_at: null,
@@ -317,16 +406,22 @@ export async function processSignedPdfUnified(
     }
   }
 
-  // Step 6: Return result
+  // Step 6: Return standardized result
+  // snippetUrl: prefer snippetDriveUrl (uploaded to Drive), fall back to snippetImageUrl (data URL from OCR)
+  const snippetUrl = snippetDriveUrl || ocrResult.snippetImageUrl || null;
+
   return {
     workOrderNumber,
+    woNumber: workOrderNumber, // Standardized alias
     confidence: ocrResult.confidenceRaw,
     confidenceLabel: ocrResult.confidenceLabel,
     snippetImageUrl: ocrResult.snippetImageUrl,
     snippetDriveUrl,
+    snippetUrl, // Standardized: prefers snippetDriveUrl, falls back to snippetImageUrl
     signedPdfUrl,
     normalized: null, // Python service normalization status not exposed in SignedOcrResult yet
     needsReview,
+    needsReviewReason, // Standardized: reason why review is needed (only when needsReview === true)
     sheetRowId,
     debug: {
       templateId: templateConfig.templateId,

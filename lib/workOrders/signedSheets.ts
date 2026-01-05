@@ -50,7 +50,7 @@ export type SignedNeedsReviewRecord = {
   signed_pdf_url: string | null;
   preview_image_url: string | null;
   raw_text: string | null;
-  confidence: "high" | "medium" | "low" | "unknown" | null;
+  confidence: "high" | "medium" | "low" | "unknown" | "blocked" | null;
   reason: string | null;
   manual_work_order_number: string | null;
   resolved: string | null;

@@ -5,9 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { 
   cssPixelsToPdfPoints, 
   pdfPointsToCssPixels, 
-  validatePdfPoints,
   assertPdfCropPointsValid,
-  type BoundsPt,
   type PdfCropPoints
 } from "@/lib/domain/coordinates/pdfPoints";
 
@@ -398,79 +396,143 @@ export default function OnboardingTemplatesPage() {
       return;
     }
 
-      setPdfFile(file);
-      setError(null);
-      setSuccess(null);
-      setPreviewImage(null);
-      setImageWidth(0);
-      setImageHeight(0);
-      setCropZone(null);
-      setCoordsPage(null);
-      setSelectedPage(1);
-      setPageCount(1); // Will be updated when we get page count from API
-      setPdfDoc(null);
-      setCurrentViewport(null); // Clear viewport (no longer used)
+  // ⚠️ VALIDATION: Block signed/phone-scan PDFs from template capture
+  // Template capture must use ORIGINAL DIGITAL PDF only
+  // Normalize filename: lowercase, spaces to underscores, remove special chars
+  const fileNameLower = file.name
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-z0-9_\.]/g, "");
+  const signedIndicators = [
+    "signed",
+    "signoff",
+    "sign",
+    "signature",
+    "completed",
+    "final",
+    "executed",
+    "proof",
+    "kent", // Test files often include this
+    "photo_scan",
+    "scan_",
+    "signed_",
+    "scan",
+    "scanned",
+    "phone",
+    "mobile",
+    "camera",
+    "photo",
+    "image",
+    "picture",
+    "screenshot",
+    "capture",
+    "img_",
+    "dsc",
+    "pict",
+  ];
+  
+  const appearsToBeSigned = signedIndicators.some(indicator => 
+    fileNameLower.includes(indicator)
+  );
+  
+  // Debug logging
+  console.log("[Onboarding] Filename check:", {
+    original: file.name,
+    normalized: fileNameLower,
+    appearsToBeSigned,
+    matchedIndicators: signedIndicators.filter(ind => fileNameLower.includes(ind)),
+  });
+    
+  if (appearsToBeSigned) {
+    console.warn("[Onboarding] BLOCKED: Signed/scan PDF detected by filename:", file.name);
+    setError(
+      "Signed scans cannot be used for template capture. " +
+      "Please upload the original digital work order PDF (the PDF file you received from the facility management system, not a phone scan or signed copy)."
+    );
+    setPdfFile(null);
+    setPreviewImage(null);
+    setCropZone(null);
+    // Clear the file input
+    e.target.value = "";
+    return;
+  }
 
+    // ⚠️ RASTER DETECTION: Check if PDF is raster/scan-only (no text layer)
+    // This is a client-side pre-check; server will also validate
     try {
-      // Normalize PDF using Python OCR service before rendering
-      let fileToRender = file;
-      const originalSize = file.size;
+      // Call server endpoint to detect raster-only PDF
+      const formData = new FormData();
+      formData.append("pdf", file);
       
-      console.log("🔧 [NORMALIZATION] Starting PDF normalization before template capture:", {
-        filename: file.name,
-        originalSize,
-        timestamp: new Date().toISOString(),
+      const detectResponse = await fetch("/api/pdf/detect-raster", {
+        method: "POST",
+        body: formData,
       });
       
-      try {
-        const formData = new FormData();
-        formData.append("pdf", file);
-        
-        const normalizeResponse = await fetch("/api/pdf/normalize", {
-          method: "POST",
-          body: formData,
-        });
-        
-        if (normalizeResponse.ok) {
-          const normalizedBlob = await normalizeResponse.blob();
-          if (normalizedBlob.size > 0) {
-            const normalizedSize = normalizedBlob.size;
-            console.log("✅ [NORMALIZATION] PDF NORMALIZED SUCCESSFULLY before template capture:", {
-              filename: file.name,
-              originalSize,
-              normalizedSize,
-              sizeChange: normalizedSize - originalSize,
-              timestamp: new Date().toISOString(),
-            });
-            // Create a new File object from the normalized blob
-            fileToRender = new File([normalizedBlob], file.name, { type: "application/pdf" });
-          } else {
-            console.log("ℹ️ [NORMALIZATION] Normalization returned empty blob, using original PDF:", {
-              filename: file.name,
-              timestamp: new Date().toISOString(),
-            });
-          }
-        } else {
-          const errorText = await normalizeResponse.text().catch(() => "Unknown error");
-          console.log("⚠️ [NORMALIZATION] Normalization endpoint returned error, using original PDF:", {
-            filename: file.name,
-            status: normalizeResponse.status,
-            error: errorText.substring(0, 200),
-            timestamp: new Date().toISOString(),
-          });
-        }
-      } catch (normalizeError) {
-        // If normalization fails, continue with original PDF
-        console.warn("⚠️ [NORMALIZATION] PDF normalization failed, using original PDF:", {
-          filename: file.name,
-          error: normalizeError instanceof Error ? normalizeError.message : String(normalizeError),
-          timestamp: new Date().toISOString(),
-        });
+      if (!detectResponse.ok) {
+        // If detection API fails, show error and block upload
+        const errorData = await detectResponse.json().catch(() => ({ error: "Failed to validate PDF" }));
+        setError(
+          `PDF validation failed: ${errorData.error || "Unknown error"}. ` +
+          "Please ensure you're uploading the original digital work order PDF."
+        );
+        setPdfFile(null);
+        setPreviewImage(null);
+        setCropZone(null);
+        e.target.value = "";
+        return;
       }
+      
+      const detectData = await detectResponse.json();
+      if (detectData.isRasterOnly) {
+        const allowOverride = new URLSearchParams(window.location.search).get("allowRaster") === "true";
+        if (!allowOverride) {
+          setError(
+            "Template capture requires a digital PDF with text content. " +
+            "This PDF appears to be raster/scan-only (no text layer). " +
+            "Please use the original digital work order PDF from your facility management system."
+          );
+          setPdfFile(null);
+          setPreviewImage(null);
+          setCropZone(null);
+          e.target.value = "";
+          return;
+        } else {
+          console.warn("[Onboarding] Raster-only PDF allowed due to override flag");
+        }
+      }
+    } catch (detectError) {
+      // If detection fails, block upload to be safe
+      console.error("[Onboarding] Raster detection failed:", detectError);
+      setError(
+        "Failed to validate PDF. Please ensure you're uploading the original digital work order PDF (not a scan or signed copy)."
+      );
+      setPdfFile(null);
+      setPreviewImage(null);
+      setCropZone(null);
+      e.target.value = "";
+      return;
+    }
 
-      // Render first page using MuPDF API with normalized PDF
-      // TODO: Get page count from API or first render response
-      await renderPage(fileToRender, 1);
+    setPdfFile(file);
+    setError(null);
+    setSuccess(null);
+    setPreviewImage(null);
+    setImageWidth(0);
+    setImageHeight(0);
+    setCropZone(null);
+    setCoordsPage(null);
+    setSelectedPage(1);
+    setPageCount(1); // Will be updated when we get page count from API
+    setPdfDoc(null);
+    setCurrentViewport(null); // Clear viewport (no longer used)
+
+    try {
+      // ⚠️ IMPORTANT: Do NOT normalize PDFs for template capture
+      // Template capture must use the ORIGINAL digital PDF coordinates
+      // Normalization is only for signed PDF processing (OCR/matching)
+      // Render first page using PDF.js (client-side, no MuPDF dependency)
+      await renderPageWithPdfJs(file, 1);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Failed to render PDF";
       console.error("[PDF Render] Error:", err);
@@ -542,74 +604,69 @@ export default function OnboardingTemplatesPage() {
     });
   }
 
-  // Render PDF page using MuPDF API (server-side rendering)
-  async function renderPage(pdfFile: File, pageNum: number) {
+  async function renderPageWithPdfJs(file: File, pageNum: number) {
+    setIsRenderingPdf(true);
+    setError(null);
+
     try {
-      setIsRenderingPdf(true);
-      setError(null);
+      const pdfjs = await initPdfJsLib();
+      const buf = await file.arrayBuffer();
 
-      // Render via API endpoint (uses MuPDF server-side)
-      const formData = new FormData();
-      formData.append("pdf", pdfFile);
-      formData.append("page", String(pageNum));
+      const loadingTask = pdfjs.getDocument({ data: buf });
+      const doc = await loadingTask.promise;
+      setPageCount(doc.numPages);
+      setPdfDoc(doc);
 
-      const response = await fetch("/api/pdf/render-page", {
-        method: "POST",
-        body: formData,
-      });
+      const page = await doc.getPage(pageNum);
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: "Failed to render PDF page" }));
-        throw new Error(errorData.error || "Failed to render PDF page");
-      }
+      // 1.0 scale gives you "PDF points-ish" viewport units (1/72 inch)
+      // but you can bump scale for clearer preview
+      const scale = 2;
+      const viewport = page.getViewport({ scale });
 
-      const data = await response.json();
+      // Canvas render
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Canvas context not available");
 
-      // Set preview image from API response
-      setPreviewImage(data.pngDataUrl);
-      
-      // Reset image loaded state when new image is set
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+
+      await page.render({ canvasContext: ctx, viewport }).promise;
+
+      // Preview image
+      const pngDataUrl = canvas.toDataURL("image/png");
+
+      setPreviewImage(pngDataUrl);
       setImageLoaded(false);
-      
-      // Store rendered image dimensions (for coordinate conversion)
-      setImageWidth(data.widthPx);
-      setImageHeight(data.heightPx);
-      
-      // Store PDF page dimensions in points (from MuPDF - source of truth)
-      setPageWidthPt(data.pageWidthPt);
-      setPageHeightPt(data.pageHeightPt);
-      
-      // Store bounds for coordinate normalization (MuPDF bounds may not start at 0,0)
-      setBoundsPt(data.boundsPt);
-      // Only log if bounds don't start at 0,0 (to reduce console spam)
-      if (data.boundsPt && (data.boundsPt.x0 !== 0 || data.boundsPt.y0 !== 0)) {
-        console.log("[renderPage] Stored boundsPt (non-zero offset):", data.boundsPt);
-      }
-      
+      setImageWidth(canvas.width);
+      setImageHeight(canvas.height);
+
+      // PDF page size in points:
+      // viewport.width/height at scale=1 equals points (PDF units) typically.
+      const ptViewport = page.getViewport({ scale: 1 });
+      setPageWidthPt(ptViewport.width);
+      setPageHeightPt(ptViewport.height);
+
+      // boundsPt: PDF.js assumes origin at top-left of viewport for rendering.
+      // If your conversion code needs boundsPt, set a simple default:
+      setBoundsPt({ x0: 0, y0: 0, x1: ptViewport.width, y1: ptViewport.height });
+
       // Clear viewport (no longer needed - we use proportional math)
       setCurrentViewport(null);
-      
-      console.log("[Onboarding] Rendered page via MuPDF API:", {
-        renderedSize: {
-          widthPx: data.widthPx,
-          heightPx: data.heightPx,
-        },
-        boundsPt: data.boundsPt,
-        pdfPageSize: {
-          pageWidthPt: data.pageWidthPt,
-          pageHeightPt: data.pageHeightPt,
-        },
+
+      console.log("[Onboarding] Rendered via PDF.js:", {
+        pageNum,
+        canvas: { w: canvas.width, h: canvas.height },
+        pt: { w: ptViewport.width, h: ptViewport.height },
       });
-      
-      // If we have a saved template for this page, the useEffect will convert it to pixels
-      // Otherwise, cropZone will remain null for user to draw
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Failed to render PDF page";
-      console.error("[PDF Render] Error:", err);
-      setError(`Failed to render PDF page ${pageNum}: ${errorMessage}`);
+    } catch (e: any) {
+      console.error(e);
+      setError(e?.message || "Failed to render PDF with PDF.js");
       setPreviewImage(null);
       setPageWidthPt(0);
       setPageHeightPt(0);
+      setBoundsPt(null);
     } finally {
       setIsRenderingPdf(false);
     }
@@ -619,7 +676,7 @@ export default function OnboardingTemplatesPage() {
     if (!_pdfFile || newPage < 1 || newPage > pageCount) return;
     
     setSelectedPage(newPage);
-    await renderPage(_pdfFile, newPage);
+    await renderPageWithPdfJs(_pdfFile, newPage);
   }
 
   function handlePointerUp(e: React.PointerEvent<HTMLDivElement>) {
@@ -894,8 +951,8 @@ export default function OnboardingTemplatesPage() {
     // Read displayedRect from imgRef.current.getBoundingClientRect()
     const displayedRect = imgRef.current.getBoundingClientRect();
     
-    // Use renderedWidthPx/renderedHeightPx from /api/pdf/render-page API response
-    // These are stored in imageWidth/imageHeight state (set in renderPage function)
+    // Use renderedWidthPx/renderedHeightPx from PDF.js canvas rendering
+    // These are stored in imageWidth/imageHeight state (set in renderPageWithPdfJs function)
     const renderedWidthPx = imageWidth;
     const renderedHeightPx = imageHeight;
     
@@ -988,6 +1045,8 @@ export default function OnboardingTemplatesPage() {
     const finalPayload = {
       fmKey: selectedFmKey,
       page: coordsPage, // Use coordsPage, not selectedPage
+      // Include filename for server-side validation (blocks signed/scan PDFs)
+      originalFilename: _pdfFile?.name || undefined,
       // PDF points in x,y,w,h order (top-left origin) - saved to named columns
       // GOLDEN RULE: These come from proportional math, NOT from DPI/scale/viewport
       xPt,
@@ -1049,10 +1108,17 @@ export default function OnboardingTemplatesPage() {
     <div className="min-h-screen bg-slate-900 text-slate-50 p-8">
       <div className="max-w-6xl mx-auto">
         <h1 className="text-3xl font-semibold mb-4">Template Crop Zones</h1>
-        <p className="text-slate-300 mb-8">
-          Upload a sample work order PDF and define where the Work Order Number is located for each FM template.
+        <p className="text-slate-300 mb-4">
+          Upload the <strong className="text-slate-200">original digital work order PDF</strong> from your facility management system and define where the Work Order Number is located for each FM template.
           This allows the OCR system to extract work order numbers accurately.
         </p>
+        <div className="mb-8 p-4 bg-blue-900/20 border border-blue-700 rounded-lg text-blue-200">
+          <p className="font-medium mb-1">⚠️ Important: Use Original Digital PDF Only</p>
+          <p className="text-sm">
+            Template capture requires the <strong>original digital PDF</strong> (the file you received from the facility management system). 
+            Do not use signed scans, phone photos, or camera captures. These will be rejected automatically.
+          </p>
+        </div>
 
         <div className="space-y-6">
           {/* FM Profile Selection */}
@@ -1085,7 +1151,7 @@ export default function OnboardingTemplatesPage() {
           {/* PDF Upload */}
           <div>
             <label htmlFor="pdfFile" className="block text-sm font-medium mb-2">
-              Sample PDF <span className="text-red-400">*</span>
+              Original Digital Work Order PDF <span className="text-red-400">*</span>
             </label>
             <input
               id="pdfFile"
@@ -1096,7 +1162,10 @@ export default function OnboardingTemplatesPage() {
               className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-500 disabled:opacity-50 disabled:cursor-not-allowed"
             />
             <p className="mt-2 text-sm text-slate-400">
-              Upload a sample work order PDF (preferably a signed work order)
+              Upload the <strong className="text-slate-200">original digital work order PDF</strong> from your facility management system.
+            </p>
+            <p className="mt-1 text-sm text-yellow-400">
+              ⚠️ <strong>Do not use signed scans or phone photos.</strong> Template capture requires the original digital PDF to ensure accurate coordinate mapping.
             </p>
             {isRenderingPdf && (
               <p className="mt-2 text-sm text-slate-300">Rendering PDF preview...</p>

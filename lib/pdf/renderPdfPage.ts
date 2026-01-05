@@ -14,29 +14,50 @@ const MAX_RENDERED_WIDTH = 1400; // pixels
 
 // Lazy-init MuPDF WASM module and cache the initialized instance
 let mupdfInstancePromise: Promise<any> | null = null;
+// Track if MuPDF is unavailable (to avoid repeated import attempts)
+let mupdfUnavailable = false;
 
 async function getMupdfInstance() {
+  // If we know MuPDF is unavailable, don't try to load it
+  if (mupdfUnavailable) {
+    throw new Error("MuPDF module is not available");
+  }
+
   if (!mupdfInstancePromise) {
     mupdfInstancePromise = (async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      // @ts-expect-error - mupdf module exists at runtime but has no type declarations
-      const mupdfModule: any = await import("mupdf");
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // @ts-expect-error - mupdf module exists at runtime but has no type declarations
+        const mupdfModule: any = await import("mupdf");
 
-      // Most WASM bundles export an async init function as default.
-      // If default is a function, call it (and await if it's async); otherwise, if it's already an object, use it.
-      const init = mupdfModule.default || mupdfModule;
+        // Most WASM bundles export an async init function as default.
+        // If default is a function, call it (and await if it's async); otherwise, if it's already an object, use it.
+        const init = mupdfModule.default || mupdfModule;
 
-      if (typeof init === "function") {
-        const result = init();
-        // Handle both sync and async init functions
-        return result instanceof Promise ? await result : result;
-      } else {
-        return init;
+        if (typeof init === "function") {
+          const result = init();
+          // Handle both sync and async init functions
+          return result instanceof Promise ? await result : result;
+        } else {
+          return init;
+        }
+      } catch (error) {
+        // Mark MuPDF as unavailable to avoid future import attempts
+        mupdfUnavailable = true;
+        mupdfInstancePromise = null; // Clear the promise so we don't retry
+        throw error;
       }
     })();
   }
 
-  return mupdfInstancePromise;
+  try {
+    return await mupdfInstancePromise;
+  } catch (error) {
+    // If import failed, mark as unavailable
+    mupdfUnavailable = true;
+    mupdfInstancePromise = null;
+    throw error;
+  }
 }
 
 /**
@@ -72,7 +93,19 @@ export async function renderPdfPageToPng(
 
   try {
     // Get the initialized MuPDF instance (cached, initialized once)
-    const mupdf = await getMupdfInstance();
+    let mupdf: any;
+    try {
+      mupdf = await getMupdfInstance();
+    } catch (mupdfError) {
+      // MuPDF module not available - provide clear error message
+      mupdfUnavailable = true;
+      const errorMessage = mupdfError instanceof Error ? mupdfError.message : String(mupdfError);
+      throw new Error(
+        `PDF rendering is not available: MuPDF module could not be loaded. ` +
+        `This feature requires the MuPDF WASM module to be installed. ` +
+        `Error: ${errorMessage}`
+      );
+    }
     
     // Log module structure for debugging
     console.log("[renderPdfPage] mupdf module keys:", Object.keys(mupdf).slice(0, 10));

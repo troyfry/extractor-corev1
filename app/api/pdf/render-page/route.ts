@@ -11,7 +11,6 @@
 
 import { NextResponse } from "next/server";
 import { renderPdfPageToPng } from "@/lib/pdf/renderPdfPage";
-import { normalizePdfBuffer } from "@/lib/pdf/normalizePdf";
 
 export const runtime = "nodejs";
 
@@ -21,6 +20,7 @@ export async function POST(req: Request) {
 
     const file = form.get("pdf");
     const pageRaw = form.get("page");
+    const skipNormalization = form.get("skipNormalization") === "true"; // For template capture
 
     if (!(file instanceof File)) {
       return NextResponse.json({ error: "Missing file" }, { status: 400 });
@@ -31,25 +31,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid page" }, { status: 400 });
     }
 
-    const originalBuf = Buffer.from(await file.arrayBuffer());
+    const pdfBuffer = Buffer.from(await file.arrayBuffer());
     
-    // Normalize PDF before rendering (fixes coordinate systems and bounds)
-    console.log("[PDF Render API] Normalizing PDF before rendering:", {
-      filename: file.name,
-      originalSize: originalBuf.length,
-    });
-    
-    const normalizedBuf = await normalizePdfBuffer(originalBuf);
-    
-    if (normalizedBuf !== originalBuf) {
-      console.log("[PDF Render API] PDF was normalized:", {
+    // ⚠️ DO NOT normalize PDFs for template capture - template capture needs original coordinates
+    // Normalization is only for signed PDF processing (OCR/matching)
+    // Template capture must use the original PDF to ensure accurate coordinate mapping
+    if (skipNormalization) {
+      console.log("[PDF Render API] Skipping normalization (template capture):", {
         filename: file.name,
-        originalSize: originalBuf.length,
-        normalizedSize: normalizedBuf.length,
+        size: pdfBuffer.length,
       });
     }
 
-    const out = await renderPdfPageToPng(normalizedBuf, page);
+    const out = await renderPdfPageToPng(pdfBuffer, page);
 
     // Return geometry matching the rendered image
     // - boundsPt: PDF box bounds (CropBox if available, else MediaBox)
@@ -66,6 +60,23 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error("[PDF Render API] Error:", error);
     const errorMessage = error instanceof Error ? error.message : "Failed to render PDF page";
+    
+    // Check if it's a MuPDF module error and provide helpful guidance
+    const isMupdfError = errorMessage.includes("mupdf") || 
+                        errorMessage.includes("MuPDF") ||
+                        errorMessage.includes("Cannot find module 'mupdf'");
+    
+    if (isMupdfError) {
+      return NextResponse.json(
+        { 
+          error: "PDF rendering requires the MuPDF module to be installed. " +
+                 "Please install it by running: pnpm add mupdf " +
+                 "or contact your administrator to install the required dependencies."
+        },
+        { status: 503 } // Service Unavailable - dependency missing
+      );
+    }
+    
     return NextResponse.json(
       { error: errorMessage },
       { status: 500 }

@@ -43,6 +43,7 @@ vi.mock("@/lib/google/sheets", () => ({
   writeWorkOrderRecord: vi.fn(),
   findWorkOrderRecordByJobId: vi.fn(),
   updateJobWithSignedInfoByWorkOrderNumber: vi.fn(),
+  createSheetsClient: vi.fn(),
 }));
 
 vi.mock("@/lib/google/drive", () => ({
@@ -116,6 +117,21 @@ describe("processSignedPdfUnified", () => {
     vi.mocked(sheetsIngestion.generateJobId).mockImplementation((issuer, woNumber) => {
       return `job-${woNumber || "unknown"}`;
     });
+    // Mock createSheetsClient for Sheet1 checks
+    vi.mocked(sheets.createSheetsClient).mockReturnValue({
+      spreadsheets: {
+        values: {
+          get: vi.fn().mockResolvedValue({
+            data: {
+              values: [
+                ["wo_number", "status", "fmKey"], // Headers
+                ["1234567", "PENDING", "superclean"], // Sample row
+              ],
+            },
+          }),
+        },
+      },
+    } as any);
   });
 
   describe("Input validation", () => {
@@ -242,13 +258,29 @@ describe("processSignedPdfUnified", () => {
   });
 
   describe("Decision logic", () => {
-    it("should set needsReview=false for high confidence with work order number", async () => {
+    it("should set needsReview=false for high confidence with work order number that exists in Sheet1", async () => {
       vi.mocked(templateConfig.getTemplateConfigForFmKey).mockResolvedValue(mockTemplateConfig);
       vi.mocked(signedOcr.callSignedOcrService).mockResolvedValue({
         ...mockOcrResult,
         confidenceLabel: "high",
         woNumber: "1234567",
       });
+      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null); // Not in Work_Orders
+      // Mock Sheet1 check - work order exists
+      vi.mocked(sheets.createSheetsClient).mockReturnValue({
+        spreadsheets: {
+          values: {
+            get: vi.fn().mockResolvedValue({
+              data: {
+                values: [
+                  ["wo_number", "status", "fmKey"],
+                  ["1234567", "PENDING", "superclean"], // Work order exists
+                ],
+              },
+            }),
+          },
+        },
+      } as any);
       vi.mocked(drive.getOrCreateFolder).mockResolvedValue("mock-folder-id");
       vi.mocked(drive.uploadPdfToDrive).mockResolvedValue({
         fileId: "mock-file-id",
@@ -256,7 +288,6 @@ describe("processSignedPdfUnified", () => {
         webContentLink: "https://drive.google.com/file/d/mock-file-id/view",
       });
       vi.mocked(driveSnippets.uploadSnippetImageToDrive).mockResolvedValue("https://drive.google.com/file/d/snippet-id/view");
-      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
       vi.mocked(sheets.writeWorkOrderRecord).mockResolvedValue();
       vi.mocked(sheets.updateJobWithSignedInfoByWorkOrderNumber).mockResolvedValue(true);
 
@@ -264,15 +295,23 @@ describe("processSignedPdfUnified", () => {
 
       expect(result.needsReview).toBe(false);
       expect(result.workOrderNumber).toBe("1234567");
+      expect(result.signedPdfUrl).toBeTruthy(); // PDF should be uploaded
     });
 
-    it("should set needsReview=false for medium confidence with work order number", async () => {
+    it("should set needsReview=false for medium confidence with work order number that exists in Work_Orders", async () => {
       vi.mocked(templateConfig.getTemplateConfigForFmKey).mockResolvedValue(mockTemplateConfig);
       vi.mocked(signedOcr.callSignedOcrService).mockResolvedValue({
         ...mockOcrResult,
         confidenceLabel: "medium",
         woNumber: "1234567",
       });
+      // Work order exists in Work_Orders sheet
+      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue({
+        jobId: "job-1234567",
+        wo_number: "1234567",
+        fmKey: "superclean",
+        status: "PENDING",
+      } as any);
       vi.mocked(drive.getOrCreateFolder).mockResolvedValue("mock-folder-id");
       vi.mocked(drive.uploadPdfToDrive).mockResolvedValue({
         fileId: "mock-file-id",
@@ -280,96 +319,170 @@ describe("processSignedPdfUnified", () => {
         webContentLink: "https://drive.google.com/file/d/mock-file-id/view",
       });
       vi.mocked(driveSnippets.uploadSnippetImageToDrive).mockResolvedValue("https://drive.google.com/file/d/snippet-id/view");
-      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
       vi.mocked(sheets.writeWorkOrderRecord).mockResolvedValue();
       vi.mocked(sheets.updateJobWithSignedInfoByWorkOrderNumber).mockResolvedValue(true);
 
       const result = await processSignedPdfUnified(baseParams);
 
       expect(result.needsReview).toBe(false);
+      expect(result.signedPdfUrl).toBeTruthy(); // PDF should be uploaded
     });
 
-    it("should set needsReview=true for low confidence", async () => {
+    it("should set needsReview=true for low confidence and not upload PDF", async () => {
       vi.mocked(templateConfig.getTemplateConfigForFmKey).mockResolvedValue(mockTemplateConfig);
       vi.mocked(signedOcr.callSignedOcrService).mockResolvedValue({
         ...mockOcrResult,
         confidenceLabel: "low",
         woNumber: "1234567",
       });
-      vi.mocked(drive.getOrCreateFolder).mockResolvedValue("mock-folder-id");
-      vi.mocked(drive.uploadPdfToDrive).mockResolvedValue({
-        fileId: "mock-file-id",
-        webViewLink: "https://drive.google.com/file/d/mock-file-id/view",
-        webContentLink: "https://drive.google.com/file/d/mock-file-id/view",
-      });
+      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
       vi.mocked(signedSheets.appendSignedNeedsReviewRow).mockResolvedValue();
 
       const result = await processSignedPdfUnified(baseParams);
 
       expect(result.needsReview).toBe(true);
+      expect(result.needsReviewReason).toBe("Low confidence"); // Standardized field
+      expect(result.woNumber).toBe(result.workOrderNumber); // Standardized alias
+      expect(result.signedPdfUrl).toBe(null); // PDF should NOT be uploaded
+      expect(drive.uploadPdfToDrive).not.toHaveBeenCalled();
+      expect(signedSheets.appendSignedNeedsReviewRow).toHaveBeenCalledWith(
+        mockAccessToken,
+        mockSpreadsheetId,
+        expect.objectContaining({
+          reason: "Low confidence",
+          signed_pdf_url: null, // No PDF uploaded
+        })
+      );
     });
 
-    it("should set needsReview=true when no work order number extracted", async () => {
+    it("should set needsReview=true when no work order number extracted and not upload PDF", async () => {
       vi.mocked(templateConfig.getTemplateConfigForFmKey).mockResolvedValue(mockTemplateConfig);
       vi.mocked(signedOcr.callSignedOcrService).mockResolvedValue({
         ...mockOcrResult,
         woNumber: null,
         confidenceLabel: "high",
       });
-      vi.mocked(drive.getOrCreateFolder).mockResolvedValue("mock-folder-id");
-      vi.mocked(drive.uploadPdfToDrive).mockResolvedValue({
-        fileId: "mock-file-id",
-        webViewLink: "https://drive.google.com/file/d/mock-file-id/view",
-        webContentLink: "https://drive.google.com/file/d/mock-file-id/view",
-      });
       vi.mocked(signedSheets.appendSignedNeedsReviewRow).mockResolvedValue();
 
       const result = await processSignedPdfUnified(baseParams);
 
       expect(result.needsReview).toBe(true);
+      expect(result.needsReviewReason).toBe("No work order number extracted"); // Standardized field
+      expect(result.woNumber).toBe(null); // Standardized alias
       expect(result.workOrderNumber).toBe(null);
+      expect(result.signedPdfUrl).toBe(null); // PDF should NOT be uploaded
+      expect(drive.uploadPdfToDrive).not.toHaveBeenCalled();
+      expect(signedSheets.appendSignedNeedsReviewRow).toHaveBeenCalledWith(
+        mockAccessToken,
+        mockSpreadsheetId,
+        expect.objectContaining({
+          confidence: "high", // OCR confidence (quality), not blocked (no WO number to check)
+          ocr_confidence_raw: expect.any(Number), // OCR quality stored separately
+          reason: "No work order number extracted",
+          signed_pdf_url: null,
+        })
+      );
     });
 
-    it("should override work order number and set needsReview=false when woNumberOverride provided", async () => {
+    it("should override work order number but set needsReview=true if work order doesn't exist", async () => {
       const params = { ...baseParams, woNumberOverride: "9999999" };
       vi.mocked(templateConfig.getTemplateConfigForFmKey).mockResolvedValue(mockTemplateConfig);
       vi.mocked(signedOcr.callSignedOcrService).mockResolvedValue({
         ...mockOcrResult,
         woNumber: null,
-        confidenceLabel: "low",
+        confidenceLabel: "high", // Use high confidence so work order existence is the reason
       });
-      vi.mocked(drive.getOrCreateFolder).mockResolvedValue("mock-folder-id");
-      vi.mocked(drive.uploadPdfToDrive).mockResolvedValue({
-        fileId: "mock-file-id",
-        webViewLink: "https://drive.google.com/file/d/mock-file-id/view",
-        webContentLink: "https://drive.google.com/file/d/mock-file-id/view",
-      });
-      vi.mocked(driveSnippets.uploadSnippetImageToDrive).mockResolvedValue("https://drive.google.com/file/d/snippet-id/view");
-      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
-      vi.mocked(sheets.writeWorkOrderRecord).mockResolvedValue();
-      vi.mocked(sheets.updateJobWithSignedInfoByWorkOrderNumber).mockResolvedValue(true);
+      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null); // Not in Work_Orders
+      // Mock Sheet1 check - work order doesn't exist
+      vi.mocked(sheets.createSheetsClient).mockReturnValue({
+        spreadsheets: {
+          values: {
+            get: vi.fn().mockResolvedValue({
+              data: {
+                values: [
+                  ["wo_number", "status", "fmKey"],
+                  // No row with wo_number="9999999"
+                ],
+              },
+            }),
+          },
+        },
+      } as any);
+      vi.mocked(signedSheets.appendSignedNeedsReviewRow).mockResolvedValue();
 
       const result = await processSignedPdfUnified(params);
 
-      expect(result.needsReview).toBe(false);
+      expect(result.needsReview).toBe(true); // Should be true because work order doesn't exist
+      expect(result.needsReviewReason).toBe("Original work order not found in Sheet1 or Work_Orders"); // Standardized field
+      expect(result.woNumber).toBe("9999999"); // Standardized alias
       expect(result.workOrderNumber).toBe("9999999");
+      expect(result.signedPdfUrl).toBe(null); // PDF should NOT be uploaded
+      expect(drive.uploadPdfToDrive).not.toHaveBeenCalled();
+      expect(signedSheets.appendSignedNeedsReviewRow).toHaveBeenCalledWith(
+        mockAccessToken,
+        mockSpreadsheetId,
+        expect.objectContaining({
+          reason: "Original work order not found in Sheet1 or Work_Orders",
+          signed_pdf_url: null,
+        })
+      );
+    });
+
+    it("should set needsReview=true when work order doesn't exist in Sheet1 or Work_Orders", async () => {
+      vi.mocked(templateConfig.getTemplateConfigForFmKey).mockResolvedValue(mockTemplateConfig);
+      vi.mocked(signedOcr.callSignedOcrService).mockResolvedValue({
+        ...mockOcrResult,
+        confidenceLabel: "high",
+        woNumber: "9999999", // Different WO number that doesn't exist
+      });
+      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null); // Not in Work_Orders
+      // Mock Sheet1 check - work order doesn't exist
+      vi.mocked(sheets.createSheetsClient).mockReturnValue({
+        spreadsheets: {
+          values: {
+            get: vi.fn().mockResolvedValue({
+              data: {
+                values: [
+                  ["wo_number", "status", "fmKey"],
+                  ["1234567", "PENDING", "superclean"], // Different WO number
+                ],
+              },
+            }),
+          },
+        },
+      } as any);
+      vi.mocked(signedSheets.appendSignedNeedsReviewRow).mockResolvedValue();
+
+      const result = await processSignedPdfUnified(baseParams);
+
+      expect(result.needsReview).toBe(true);
+      expect(result.needsReviewReason).toBe("Original work order not found in Sheet1 or Work_Orders"); // Standardized field
+      expect(result.woNumber).toBe("9999999"); // Standardized alias
+      expect(result.workOrderNumber).toBe("9999999");
+      expect(result.signedPdfUrl).toBe(null); // PDF should NOT be uploaded
+      expect(drive.uploadPdfToDrive).not.toHaveBeenCalled();
+      expect(signedSheets.appendSignedNeedsReviewRow).toHaveBeenCalledWith(
+        mockAccessToken,
+        mockSpreadsheetId,
+        expect.objectContaining({
+          confidence: "blocked", // Should be "blocked" when work order doesn't exist
+          ocr_confidence_raw: expect.any(Number), // OCR quality stored separately
+          reason: "Original work order not found in Sheet1 or Work_Orders",
+          signed_pdf_url: null,
+        })
+      );
     });
   });
 
   describe("Sheets writing", () => {
-    it("should write to Needs Review sheet when needsReview=true", async () => {
+    it("should write to Needs Review sheet when needsReview=true and not upload PDF", async () => {
       vi.mocked(templateConfig.getTemplateConfigForFmKey).mockResolvedValue(mockTemplateConfig);
       vi.mocked(signedOcr.callSignedOcrService).mockResolvedValue({
         ...mockOcrResult,
         confidenceLabel: "low",
       });
-      vi.mocked(drive.getOrCreateFolder).mockResolvedValue("mock-folder-id");
-      vi.mocked(drive.uploadPdfToDrive).mockResolvedValue({
-        fileId: "mock-file-id",
-        webViewLink: "https://drive.google.com/file/d/mock-file-id/view",
-        webContentLink: "https://drive.google.com/file/d/mock-file-id/view",
-      });
-      vi.mocked(driveSnippets.uploadSnippetImageToDrive).mockResolvedValue("https://drive.google.com/file/d/snippet-id/view");
+      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
+      vi.mocked(signedSheets.appendSignedNeedsReviewRow).mockResolvedValue();
 
       await processSignedPdfUnified(baseParams);
 
@@ -378,16 +491,36 @@ describe("processSignedPdfUnified", () => {
         mockSpreadsheetId,
         expect.objectContaining({
           fmKey: mockFmKey,
-          confidence: "low",
+          confidence: "low", // OCR confidence (quality), not blocked
+          ocr_confidence_raw: expect.any(Number), // OCR quality stored separately
           source: "UPLOAD",
+          signed_pdf_url: null, // No PDF uploaded
+          reason: "Low confidence",
         })
       );
       expect(sheets.writeWorkOrderRecord).not.toHaveBeenCalled();
+      expect(drive.uploadPdfToDrive).not.toHaveBeenCalled();
     });
 
-    it("should write to Work Orders sheet when needsReview=false", async () => {
+    it("should write to Work Orders sheet when needsReview=false and work order exists", async () => {
       vi.mocked(templateConfig.getTemplateConfigForFmKey).mockResolvedValue(mockTemplateConfig);
       vi.mocked(signedOcr.callSignedOcrService).mockResolvedValue(mockOcrResult);
+      // Work order exists in Sheet1
+      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null); // Not in Work_Orders
+      vi.mocked(sheets.createSheetsClient).mockReturnValue({
+        spreadsheets: {
+          values: {
+            get: vi.fn().mockResolvedValue({
+              data: {
+                values: [
+                  ["wo_number", "status", "fmKey"],
+                  ["1234567", "PENDING", "superclean"], // Work order exists
+                ],
+              },
+            }),
+          },
+        },
+      } as any);
       vi.mocked(drive.getOrCreateFolder).mockResolvedValue("mock-folder-id");
       vi.mocked(drive.uploadPdfToDrive).mockResolvedValue({
         fileId: "mock-file-id",
@@ -395,7 +528,6 @@ describe("processSignedPdfUnified", () => {
         webContentLink: "https://drive.google.com/file/d/mock-file-id/view",
       });
       vi.mocked(driveSnippets.uploadSnippetImageToDrive).mockResolvedValue("https://drive.google.com/file/d/snippet-id/view");
-      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
       vi.mocked(sheets.writeWorkOrderRecord).mockResolvedValue();
       vi.mocked(sheets.updateJobWithSignedInfoByWorkOrderNumber).mockResolvedValue(true);
 
@@ -403,11 +535,28 @@ describe("processSignedPdfUnified", () => {
 
       expect(sheets.writeWorkOrderRecord).toHaveBeenCalled();
       expect(signedSheets.appendSignedNeedsReviewRow).not.toHaveBeenCalled();
+      expect(drive.uploadPdfToDrive).toHaveBeenCalled(); // PDF should be uploaded
     });
 
-    it("should update Sheet1 when work order exists", async () => {
+    it("should update Sheet1 when work order exists in Sheet1", async () => {
       vi.mocked(templateConfig.getTemplateConfigForFmKey).mockResolvedValue(mockTemplateConfig);
       vi.mocked(signedOcr.callSignedOcrService).mockResolvedValue(mockOcrResult);
+      // Work order exists in Sheet1
+      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null); // Not in Work_Orders
+      vi.mocked(sheets.createSheetsClient).mockReturnValue({
+        spreadsheets: {
+          values: {
+            get: vi.fn().mockResolvedValue({
+              data: {
+                values: [
+                  ["wo_number", "status", "fmKey"],
+                  ["1234567", "PENDING", "superclean"], // Work order exists
+                ],
+              },
+            }),
+          },
+        },
+      } as any);
       vi.mocked(drive.getOrCreateFolder).mockResolvedValue("mock-folder-id");
       vi.mocked(drive.uploadPdfToDrive).mockResolvedValue({
         fileId: "mock-file-id",
@@ -415,7 +564,6 @@ describe("processSignedPdfUnified", () => {
         webContentLink: "https://drive.google.com/file/d/mock-file-id/view",
       });
       vi.mocked(driveSnippets.uploadSnippetImageToDrive).mockResolvedValue("https://drive.google.com/file/d/snippet-id/view");
-      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
       vi.mocked(sheets.writeWorkOrderRecord).mockResolvedValue();
       vi.mocked(sheets.updateJobWithSignedInfoByWorkOrderNumber).mockResolvedValue(true);
 
@@ -436,9 +584,25 @@ describe("processSignedPdfUnified", () => {
   });
 
   describe("Drive upload", () => {
-    it("should upload PDF to Drive", async () => {
+    it("should upload PDF to Drive only when work order exists", async () => {
       vi.mocked(templateConfig.getTemplateConfigForFmKey).mockResolvedValue(mockTemplateConfig);
       vi.mocked(signedOcr.callSignedOcrService).mockResolvedValue(mockOcrResult);
+      // Work order exists in Sheet1
+      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
+      vi.mocked(sheets.createSheetsClient).mockReturnValue({
+        spreadsheets: {
+          values: {
+            get: vi.fn().mockResolvedValue({
+              data: {
+                values: [
+                  ["wo_number", "status", "fmKey"],
+                  ["1234567", "PENDING", "superclean"],
+                ],
+              },
+            }),
+          },
+        },
+      } as any);
       vi.mocked(drive.getOrCreateFolder).mockResolvedValue("mock-folder-id");
       vi.mocked(drive.uploadPdfToDrive).mockResolvedValue({
         fileId: "mock-file-id",
@@ -446,7 +610,6 @@ describe("processSignedPdfUnified", () => {
         webContentLink: "https://drive.google.com/file/d/mock-file-id/view",
       });
       vi.mocked(driveSnippets.uploadSnippetImageToDrive).mockResolvedValue("https://drive.google.com/file/d/snippet-id/view");
-      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
       vi.mocked(sheets.writeWorkOrderRecord).mockResolvedValue();
       vi.mocked(sheets.updateJobWithSignedInfoByWorkOrderNumber).mockResolvedValue(true);
 
@@ -464,9 +627,55 @@ describe("processSignedPdfUnified", () => {
       );
     });
 
-    it("should upload snippet image if available", async () => {
+    it("should NOT upload PDF to Drive when work order doesn't exist", async () => {
+      vi.mocked(templateConfig.getTemplateConfigForFmKey).mockResolvedValue(mockTemplateConfig);
+      vi.mocked(signedOcr.callSignedOcrService).mockResolvedValue({
+        ...mockOcrResult,
+        woNumber: "9999999", // Doesn't exist
+      });
+      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
+      // Mock Sheet1 check - work order doesn't exist
+      vi.mocked(sheets.createSheetsClient).mockReturnValue({
+        spreadsheets: {
+          values: {
+            get: vi.fn().mockResolvedValue({
+              data: {
+                values: [
+                  ["wo_number", "status", "fmKey"],
+                  ["1234567", "PENDING", "superclean"], // Different WO
+                ],
+              },
+            }),
+          },
+        },
+      } as any);
+      vi.mocked(signedSheets.appendSignedNeedsReviewRow).mockResolvedValue();
+
+      await processSignedPdfUnified(baseParams);
+
+      expect(drive.uploadPdfToDrive).not.toHaveBeenCalled();
+      expect(drive.getOrCreateFolder).not.toHaveBeenCalled();
+    });
+
+    it("should upload snippet image if available and work order exists", async () => {
       vi.mocked(templateConfig.getTemplateConfigForFmKey).mockResolvedValue(mockTemplateConfig);
       vi.mocked(signedOcr.callSignedOcrService).mockResolvedValue(mockOcrResult);
+      // Work order exists in Sheet1
+      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
+      vi.mocked(sheets.createSheetsClient).mockReturnValue({
+        spreadsheets: {
+          values: {
+            get: vi.fn().mockResolvedValue({
+              data: {
+                values: [
+                  ["wo_number", "status", "fmKey"],
+                  ["1234567", "PENDING", "superclean"],
+                ],
+              },
+            }),
+          },
+        },
+      } as any);
       vi.mocked(drive.getOrCreateFolder).mockResolvedValue("mock-folder-id");
       vi.mocked(drive.uploadPdfToDrive).mockResolvedValue({
         fileId: "mock-file-id",
@@ -474,7 +683,6 @@ describe("processSignedPdfUnified", () => {
         webContentLink: "https://drive.google.com/file/d/mock-file-id/view",
       });
       vi.mocked(driveSnippets.uploadSnippetImageToDrive).mockResolvedValue("https://drive.google.com/file/d/snippet-id/view");
-      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
       vi.mocked(sheets.writeWorkOrderRecord).mockResolvedValue();
       vi.mocked(sheets.updateJobWithSignedInfoByWorkOrderNumber).mockResolvedValue(true);
 
@@ -489,9 +697,25 @@ describe("processSignedPdfUnified", () => {
       );
     });
 
-    it("should handle snippet upload failure gracefully", async () => {
+    it("should handle snippet upload failure gracefully when work order exists", async () => {
       vi.mocked(templateConfig.getTemplateConfigForFmKey).mockResolvedValue(mockTemplateConfig);
       vi.mocked(signedOcr.callSignedOcrService).mockResolvedValue(mockOcrResult);
+      // Work order exists in Sheet1
+      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
+      vi.mocked(sheets.createSheetsClient).mockReturnValue({
+        spreadsheets: {
+          values: {
+            get: vi.fn().mockResolvedValue({
+              data: {
+                values: [
+                  ["wo_number", "status", "fmKey"],
+                  ["1234567", "PENDING", "superclean"],
+                ],
+              },
+            }),
+          },
+        },
+      } as any);
       vi.mocked(drive.getOrCreateFolder).mockResolvedValue("mock-folder-id");
       vi.mocked(drive.uploadPdfToDrive).mockResolvedValue({
         fileId: "mock-file-id",
@@ -499,7 +723,6 @@ describe("processSignedPdfUnified", () => {
         webContentLink: "https://drive.google.com/file/d/mock-file-id/view",
       });
       vi.mocked(driveSnippets.uploadSnippetImageToDrive).mockRejectedValue(new Error("Upload failed"));
-      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
       vi.mocked(sheets.writeWorkOrderRecord).mockResolvedValue();
       vi.mocked(sheets.updateJobWithSignedInfoByWorkOrderNumber).mockResolvedValue(true);
 
@@ -512,9 +735,25 @@ describe("processSignedPdfUnified", () => {
   });
 
   describe("Result format", () => {
-    it("should return correct result structure", async () => {
+    it("should return correct result structure when work order exists", async () => {
       vi.mocked(templateConfig.getTemplateConfigForFmKey).mockResolvedValue(mockTemplateConfig);
       vi.mocked(signedOcr.callSignedOcrService).mockResolvedValue(mockOcrResult);
+      // Work order exists in Sheet1
+      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
+      vi.mocked(sheets.createSheetsClient).mockReturnValue({
+        spreadsheets: {
+          values: {
+            get: vi.fn().mockResolvedValue({
+              data: {
+                values: [
+                  ["wo_number", "status", "fmKey"],
+                  ["1234567", "PENDING", "superclean"],
+                ],
+              },
+            }),
+          },
+        },
+      } as any);
       vi.mocked(drive.getOrCreateFolder).mockResolvedValue("mock-folder-id");
       vi.mocked(drive.uploadPdfToDrive).mockResolvedValue({
         fileId: "mock-file-id",
@@ -522,7 +761,6 @@ describe("processSignedPdfUnified", () => {
         webContentLink: "https://drive.google.com/file/d/mock-file-id/view",
       });
       vi.mocked(driveSnippets.uploadSnippetImageToDrive).mockResolvedValue("https://drive.google.com/file/d/snippet-id/view");
-      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
       vi.mocked(sheets.writeWorkOrderRecord).mockResolvedValue();
       vi.mocked(sheets.updateJobWithSignedInfoByWorkOrderNumber).mockResolvedValue(true);
 
@@ -530,19 +768,29 @@ describe("processSignedPdfUnified", () => {
 
       expect(result).toMatchObject({
         workOrderNumber: expect.any(String),
+        woNumber: expect.any(String), // Standardized alias
         confidence: expect.any(Number),
         confidenceLabel: expect.any(String),
-        needsReview: expect.any(Boolean),
+        snippetUrl: expect.any(String), // Standardized: prefers snippetDriveUrl
+        needsReview: false,
+        needsReviewReason: null, // Should be null when needsReview is false
+        signedPdfUrl: expect.any(String), // PDF should be uploaded
         debug: expect.objectContaining({
           templateId: expect.any(String),
           page: expect.any(Number),
         }),
       });
+
+      // Verify woNumber matches workOrderNumber
+      expect(result.woNumber).toBe(result.workOrderNumber);
+      
+      // Verify snippetUrl prefers snippetDriveUrl
+      expect(result.snippetUrl).toBe(result.snippetDriveUrl);
     });
   });
 
   describe("Gmail source metadata", () => {
-    it("should include Gmail metadata in Needs Review record", async () => {
+    it("should include Gmail metadata in Needs Review record and not upload PDF", async () => {
       const params: ProcessSignedPdfParams = {
         ...baseParams,
         source: "GMAIL",
@@ -560,13 +808,8 @@ describe("processSignedPdfUnified", () => {
         ...mockOcrResult,
         confidenceLabel: "low",
       });
-      vi.mocked(drive.getOrCreateFolder).mockResolvedValue("mock-folder-id");
-      vi.mocked(drive.uploadPdfToDrive).mockResolvedValue({
-        fileId: "mock-file-id",
-        webViewLink: "https://drive.google.com/file/d/mock-file-id/view",
-        webContentLink: "https://drive.google.com/file/d/mock-file-id/view",
-      });
-      vi.mocked(driveSnippets.uploadSnippetImageToDrive).mockResolvedValue("https://drive.google.com/file/d/snippet-id/view");
+      vi.mocked(sheets.findWorkOrderRecordByJobId).mockResolvedValue(null);
+      vi.mocked(signedSheets.appendSignedNeedsReviewRow).mockResolvedValue();
 
       await processSignedPdfUnified(params);
 
@@ -580,8 +823,12 @@ describe("processSignedPdfUnified", () => {
           gmail_from: "sender@example.com",
           gmail_subject: "Test Subject",
           gmail_date: "2024-01-01T00:00:00Z",
+          confidence: "low", // OCR confidence (quality), not blocked
+          ocr_confidence_raw: expect.any(Number), // OCR quality stored separately
+          signed_pdf_url: null, // No PDF uploaded
         })
       );
+      expect(drive.uploadPdfToDrive).not.toHaveBeenCalled();
     });
   });
 });

@@ -102,11 +102,12 @@ export async function POST(req: Request) {
     });
 
     // Map unified result to existing response format for compatibility
+    // Use standardized fields from processSignedPdfUnified
     const responseData = {
       mode: result.needsReview ? "NEEDS_REVIEW" as const : "UPDATED" as const,
       data: {
         fmKey: rawFmKey,
-        woNumber: result.workOrderNumber,
+        woNumber: result.woNumber || result.workOrderNumber, // Use standardized field
         ocrConfidenceLabel: result.confidenceLabel,
         ocrConfidenceRaw: result.confidence,
         confidenceLabel: result.confidenceLabel,
@@ -117,10 +118,11 @@ export async function POST(req: Request) {
         signedPdfUrl: result.signedPdfUrl || null,
         snippetImageUrl: result.snippetImageUrl || null,
         snippetDriveUrl: result.snippetDriveUrl || null,
+        snippetUrl: result.snippetUrl || null, // Standardized field
         jobExistsInSheet1: false, // Will be determined by processor
         retryAttempted: false,
         alternatePageAttempted: false,
-        reason: result.needsReview ? "Low confidence or no work order number extracted" : null,
+        reason: result.needsReviewReason || null, // Use standardized field
         templateUsed: {
           templateId: result.debug?.templateId || null,
           fmKey: rawFmKey,

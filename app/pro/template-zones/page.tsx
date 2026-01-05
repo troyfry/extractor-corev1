@@ -182,12 +182,7 @@ function TemplateZonesPageContent() {
     }
   }, [searchParams]);
 
-  // Initialize pdf.js on mount
-  useEffect(() => {
-    initPdfJsLib().catch(() => {
-      // Error already logged in helper
-    });
-  }, []);
+  // No longer using pdf.js - using render-page API instead
 
   // Load FM profiles on mount
   useEffect(() => {
@@ -395,7 +390,7 @@ function TemplateZonesPageContent() {
           setSavedTemplate(template);
           
           // If we have a PDF loaded, navigate to the saved template's page
-          if (pdfDoc && template.page && template.page !== selectedPage) {
+          if (_pdfFile && template.page && template.page !== selectedPage) {
             await handlePageChange(template.page);
           }
           
@@ -489,6 +484,67 @@ function TemplateZonesPageContent() {
       return;
     }
 
+    // ⚠️ VALIDATION: Block signed/phone-scan PDFs from template capture
+    // Template capture must use ORIGINAL DIGITAL PDF only
+    // Normalize filename: lowercase, spaces to underscores, remove special chars
+    const fileNameLower = file.name
+      .toLowerCase()
+      .replace(/\s+/g, "_")
+      .replace(/[^a-z0-9_\.]/g, "");
+    const signedIndicators = [
+      "signed",
+      "signoff",
+      "sign",
+      "signature",
+      "completed",
+      "final",
+      "executed",
+      "proof",
+      "kent", // Test files often include this
+      "photo_scan",
+      "scan_",
+      "signed_",
+      "scan",
+      "scanned",
+      "phone",
+      "mobile",
+      "camera",
+      "photo",
+      "image",
+      "picture",
+      "screenshot",
+      "capture",
+      "img_",
+      "dsc",
+      "pict",
+    ];
+    
+    const appearsToBeSigned = signedIndicators.some(indicator => 
+      fileNameLower.includes(indicator)
+    );
+    
+    // Debug logging
+    console.log("[Template Zones] Filename check:", {
+      original: file.name,
+      normalized: fileNameLower,
+      appearsToBeSigned,
+      matchedIndicators: signedIndicators.filter(ind => fileNameLower.includes(ind)),
+    });
+      
+    if (appearsToBeSigned) {
+      console.warn("[Template Zones] BLOCKED: Signed/scan PDF detected by filename:", file.name);
+      setError(
+        "Signed scans cannot be used for template capture. " +
+        "Please upload the original digital work order PDF (the PDF file you received from the facility management system, not a phone scan or signed copy)."
+      );
+      setPdfFile(null);
+      setPreviewImage(null);
+      setCropZone(null);
+      // Clear the file input
+      e.target.value = "";
+      return;
+    }
+
     setPdfFile(file);
     setError(null);
     setSuccess(null);
@@ -503,113 +559,14 @@ function TemplateZonesPageContent() {
     setPdfDoc(null);
 
     try {
-      // Read file as ArrayBuffer
-      let arrayBuffer = await file.arrayBuffer();
-      const originalSize = arrayBuffer.byteLength;
-      
-      // Normalize PDF using Python OCR service before rendering
-      console.log("🔧 [NORMALIZATION] Starting PDF normalization before template capture:", {
-        filename: file.name,
-        originalSize,
-        timestamp: new Date().toISOString(),
-      });
-      
-      try {
-        const formData = new FormData();
-        formData.append("pdf", file);
-        
-        const normalizeResponse = await fetch("/api/pdf/normalize", {
-          method: "POST",
-          body: formData,
-        });
-        
-        if (normalizeResponse.ok) {
-          const normalizedArrayBuffer = await normalizeResponse.arrayBuffer();
-          if (normalizedArrayBuffer.byteLength > 0) {
-            const normalizedSize = normalizedArrayBuffer.byteLength;
-            console.log("✅ [NORMALIZATION] PDF NORMALIZED SUCCESSFULLY before template capture:", {
-              filename: file.name,
-              originalSize,
-              normalizedSize,
-              sizeChange: normalizedSize - originalSize,
-              timestamp: new Date().toISOString(),
-            });
-            arrayBuffer = normalizedArrayBuffer;
-          } else {
-            console.log("ℹ️ [NORMALIZATION] Normalization returned empty buffer, using original PDF:", {
-              filename: file.name,
-              timestamp: new Date().toISOString(),
-            });
-          }
-        } else {
-          const errorText = await normalizeResponse.text().catch(() => "Unknown error");
-          console.log("⚠️ [NORMALIZATION] Normalization endpoint returned error, using original PDF:", {
-            filename: file.name,
-            status: normalizeResponse.status,
-            error: errorText.substring(0, 200),
-            timestamp: new Date().toISOString(),
-          });
-        }
-      } catch (normalizeError) {
-        // If normalization fails, continue with original PDF
-        console.warn("⚠️ [NORMALIZATION] PDF normalization failed, using original PDF:", {
-          filename: file.name,
-          error: normalizeError instanceof Error ? normalizeError.message : String(normalizeError),
-          timestamp: new Date().toISOString(),
-        });
-      }
-
-      // Ensure pdf.js is loaded (uses shared helper)
-      const pdfjsLib = await initPdfJsLib();
-
-      if (!pdfjsLib || typeof pdfjsLib.getDocument !== "function") {
-        throw new Error("PDF.js library not loaded correctly");
-      }
-
-      const uint8Array = new Uint8Array(arrayBuffer);
-
-      // Validate PDF header
-      const header = String.fromCharCode(...uint8Array.slice(0, 5));
-      if (header !== "%PDF-") {
-        throw new Error("Invalid PDF file format");
-      }
-
-      // Load PDF document
-      const loadingTask = pdfjsLib.getDocument({ data: uint8Array });
-      const pdf = await loadingTask.promise;
-
-      // Store PDF document for page navigation
-      setPdfDoc(pdf);
-      
-      // Get page count
-      const numPages = pdf.numPages;
-      setPageCount(numPages);
-      
-      // Reset to page 1 when new PDF is loaded
+      // ⚠️ IMPORTANT: Do NOT normalize PDFs for template capture
+      // Template capture must use the ORIGINAL digital PDF coordinates
+      // Use render-page API (same as onboarding) which respects skipNormalization
       setSelectedPage(1);
+      setPageCount(1); // Will be updated when we get page count from API
+      setPdfDoc(null);
       setCoordsPage(null);
-      
-      // Render first page
-      await renderPage(pdf, 1);
-      
-      // After PDF loads, check if we should auto-apply calibrated coordinates
-      // This happens after renderPage sets imageWidth/imageHeight
-      setTimeout(() => {
-        if (selectedFmKey && calibratedCoordinates[selectedFmKey] && !savedTemplate) {
-          // Only auto-apply if no saved template exists
-          const calibrated = calibratedCoordinates[selectedFmKey];
-          if (imageWidth > 0 && imageHeight > 0) {
-            setCropZone({
-              x: calibrated.xPct * imageWidth,
-              y: calibrated.yPct * imageHeight,
-              width: calibrated.wPct * imageWidth,
-              height: calibrated.hPct * imageHeight,
-            });
-            setCoordsPage(selectedPage);
-            setSuccess(`Auto-applied calibrated coordinates for ${selectedFmKey}. Review and adjust if needed.`);
-          }
-        }
-      }, 100); // Small delay to ensure image dimensions are set
+      await renderPageWithPdfJs(file, 1);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Failed to render PDF";
       console.error("[PDF Render] Error:", err);
@@ -670,92 +627,93 @@ function TemplateZonesPageContent() {
     });
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function renderPage(pdf: any, pageNum: number) {
+  async function renderPageWithPdfJs(file: File, pageNum: number) {
+    setIsRenderingPdf(true);
+    setError(null);
+
     try {
-      const page = await pdf.getPage(pageNum);
-      
-      // Get PDF page size in true PDF points (user space units)
-      // Note: getViewport({ scale: 1.0 }) gives CSS pixels (96 DPI), not PDF points (72 DPI)
-      // Use page.view to get actual PDF user-space coordinates in points
-      // IMPORTANT: page.view may not start at (0,0) - store bounds for normalization
-      const [xMin, yMin, xMax, yMax] = page.view; // PDF units (points)
-      const truePageWidthPt = xMax - xMin;
-      const truePageHeightPt = yMax - yMin;
-      setPageWidthPt(truePageWidthPt);
-      setPageHeightPt(truePageHeightPt);
-      
-      // Store bounds for coordinate normalization (pdf.js bounds may not start at 0,0)
-      setBoundsPt({ x0: xMin, y0: yMin, x1: xMax, y1: yMax });
-      // Only log if bounds don't start at 0,0 (to reduce console spam)
-      if (xMin !== 0 || yMin !== 0) {
-        console.log("[Template Zones] Stored boundsPt (non-zero offset):", { x0: xMin, y0: yMin, x1: xMax, y1: yMax });
-      }
-      
-      // Optional sanity log to verify the fix
-      const v1 = page.getViewport({ scale: 1.0 });
-      console.log("[Template Zones] page.view (pt):", page.view, "wPt:", truePageWidthPt, "hPt:", truePageHeightPt);
-      console.log("[Template Zones] viewport scale=1 (css px):", v1.width, v1.height);
-      
-      // Use scale 2.0 for preview rendering (better quality)
-      const viewport = page.getViewport({ scale: 2.0 });
+      const pdfjs = await initPdfJsLib();
+      const buf = await file.arrayBuffer();
 
-      // Create canvas to render the page
+      const loadingTask = pdfjs.getDocument({ data: buf });
+      const doc = await loadingTask.promise;
+      setPageCount(doc.numPages);
+      setPdfDoc(doc);
+
+      const page = await doc.getPage(pageNum);
+
+      // 1.0 scale gives you "PDF points-ish" viewport units (1/72 inch)
+      // but you can bump scale for clearer preview
+      const scale = 2;
+      const viewport = page.getViewport({ scale });
+
+      // Canvas render
       const canvas = document.createElement("canvas");
-      const context = canvas.getContext("2d");
-      if (!context) {
-        throw new Error("Failed to get canvas context");
-      }
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Canvas context not available");
 
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
 
-      // Store viewport for accurate pixel->PDF point conversion
-      setCurrentViewport(viewport);
+      await page.render({ canvasContext: ctx, viewport }).promise;
 
-      // Render PDF page to canvas
-      const renderContext = {
-        canvasContext: context,
-        viewport: viewport,
-      };
-      await page.render(renderContext).promise;
+      // Preview image
+      const pngDataUrl = canvas.toDataURL("image/png");
 
-      // Convert canvas to data URL (PNG)
-      const dataUrl = canvas.toDataURL("image/png");
-      
-      setPreviewImage(dataUrl);
-      // Use canvas dimensions (matches viewport.width/height) - ensures rectPx coordinates match render dimensions
+      setPreviewImage(pngDataUrl);
       setImageWidth(canvas.width);
       setImageHeight(canvas.height);
-      
+
+      // PDF page size in points:
+      // viewport.width/height at scale=1 equals points (PDF units) typically.
+      const ptViewport = page.getViewport({ scale: 1 });
+      setPageWidthPt(ptViewport.width);
+      setPageHeightPt(ptViewport.height);
+
+      // boundsPt: PDF.js assumes origin at top-left of viewport for rendering.
+      // If your conversion code needs boundsPt, set a simple default:
+      setBoundsPt({ x0: 0, y0: 0, x1: ptViewport.width, y1: ptViewport.height });
+
+      // Clear viewport (no longer needed - we use proportional math)
+      setCurrentViewport(null);
+
+      console.log("[Template Zones] Rendered via PDF.js:", {
+        pageNum,
+        canvas: { w: canvas.width, h: canvas.height },
+        pt: { w: ptViewport.width, h: ptViewport.height },
+      });
+
       // If we have a saved template for this page, the useEffect will convert it to pixels
       // Otherwise, auto-apply calibrated coordinates if available (for new users)
       if (!savedTemplate && selectedFmKey && calibratedCoordinates[selectedFmKey]) {
         const calibrated = calibratedCoordinates[selectedFmKey];
+        // Convert calibrated percentages to pixels using rendered image dimensions
         setCropZone({
-          x: calibrated.xPct * viewport.width,
-          y: calibrated.yPct * viewport.height,
-          width: calibrated.wPct * viewport.width,
-          height: calibrated.hPct * viewport.height,
+          x: calibrated.xPct * canvas.width,
+          y: calibrated.yPct * canvas.height,
+          width: calibrated.wPct * canvas.width,
+          height: calibrated.hPct * canvas.height,
         });
         setCoordsPage(pageNum);
         setSuccess(`Auto-applied calibrated coordinates for ${selectedFmKey}. Review and adjust if needed, then save.`);
       }
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Failed to render PDF page";
-      console.error("[PDF Render] Error:", err);
-      setError(`Failed to render PDF page ${pageNum}: ${errorMessage}`);
+    } catch (e: any) {
+      console.error(e);
+      setError(e?.message || "Failed to render PDF with PDF.js");
       setPreviewImage(null);
       setPageWidthPt(0);
       setPageHeightPt(0);
+      setBoundsPt(null);
+    } finally {
+      setIsRenderingPdf(false);
     }
   }
 
   async function handlePageChange(newPage: number) {
-    if (!pdfDoc || newPage < 1 || newPage > pageCount) return;
+    if (!_pdfFile || newPage < 1 || newPage > pageCount) return;
     
     setSelectedPage(newPage);
-    await renderPage(pdfDoc, newPage);
+    await renderPageWithPdfJs(_pdfFile, newPage);
   }
 
   function handleMouseUp() {
@@ -1033,21 +991,30 @@ function TemplateZonesPageContent() {
       return;
     }
 
+    // Prepare region data for domain layer validation
+    const regionData = {
+      fmKey: selectedFmKey,
+      page: coordsPage, // Use coordsPage, not selectedPage
+      xPt: points.xPt,
+      yPt: points.yPt,
+      wPt: points.wPt,
+      hPt: points.hPt,
+      pageWidthPt: Number(pageWidthPt),
+      pageHeightPt: Number(pageHeightPt),
+      coordSystem: toSheetCoordSystem(COORD_SYSTEM_PDF_POINTS_TOP_LEFT),
+    };
+    
+    // Note: Validation happens server-side in the API route
+    // The API route uses the domain layer for validation
+
     try {
       const response = await fetch("/api/onboarding/templates/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          fmKey: selectedFmKey,
-          page: coordsPage, // Use coordsPage, not selectedPage
-          // PDF points in x,y,w,h order (top-left origin)
-          xPt: points.xPt,
-          yPt: points.yPt,
-          wPt: points.wPt,
-          hPt: points.hPt,
-          pageWidthPt: Number(pageWidthPt), // Ensure it's a number
-          pageHeightPt: Number(pageHeightPt), // Ensure it's a number
-          coordSystem: toSheetCoordSystem(COORD_SYSTEM_PDF_POINTS_TOP_LEFT),
+          ...regionData,
+          // Include filename for server-side validation (blocks signed/scan PDFs)
+          originalFilename: _pdfFile?.name || undefined,
           // Optional: rectPx for validation/debugging (CSS pixel space)
           rectPx: {
             x: cropZone.x,

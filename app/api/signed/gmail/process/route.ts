@@ -259,8 +259,8 @@ export async function POST(req: Request) {
               filename,
               messageId: message.id,
               status,
-              woNumber: processResult.workOrderNumber,
-              reason: processResult.needsReview ? "Low confidence or no work order number extracted" : null,
+              woNumber: processResult.woNumber || processResult.workOrderNumber, // Use standardized field
+              reason: processResult.needsReviewReason || null, // Use standardized field
               signedPdfUrl: processResult.signedPdfUrl || null,
               filenameHint: hint && hint !== effectiveFmKey ? hint : null,
               fixHref: null,
@@ -269,6 +269,7 @@ export async function POST(req: Request) {
               reasonMessage: null,
               snippetImageUrl: processResult.snippetImageUrl || null,
               snippetDriveUrl: processResult.snippetDriveUrl || null,
+              snippetUrl: processResult.snippetUrl || null, // Standardized field
               fmKey: effectiveFmKey,
             });
 
