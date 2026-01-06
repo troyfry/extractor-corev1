@@ -32,6 +32,11 @@ A visual dashboard for viewing categorized unit test results.
 - **Templates**: Template validation, regions, page dimensions, filename validation
 - **Signed**: Signed PDF processing and preconditions
 - **Coords**: Template coordinate conversion utilities
-- **Gmail**: Gmail label state machine
+- **Gmail**: 
+  - Gmail label state machine
+  - Gmail processing utilities (work order extraction, success message formatting, batch aggregation)
+  - Gmail signed PDF normalization (ensures Gmail PDFs are normalized like uploaded PDFs)
+  - Gmail label name extraction and display
 - **Workspace**: Workspace resolution logic
+- **Process**: Process Access Layer tests (PDF rendering, raster detection, OCR)
 
