@@ -11,56 +11,11 @@
  * 4. Return the normalized PDF buffer
  */
 
+import { getMuPdfDocument, getMuPdfPDFDocument, getMuPdfMatrix, getMuPdfColorSpace, getPageBounds } from "./engines/mupdfEngine";
+
 // Memory safety limits
 const MAX_PDF_SIZE = 10 * 1024 * 1024; // 10MB
 
-// Lazy-init MuPDF WASM module and cache the initialized instance
-let mupdfInstancePromise: Promise<any> | null = null;
-// Track if MuPDF is unavailable (to avoid repeated import attempts)
-let mupdfUnavailable = false;
-
-async function getMupdfInstance() {
-  // If we know MuPDF is unavailable, don't try to load it
-  if (mupdfUnavailable) {
-    throw new Error("MuPDF module is not available");
-  }
-
-  if (!mupdfInstancePromise) {
-    mupdfInstancePromise = (async () => {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const mupdfModule: any = await import("mupdf");
-
-
-        // Most WASM bundles export an async init function as default.
-        // If default is a function, call it (and await if it's async); otherwise, if it's already an object, use it.
-        const init = mupdfModule.default || mupdfModule;
-
-        if (typeof init === "function") {
-          const result = init();
-          // Handle both sync and async init functions
-          return result instanceof Promise ? await result : result;
-        } else {
-          return init;
-        }
-      } catch (error) {
-        // Mark MuPDF as unavailable to avoid future import attempts
-        mupdfUnavailable = true;
-        mupdfInstancePromise = null; // Clear the promise so we don't retry
-        throw error;
-      }
-    })();
-  }
-
-  try {
-    return await mupdfInstancePromise;
-  } catch (error) {
-    // If import failed, mark as unavailable
-    mupdfUnavailable = true;
-    mupdfInstancePromise = null;
-    throw error;
-  }
-}
 
 /**
  * Normalize a PDF buffer by fixing coordinate systems and bounds.
@@ -95,42 +50,13 @@ export async function normalizePdfBuffer(
     return pdfBuffer;
   }
 
-  // Check if MuPDF is known to be unavailable (skip import attempt)
-  if (mupdfUnavailable) {
-    // MuPDF was previously determined to be unavailable - skip normalization
-    return pdfBuffer;
-  }
-
   try {
-    // Get the initialized MuPDF instance (cached, initialized once)
-    let mupdf: any;
-    try {
-      mupdf = await getMupdfInstance();
-    } catch (mupdfError) {
-      // MuPDF module not available - mark as unavailable and return original
-      mupdfUnavailable = true;
-      console.warn("⚠️ [NORMALIZATION] MuPDF module not available, cannot normalize PDF file:", {
-        error: mupdfError instanceof Error ? mupdfError.message : String(mupdfError),
-        note: "Python OCR service will normalize during OCR processing when pageWidthPt/pageHeightPt are provided. Future normalization attempts will be skipped.",
-        timestamp: new Date().toISOString(),
-      });
-      return pdfBuffer;
-    }
-    
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const Document = (mupdf as any).Document;
-    if (!Document || typeof (Document as any).openDocument !== "function") {
-      console.warn("⚠️ [NORMALIZATION] MuPDF Document.openDocument not available, skipping file normalization:", {
-        note: "Python OCR service will normalize during OCR processing when pageWidthPt/pageHeightPt are provided",
-        timestamp: new Date().toISOString(),
-      });
-      return pdfBuffer;
-    }
+    // Get the MuPDF Document class from engine
+    const Document = await getMuPdfDocument();
 
     // Load PDF document from buffer
     const pdfUint8Array = new Uint8Array(pdfBuffer);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const sourceDoc = (Document as any).openDocument(pdfUint8Array, "application/pdf");
+    const sourceDoc = Document.openDocument(pdfUint8Array, "application/pdf");
     
     if (!sourceDoc) {
       console.warn("⚠️ [NORMALIZATION] Failed to open PDF document, skipping file normalization:", {
@@ -149,18 +75,8 @@ export async function normalizePdfBuffer(
     }
 
     // Create a new PDF document for normalized output
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const Writer = (mupdf as any).PDFDocument;
-    if (!Writer || typeof (Writer as any).create !== "function") {
-      console.warn("⚠️ [NORMALIZATION] MuPDF PDFDocument.create not available, skipping file normalization:", {
-        note: "Python OCR service will normalize during OCR processing when pageWidthPt/pageHeightPt are provided",
-        timestamp: new Date().toISOString(),
-      });
-      return pdfBuffer;
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const normalizedDoc = (Writer as any).create();
+    const PDFDocument = await getMuPdfPDFDocument();
+    const normalizedDoc = PDFDocument.create();
     if (!normalizedDoc) {
       console.warn("⚠️ [NORMALIZATION] Failed to create normalized PDF document, skipping file normalization:", {
         note: "Python OCR service will normalize during OCR processing when pageWidthPt/pageHeightPt are provided",
@@ -179,12 +95,10 @@ export async function normalizePdfBuffer(
         continue;
       }
 
-      // Get page bounds
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const rect = (sourcePage as any).getBounds();
-      const boundsPt = { x0: rect.x0, y0: rect.y0, x1: rect.x1, y1: rect.y1 };
-      const pageWidthPt = Math.ceil(rect.x1 - rect.x0);
-      const pageHeightPt = Math.ceil(rect.y1 - rect.y0);
+      // Get page bounds using engine helper
+      const boundsPt = getPageBounds(sourcePage);
+      const pageWidthPt = Math.ceil(boundsPt.x1 - boundsPt.x0);
+      const pageHeightPt = Math.ceil(boundsPt.y1 - boundsPt.y0);
 
       // Check if normalization is needed (non-zero origin)
       if (boundsPt.x0 !== 0 || boundsPt.y0 !== 0) {
@@ -206,18 +120,15 @@ export async function normalizePdfBuffer(
       }
 
       // Create transformation matrix to translate content to (0,0)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const Matrix = (mupdf as any).Matrix;
+      const Matrix = await getMuPdfMatrix();
+      const ColorSpace = await getMuPdfColorSpace();
       if (Matrix && typeof Matrix.translate === "function") {
         // Translate to normalize origin, then copy content
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const translateMatrix = (Matrix as any).translate(-boundsPt.x0, -boundsPt.y0);
+        const translateMatrix = Matrix.translate(-boundsPt.x0, -boundsPt.y0);
         
         // Copy page content with transformation
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        if (typeof (normalizedPage as any).run === "function") {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (normalizedPage as any).run(sourcePage, translateMatrix, (mupdf as any).ColorSpace.DeviceRGB);
+        if (typeof normalizedPage.run === "function") {
+          normalizedPage.run(sourcePage, translateMatrix, ColorSpace.DeviceRGB);
         } else if (typeof (normalizedPage as any).showPage === "function") {
           // Alternative API: showPage with transformation
           // eslint-disable-next-line @typescript-eslint/no-explicit-any

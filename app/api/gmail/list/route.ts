@@ -116,6 +116,7 @@ export async function GET(request: Request) {
       { 
         emails: result.emails,
         nextPageToken: result.nextPageToken,
+        labelName: labelName || "INBOX", // Return the label name being used
       },
       { status: 200 }
     );

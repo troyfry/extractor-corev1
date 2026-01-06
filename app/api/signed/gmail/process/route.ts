@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/auth/currentUser";
 import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
 import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 import { processSignedPdf } from "@/lib/process";
+import { normalizePdfBuffer } from "@/lib/pdf/normalizePdf";
 import { createGmailClient } from "@/lib/google/gmail";
 import { extractPdfAttachments } from "@/lib/google/gmailExtract";
 
@@ -207,13 +208,43 @@ export async function POST(req: Request) {
 
             const data = attachmentRes.data.data || "";
             // Gmail uses URL-safe base64, convert to standard base64
-            const pdfBuffer = Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+            const originalPdfBuffer = Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+            const originalSize = originalPdfBuffer.length;
 
-            // Call process layer with matched fmKey and source metadata
+            // Normalize PDF before processing (fixes coordinate systems and bounds)
+            console.log("🔧 [NORMALIZATION] Starting PDF normalization before Gmail signed processing:", {
+              filename,
+              originalSize,
+              messageId: message.id,
+              timestamp: new Date().toISOString(),
+            });
+            
+            const normalizedPdfBuffer = await normalizePdfBuffer(originalPdfBuffer);
+            const normalizedSize = normalizedPdfBuffer.length;
+            
+            if (normalizedPdfBuffer !== originalPdfBuffer) {
+              console.log("✅ [NORMALIZATION] PDF NORMALIZED SUCCESSFULLY before Gmail signed processing:", {
+                filename,
+                originalSize,
+                normalizedSize,
+                sizeChange: normalizedSize - originalSize,
+                messageId: message.id,
+                timestamp: new Date().toISOString(),
+              });
+            } else {
+              console.log("ℹ️ [NORMALIZATION] PDF did not require normalization (already normalized or normalization not available):", {
+                filename,
+                size: originalSize,
+                messageId: message.id,
+                timestamp: new Date().toISOString(),
+              });
+            }
+
+            // Call process layer with normalized PDF and matched fmKey and source metadata
             let processResult;
             try {
               processResult = await processSignedPdf({
-                pdfBytes: pdfBuffer,
+                pdfBytes: normalizedPdfBuffer,
                 originalFilename: filename,
                 page: 1, // Default to page 1, can be made configurable
                 fmKey: effectiveFmKey,

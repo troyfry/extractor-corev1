@@ -8,59 +8,17 @@
  * Returns base64-encoded PNG data along with dimensions.
  */
 
+import {
+  getMuPdfDocument,
+  getMuPdfMatrix,
+  getMuPdfColorSpace,
+  getPixmapDims,
+  getPageBounds,
+} from "./engines/mupdfEngine";
+
 // Memory safety limits
 const MAX_PDF_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_RENDERED_WIDTH = 1400; // pixels
-
-// Lazy-init MuPDF WASM module with memoization
-let mupdfPromise: Promise<any> | null = null;
-
-async function loadMuPdf() {
-  if (!mupdfPromise) {
-    // Opaque import: prevents Next bundler from rewriting to require()
-    const importer = new Function('spec', 'return import(spec)');
-    mupdfPromise = (importer("mupdf") as Promise<any>).then((m) => (m?.default ?? m));
-  }
-  return mupdfPromise;
-}
-
-function getPixmapDims(pix: any): { widthPx: number; heightPx: number } {
-  // Common shapes across mupdf JS builds:
-  // - pix.width / pix.height (numbers)
-  // - pix.w / pix.h (numbers)
-  // - pix.getWidth() / pix.getHeight()
-  // - pix.width() / pix.height() (functions)
-  // - pix.getBounds() -> {x0,y0,x1,y1}
-
-  const asNum = (v: any) => (typeof v === "number" ? v : Number(v));
-
-  // direct numeric properties
-  let w = asNum(pix?.width ?? pix?.w);
-  let h = asNum(pix?.height ?? pix?.h);
-
-  // methods
-  if (!Number.isFinite(w) && typeof pix?.getWidth === "function") w = asNum(pix.getWidth());
-  if (!Number.isFinite(h) && typeof pix?.getHeight === "function") h = asNum(pix.getHeight());
-
-  // width()/height() functions
-  if (!Number.isFinite(w) && typeof pix?.width === "function") w = asNum(pix.width());
-  if (!Number.isFinite(h) && typeof pix?.height === "function") h = asNum(pix.height());
-
-  // bounds fallback
-  if ((!Number.isFinite(w) || !Number.isFinite(h)) && typeof pix?.getBounds === "function") {
-    const b = pix.getBounds();
-    const x0 = Number(b?.x0 ?? 0);
-    const y0 = Number(b?.y0 ?? 0);
-    const x1 = Number(b?.x1 ?? 0);
-    const y1 = Number(b?.y1 ?? 0);
-    const bw = x1 - x0;
-    const bh = y1 - y0;
-    if (Number.isFinite(bw) && bw > 0) w = bw;
-    if (Number.isFinite(bh) && bh > 0) h = bh;
-  }
-
-  return { widthPx: w, heightPx: h };
-}
 
 /**
  * Render a PDF page to PNG.
@@ -94,49 +52,14 @@ export async function renderPdfPageToPng(
   }
 
   try {
-    // Get the initialized MuPDF instance (cached, initialized once)
-    let mupdf: any;
-    try {
-      mupdf = await loadMuPdf();
-    } catch (mupdfError) {
-      // MuPDF module not available - provide clear error message
-      const errorMessage = mupdfError instanceof Error ? mupdfError.message : String(mupdfError);
-      throw new Error(
-        `PDF rendering is not available: MuPDF module could not be loaded via import(). ` +
-        `This feature requires the MuPDF WASM module to be installed. ` +
-        `Error: ${errorMessage}`
-      );
-    }
-    
-    // Log module structure for debugging
-    console.log("[renderPdfPage] mupdf module keys:", Object.keys(mupdf).slice(0, 10));
-    console.log("[renderPdfPage] mupdf.Document:", typeof mupdf.Document);
-    
-    // mupdf exports Document directly or as a property
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const Document = (mupdf as any).Document;
-    
-    if (!Document) {
-      throw new Error("mupdf.Document is not available - module may not be fully initialized");
-    }
-    
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if (typeof (Document as any).openDocument !== "function") {
-      console.error("[renderPdfPage] Document structure:", {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        hasOpenDocument: !!(Document as any).openDocument,
-        DocumentKeys: Object.keys(Document).slice(0, 10),
-        DocumentType: typeof Document,
-      });
-      throw new Error("mupdf module not properly initialized. Document.openDocument is not available.");
-    }
+    // Get MuPDF Document class from engine
+    const Document = await getMuPdfDocument();
 
     // Load PDF document from buffer
     // Ensure buffer is a proper Uint8Array for mupdf
     console.log("[renderPdfPage] Opening document, buffer size:", pdfBuffer.length);
     const pdfUint8Array = new Uint8Array(pdfBuffer);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const doc = (Document as any).openDocument(pdfUint8Array, "application/pdf");
+    const doc = Document.openDocument(pdfUint8Array, "application/pdf");
     
     if (!doc) {
       throw new Error("Failed to open PDF document");
@@ -157,62 +80,12 @@ export async function renderPdfPageToPng(
       throw new Error("Failed to load PDF page");
     }
 
-    // --- Bounds detection (MuPDF page box first, then rect fallback) ---
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let box: any = null;
-
-    // Prefer crop box if available (most accurate for visible page)
-    if (typeof (pdfPage as any).getCropBox === "function") {
-      box = (pdfPage as any).getCropBox();
-    } else if (typeof (pdfPage as any).cropBox === "function") {
-      box = (pdfPage as any).cropBox();
-    } else if (typeof (pdfPage as any).cropbox === "function") {
-      box = (pdfPage as any).cropbox();
-    }
-
-    // Fallback to media box
-    if (!box) {
-      if (typeof (pdfPage as any).getMediaBox === "function") {
-        box = (pdfPage as any).getMediaBox();
-      } else if (typeof (pdfPage as any).mediaBox === "function") {
-        box = (pdfPage as any).mediaBox();
-      } else if (typeof (pdfPage as any).mediabox === "function") {
-        box = (pdfPage as any).mediabox();
-      }
-    }
-
-    // LAST resort: rect/bounds
-    if (!box) {
-      if (typeof (pdfPage as any).getBounds === "function") box = (pdfPage as any).getBounds();
-      else if (typeof (pdfPage as any).bound === "function") box = (pdfPage as any).bound();
-      else if (typeof (pdfPage as any).rect === "function") box = (pdfPage as any).rect();
-    }
-
-    // Now normalize box -> boundsPt.
-    // MuPDF boxes are often Rect(0,0,w,h) OR {x0,y0,x1,y1} OR {x0,y0,x1,y1} methods.
-    // Handle all shapes:
-
-    const x0 = Number(box?.x0 ?? box?.x ?? box?.left ?? 0);
-    const y0 = Number(box?.y0 ?? box?.y ?? box?.top ?? 0);
-
-    // If x1/y1 missing, derive from width/height
-    const x1 = Number(box?.x1 ?? box?.right ?? (box?.w != null ? x0 + Number(box.w) : 0));
-    const y1 = Number(box?.y1 ?? box?.bottom ?? (box?.h != null ? y0 + Number(box.h) : 0));
-
-    // Also support array form [x0,y0,x1,y1]
-    let finalX0 = x0, finalY0 = y0, finalX1 = x1, finalY1 = y1;
-    if (Array.isArray(box) && box.length >= 4) {
-      finalX0 = Number(box[0]);
-      finalY0 = Number(box[1]);
-      finalX1 = Number(box[2]);
-      finalY1 = Number(box[3]);
-    }
-
-    const boundsPt = { x0: finalX0, y0: finalY0, x1: finalX1, y1: finalY1 };
+    // Extract page bounds using engine helper
+    const boundsPt = getPageBounds(pdfPage);
     const pageWidthPt = boundsPt.x1 - boundsPt.x0;
     const pageHeightPt = boundsPt.y1 - boundsPt.y0;
 
-    console.log("[renderPdfPage] page box resolved:", { boundsPt, pageWidthPt, pageHeightPt, boxType: typeof box, box });
+    console.log("[renderPdfPage] page box resolved:", { boundsPt, pageWidthPt, pageHeightPt });
     
     // Guard: ensure page dimensions are valid
     if (pageWidthPt <= 0 || pageHeightPt <= 0) {
@@ -244,25 +117,15 @@ export async function renderPdfPageToPng(
       boundsOrigin: { x0: boundsPt.x0, y0: boundsPt.y0 },
     });
 
-    // Create a scale matrix for rendering
-    // mupdf requires a Matrix object and ColorSpace
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const Matrix = (mupdf as any).Matrix;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ColorSpace = (mupdf as any).ColorSpace;
-    
-    if (!Matrix || typeof Matrix.scale !== "function") {
-      throw new Error("mupdf Matrix.scale is not available");
-    }
-    if (!ColorSpace) {
-      throw new Error("mupdf ColorSpace is not available");
-    }
+    // Get MuPDF Matrix and ColorSpace from engine
+    const Matrix = await getMuPdfMatrix();
+    const ColorSpace = await getMuPdfColorSpace();
     
     // ✅ IMPORTANT: normalize box origin to (0,0) before scaling
     // If boundsPt.x0/y0 != 0, failing to translate causes apparent zoom/shift/crop.
     console.log("[renderPdfPage] Building render matrix (translate + scale)");
-    const hasTranslate = typeof (Matrix as any).translate === "function";
-    const hasConcat = typeof (Matrix as any).concat === "function" || typeof (Matrix as any).multiply === "function";
+    const hasTranslate = typeof Matrix.translate === "function";
+    const hasConcat = typeof Matrix.concat === "function" || typeof Matrix.multiply === "function";
     
     let renderMatrix;
     try {
@@ -276,8 +139,8 @@ export async function renderPdfPageToPng(
           originalBounds: boundsPt,
         });
         
-        const translateMatrix = (Matrix as any).translate(-boundsPt.x0, -boundsPt.y0);
-        const concatFn = (Matrix as any).concat ?? (Matrix as any).multiply;
+        const translateMatrix = Matrix.translate(-boundsPt.x0, -boundsPt.y0);
+        const concatFn = Matrix.concat ?? Matrix.multiply;
         
         // renderMatrix = scale ∘ translate (translate first, then scale)
         renderMatrix = concatFn(renderMatrix, translateMatrix);
@@ -374,8 +237,7 @@ export async function renderPdfPageToPng(
     // mupdf.asPNG() returns a mupdf.Buffer, not a Node.js Buffer
     // Convert mupdf Buffer to Node.js Buffer, then to base64
     console.log("[renderPdfPage] Converting mupdf Buffer to Node.js Buffer");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const pngUint8 = (pngMupdfBuffer as any)?.asUint8Array?.() ?? (pngMupdfBuffer as any)?.asUint8Array ?? pngMupdfBuffer;
+    const pngUint8 = pngMupdfBuffer?.asUint8Array?.() ?? pngMupdfBuffer?.asUint8Array ?? pngMupdfBuffer;
     const pngBuffer = Buffer.isBuffer(pngUint8) ? pngUint8 : Buffer.from(pngUint8);
     const pngBase64 = pngBuffer.toString("base64");
     const pngDataUrl = `data:image/png;base64,${pngBase64}`;

@@ -651,59 +651,22 @@ export async function processSignedPdf(
     pdfBuffer: Buffer,
     pageNumber: number
   ): Promise<{ pageWidthPt: number; pageHeightPt: number } | null> {
-    // Try MuPDF first (most accurate)
+    // Use PDF module helper (uses MuPDF engine internally)
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const mupdfModule: any = await import("mupdf");
+      const { getPdfPageDimensionsPt } = await import("@/lib/pdf");
+      const result = await getPdfPageDimensionsPt(pdfBuffer, pageNumber);
       
-      // Most WASM bundles export an async init function as default.
-      const init = mupdfModule.default || mupdfModule;
-      let mupdf: any;
-      if (typeof init === "function") {
-        const result = init();
-        mupdf = result instanceof Promise ? await result : result;
-      } else {
-        mupdf = init;
+      if (result) {
+        // Log PDF page size for debugging (original PDF vs signed PDF)
+        console.log("[Signed Processor] PDF page dimensions from MuPDF (points):", {
+          requestId,
+          page: pageNumber,
+          pageWidthPt: result.pageWidthPt,
+          pageHeightPt: result.pageHeightPt,
+        });
       }
       
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const Document = (mupdf as any).Document;
-      if (!Document || typeof (Document as any).openDocument !== "function") {
-        throw new Error("MuPDF Document.openDocument not available");
-      }
-      
-      const pdfUint8Array = new Uint8Array(pdfBuffer);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const doc = (Document as any).openDocument(pdfUint8Array, "application/pdf");
-      if (!doc) throw new Error("Failed to open PDF document");
-      
-      const docPageCount = doc.countPages();
-      if (pageNumber < 1 || pageNumber > docPageCount) {
-        throw new Error(`Page ${pageNumber} out of range (document has ${docPageCount} pages)`);
-      }
-      
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pdfPage = doc.loadPage(pageNumber - 1);
-      if (!pdfPage) throw new Error("Failed to load PDF page");
-      
-      // ⚠️ CRITICAL: Always use PDF page size, never embedded image size
-      // Get page dimensions in points (PDF user space, 72 DPI)
-      // This is the canonical size - never use image width/height or DPI
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const rect = (pdfPage as any).getBounds();
-      const pageWidthPt = Math.ceil(rect.x1 - rect.x0);
-      const pageHeightPt = Math.ceil(rect.y1 - rect.y0);
-      
-      // Log PDF page size for debugging (original PDF vs signed PDF)
-      console.log("[Signed Processor] PDF page dimensions from MuPDF (points):", {
-        requestId,
-        page: pageNumber,
-        pageWidthPt,
-        pageHeightPt,
-        bounds: { x0: rect.x0, y0: rect.y0, x1: rect.x1, y1: rect.y1 },
-      });
-      
-      return { pageWidthPt, pageHeightPt };
+      return result;
     } catch (mupdfError) {
       // MuPDF failed - try fallback: parse PDF buffer directly for MediaBox/CropBox
       try {
@@ -974,29 +937,9 @@ export async function processSignedPdf(
       // If bounds not available, use default (points are already normalized to 0-based)
       const pdfBounds = await (async () => {
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const mupdfModule: any = await import("mupdf");
-          const init = mupdfModule.default || mupdfModule;
-          let mupdf: any;
-          if (typeof init === "function") {
-            const result = init();
-            mupdf = result instanceof Promise ? await result : result;
-          } else {
-            mupdf = init;
-          }
-          
-          const Document = (mupdf as any).Document;
-          if (!Document) return null;
-          
-          const pdfUint8Array = new Uint8Array(pdfBuffer);
-          const doc = (Document as any).openDocument(pdfUint8Array, "application/pdf");
-          if (!doc) return null;
-          
-          const pdfPage = doc.loadPage(templatePage - 1);
-          if (!pdfPage) return null;
-          
-          const rect = (pdfPage as any).getBounds();
-          return { x0: rect.x0, y0: rect.y0, x1: rect.x1, y1: rect.y1 } as BoundsPt;
+          const { getPdfPageBounds } = await import("@/lib/pdf");
+          const bounds = await getPdfPageBounds(pdfBuffer, templatePage);
+          return bounds as BoundsPt | null;
         } catch {
           return null;
         }

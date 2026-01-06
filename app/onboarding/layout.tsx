@@ -48,13 +48,10 @@ export default async function OnboardingLayout({
     // Allow pages to render - if user is on wrong step, they'll be redirected by page logic
     // or they're on /onboarding/google which is correct
   }
-  // Rule 3: Workspace ready → onboarding is complete (FM Profiles and Templates are settings)
-  // If workspace is ready but onboarding not marked complete, mark it complete
-  else if (cookieWorkspaceReady === "true" && cookieOnboardingCompleted !== "true") {
-    // Workspace is ready, onboarding is effectively complete
-    // User can configure FM Profiles and Templates in settings later
-    redirect("/pro");
-  }
+  // Rule 3: Workspace ready but onboarding not complete
+  // DO NOT redirect to /pro here - let the user complete onboarding
+  // The /pro page will handle checking if workspace is actually loadable
+  // This prevents redirect loops when workspace cookie exists but loadWorkspace() fails
 
   // Allow onboarding pages to render (if we get here, user is on the correct step or will be redirected)
   return (

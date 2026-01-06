@@ -41,7 +41,7 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
     {
       id: "gmail",
       label: "From Inbox",
-      href: "/",
+      href: "/inbox",
       icon: (
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
@@ -149,12 +149,12 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
     // CRITICAL: Free users should NEVER see "From Inbox" (Gmail) as active
     if (isFreePlan && !canUsePro) {
       // Explicitly prevent Gmail/Inbox from being active for Free users
-      if (item.id === "gmail" || item.href === "/") {
+      if (item.id === "gmail" || item.href === "/inbox") {
         return false;
       }
-      // If user is on Gmail page (/) but is Free plan, show "From File" as active
+      // If user is on Gmail page (/inbox) but is Free plan, show "From File" as active
       // This handles the case where redirect is in progress
-      if (pathname === "/" && item.id === "file") {
+      if (pathname === "/inbox" && item.id === "file") {
         return true;
       }
       // Only "From File" should be active for Free users
@@ -178,6 +178,10 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
     // For "Work Orders", match /pro/work-orders
     if (item.id === "work-orders") {
       return pathname === "/pro/work-orders" || pathname?.startsWith("/pro/work-orders");
+    }
+    // For "From Inbox" (Gmail), match /inbox
+    if (item.id === "gmail") {
+      return pathname === "/inbox" || pathname?.startsWith("/inbox");
     }
     return pathname === item.href || (item.href !== "/" && pathname?.startsWith(item.href));
   };

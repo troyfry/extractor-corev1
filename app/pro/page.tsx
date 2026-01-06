@@ -12,20 +12,21 @@
 
 import { redirect } from "next/navigation";
 import { loadWorkspace } from "@/lib/workspace/loadWorkspace";
+import { readWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 import { cookies } from "next/headers";
-import { NextResponse } from "next/server";
 import ProHomePageClient from "./ProHomePageClient";
 
 // Mark this route as dynamic since it uses cookies()
 export const dynamic = 'force-dynamic';
 
 export default async function ProHomePage() {
+  const cookieStore = await cookies();
+  
   // Load workspace (cookie-first, then Users Sheet)
   const workspace = await loadWorkspace();
 
   // If workspace loaded from Users Sheet, set cookies for next request
   if (workspace) {
-    const cookieStore = await cookies();
     const workspaceReady = cookieStore.get("workspaceReady")?.value;
     
     // If workspace was loaded from Sheets, rehydrate cookies
@@ -36,10 +37,29 @@ export default async function ProHomePage() {
     }
   }
 
-  // If no workspace found, redirect to onboarding
+  // If no workspace found, check if workspace is actually ready
   if (!workspace) {
-    console.log("[Pro Page] No workspace found - redirecting to onboarding");
-    redirect("/onboarding");
+    const wsCookies = readWorkspaceCookies(cookieStore);
+    
+    // Check if workspace cookie says ready AND has required fields
+    // If cookie says ready but missing required fields, workspace isn't actually ready
+    const hasRequiredFields = wsCookies.spreadsheetId && wsCookies.folderId;
+    const isWorkspaceReady = wsCookies.workspaceReady === "true" && hasRequiredFields;
+    
+    if (!isWorkspaceReady) {
+      // Workspace is not ready - redirect to onboarding
+      console.log("[Pro Page] No workspace found - redirecting to onboarding", {
+        workspaceReady: wsCookies.workspaceReady,
+        hasSpreadsheetId: !!wsCookies.spreadsheetId,
+        hasFolderId: !!wsCookies.folderId,
+      });
+      redirect("/onboarding");
+    }
+    
+    // Cookie says ready and has required fields, but loadWorkspace() returned null
+    // This might be a temporary issue (quota error, etc.) - allow access
+    // Client-side code can handle this gracefully
+    console.log("[Pro Page] Cookie says workspaceReady with required fields but loadWorkspace() returned null - allowing access (might be temporary)");
   }
 
   // Check for degraded status cookie (quota error)
