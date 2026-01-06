@@ -269,7 +269,6 @@ export async function POST(req: Request) {
               reasonMessage: null,
               snippetImageUrl: processResult.snippetImageUrl || null,
               snippetDriveUrl: processResult.snippetDriveUrl || null,
-              snippetUrl: processResult.snippetUrl || null, // Standardized field
               fmKey: effectiveFmKey,
             });
 

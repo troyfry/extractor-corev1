@@ -3,8 +3,20 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderPdfPage, detectRasterOnlyPdf } from "@/lib/process";
-import { resolvePdfIntentPolicy } from "@/lib/pdf/intent";
+
+// Mock Next.js server modules that are imported transitively
+vi.mock("next/server", () => ({}));
+vi.mock("next-auth", () => ({}));
+
+// Mock signed processor to avoid Next.js dependencies
+vi.mock("@/lib/signed/processor", () => ({
+  processSignedPdfUnified: vi.fn(),
+}));
+
+// Mock OCR service to avoid external dependencies
+vi.mock("@/lib/workOrders/signedOcr", () => ({
+  callSignedOcrService: vi.fn(),
+}));
 
 // Mock dependencies
 vi.mock("@/lib/pdf/renderPdfPage", () => ({
@@ -56,6 +68,9 @@ vi.mock("@/lib/pdf/intent", () => ({
     return null;
   }),
 }));
+
+// Import after mocks
+import { renderPdfPage, detectRasterOnlyPdf } from "@/lib/process";
 
 describe("Process Access Layer - PDF Operations", () => {
   beforeEach(() => {

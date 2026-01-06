@@ -12,5 +12,9 @@ export default defineConfig({
       "@": path.resolve(__dirname, "."),
     },
   },
+  // Exclude Next.js server modules from being resolved in tests
+  optimizeDeps: {
+    exclude: ["next", "next-auth", "next/server"],
+  },
 });
 

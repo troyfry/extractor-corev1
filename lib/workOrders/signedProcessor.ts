@@ -654,7 +654,6 @@ export async function processSignedPdf(
     // Try MuPDF first (most accurate)
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      // @ts-expect-error - mupdf module exists at runtime but has no type declarations
       const mupdfModule: any = await import("mupdf");
       
       // Most WASM bundles export an async init function as default.
@@ -976,7 +975,6 @@ export async function processSignedPdf(
       const pdfBounds = await (async () => {
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          // @ts-expect-error - mupdf module exists at runtime but has no type declarations
           const mupdfModule: any = await import("mupdf");
           const init = mupdfModule.default || mupdfModule;
           let mupdf: any;

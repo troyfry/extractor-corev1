@@ -44,8 +44,8 @@ export async function POST(req: Request) {
 
     // Parse intent and flags
     const intent = parsePdfIntent(intentRaw);
-    const allowRaster = allowRasterRaw === "true" || allowRasterRaw === true;
-    const skipNormalization = skipNormalizationRaw === "true" || skipNormalizationRaw === true;
+    const allowRaster = allowRasterRaw === "true";
+    const skipNormalization = skipNormalizationRaw === "true";
 
     // Use process layer to render PDF page
     const out = await renderPdfPage({

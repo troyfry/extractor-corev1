@@ -29,8 +29,8 @@ async function getMupdfInstance() {
     mupdfInstancePromise = (async () => {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        // @ts-expect-error - mupdf module exists at runtime but has no type declarations
         const mupdfModule: any = await import("mupdf");
+
 
         // Most WASM bundles export an async init function as default.
         // If default is a function, call it (and await if it's async); otherwise, if it's already an object, use it.
