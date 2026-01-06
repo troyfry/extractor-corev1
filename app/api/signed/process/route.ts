@@ -87,8 +87,8 @@ export async function POST(req: Request) {
       });
     }
 
-    // Call unified processor with normalized PDF
-    const result = await processSignedPdfUnified({
+    // Call process layer with normalized PDF
+    const result = await processSignedPdf({
       pdfBytes: normalizedPdfBuffer,
       originalFilename,
       page: pageNumber,

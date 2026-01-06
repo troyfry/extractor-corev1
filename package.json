@@ -10,6 +10,7 @@
     "postinstall": "node scripts/copy-pdfjs-worker.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:report": "vitest run --reporter=json --outputFile=test-results.json && node -e \"const fs = require('fs'); if (fs.existsSync('test-results.json')) { fs.copyFileSync('test-results.json', 'public/test-results.json'); console.log('Test results copied to public/test-results.json'); }\"",
     "verify": "pnpm test"
   },
   "dependencies": {

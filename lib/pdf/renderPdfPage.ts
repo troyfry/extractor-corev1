@@ -12,52 +12,54 @@
 const MAX_PDF_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_RENDERED_WIDTH = 1400; // pixels
 
-// Lazy-init MuPDF WASM module and cache the initialized instance
-let mupdfInstancePromise: Promise<any> | null = null;
-// Track if MuPDF is unavailable (to avoid repeated import attempts)
-let mupdfUnavailable = false;
+// Lazy-init MuPDF WASM module with memoization
+let mupdfPromise: Promise<any> | null = null;
 
-async function getMupdfInstance() {
-  // If we know MuPDF is unavailable, don't try to load it
-  if (mupdfUnavailable) {
-    throw new Error("MuPDF module is not available");
+async function loadMuPdf() {
+  if (!mupdfPromise) {
+    // Opaque import: prevents Next bundler from rewriting to require()
+    const importer = new Function('spec', 'return import(spec)');
+    mupdfPromise = (importer("mupdf") as Promise<any>).then((m) => (m?.default ?? m));
+  }
+  return mupdfPromise;
+}
+
+function getPixmapDims(pix: any): { widthPx: number; heightPx: number } {
+  // Common shapes across mupdf JS builds:
+  // - pix.width / pix.height (numbers)
+  // - pix.w / pix.h (numbers)
+  // - pix.getWidth() / pix.getHeight()
+  // - pix.width() / pix.height() (functions)
+  // - pix.getBounds() -> {x0,y0,x1,y1}
+
+  const asNum = (v: any) => (typeof v === "number" ? v : Number(v));
+
+  // direct numeric properties
+  let w = asNum(pix?.width ?? pix?.w);
+  let h = asNum(pix?.height ?? pix?.h);
+
+  // methods
+  if (!Number.isFinite(w) && typeof pix?.getWidth === "function") w = asNum(pix.getWidth());
+  if (!Number.isFinite(h) && typeof pix?.getHeight === "function") h = asNum(pix.getHeight());
+
+  // width()/height() functions
+  if (!Number.isFinite(w) && typeof pix?.width === "function") w = asNum(pix.width());
+  if (!Number.isFinite(h) && typeof pix?.height === "function") h = asNum(pix.height());
+
+  // bounds fallback
+  if ((!Number.isFinite(w) || !Number.isFinite(h)) && typeof pix?.getBounds === "function") {
+    const b = pix.getBounds();
+    const x0 = Number(b?.x0 ?? 0);
+    const y0 = Number(b?.y0 ?? 0);
+    const x1 = Number(b?.x1 ?? 0);
+    const y1 = Number(b?.y1 ?? 0);
+    const bw = x1 - x0;
+    const bh = y1 - y0;
+    if (Number.isFinite(bw) && bw > 0) w = bw;
+    if (Number.isFinite(bh) && bh > 0) h = bh;
   }
 
-  if (!mupdfInstancePromise) {
-    mupdfInstancePromise = (async () => {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        // @ts-expect-error - mupdf module exists at runtime but has no type declarations
-        const mupdfModule: any = await import("mupdf");
-
-        // Most WASM bundles export an async init function as default.
-        // If default is a function, call it (and await if it's async); otherwise, if it's already an object, use it.
-        const init = mupdfModule.default || mupdfModule;
-
-        if (typeof init === "function") {
-          const result = init();
-          // Handle both sync and async init functions
-          return result instanceof Promise ? await result : result;
-        } else {
-          return init;
-        }
-      } catch (error) {
-        // Mark MuPDF as unavailable to avoid future import attempts
-        mupdfUnavailable = true;
-        mupdfInstancePromise = null; // Clear the promise so we don't retry
-        throw error;
-      }
-    })();
-  }
-
-  try {
-    return await mupdfInstancePromise;
-  } catch (error) {
-    // If import failed, mark as unavailable
-    mupdfUnavailable = true;
-    mupdfInstancePromise = null;
-    throw error;
-  }
+  return { widthPx: w, heightPx: h };
 }
 
 /**
@@ -65,12 +67,12 @@ async function getMupdfInstance() {
  * 
  * @param pdfBuffer PDF buffer
  * @param page Page number (1-indexed)
- * @returns Object with base64 PNG string and dimensions
+ * @returns Object with base64 PNG string, dimensions, and total page count
  */
 export async function renderPdfPageToPng(
   pdfBuffer: Buffer,
   page: number
-): Promise<{ pngBase64: string; width: number; height: number; boundsPt: { x0: number; y0: number; x1: number; y1: number }; pageWidthPt: number; pageHeightPt: number }> {
+): Promise<{ pngDataUrl: string; widthPx: number; heightPx: number; boundsPt: { x0: number; y0: number; x1: number; y1: number }; pageWidthPt: number; pageHeightPt: number; page: number; totalPages: number }> {
   // Validate PDF buffer size
   if (pdfBuffer.length > MAX_PDF_SIZE) {
     throw new Error(`PDF file too large. Maximum size is ${MAX_PDF_SIZE / 1024 / 1024}MB.`);
@@ -95,13 +97,12 @@ export async function renderPdfPageToPng(
     // Get the initialized MuPDF instance (cached, initialized once)
     let mupdf: any;
     try {
-      mupdf = await getMupdfInstance();
+      mupdf = await loadMuPdf();
     } catch (mupdfError) {
       // MuPDF module not available - provide clear error message
-      mupdfUnavailable = true;
       const errorMessage = mupdfError instanceof Error ? mupdfError.message : String(mupdfError);
       throw new Error(
-        `PDF rendering is not available: MuPDF module could not be loaded. ` +
+        `PDF rendering is not available: MuPDF module could not be loaded via import(). ` +
         `This feature requires the MuPDF WASM module to be installed. ` +
         `Error: ${errorMessage}`
       );
@@ -156,28 +157,67 @@ export async function renderPdfPageToPng(
       throw new Error("Failed to load PDF page");
     }
 
-    // ⚠️ CRITICAL: Always render using PDF page size, never embedded image size
-    // Get page dimensions in PDF points (source of truth)
-    // This is the canonical size - never use image width/height or DPI
-    // 
-    // MuPDF getBounds() returns CropBox if available, otherwise MediaBox.
-    // We need to ensure we ALWAYS use the same box for consistency.
+    // --- Bounds detection (MuPDF page box first, then rect fallback) ---
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rect = (pdfPage as any).getBounds();
+    let box: any = null;
+
+    // Prefer crop box if available (most accurate for visible page)
+    if (typeof (pdfPage as any).getCropBox === "function") {
+      box = (pdfPage as any).getCropBox();
+    } else if (typeof (pdfPage as any).cropBox === "function") {
+      box = (pdfPage as any).cropBox();
+    } else if (typeof (pdfPage as any).cropbox === "function") {
+      box = (pdfPage as any).cropbox();
+    }
+
+    // Fallback to media box
+    if (!box) {
+      if (typeof (pdfPage as any).getMediaBox === "function") {
+        box = (pdfPage as any).getMediaBox();
+      } else if (typeof (pdfPage as any).mediaBox === "function") {
+        box = (pdfPage as any).mediaBox();
+      } else if (typeof (pdfPage as any).mediabox === "function") {
+        box = (pdfPage as any).mediabox();
+      }
+    }
+
+    // LAST resort: rect/bounds
+    if (!box) {
+      if (typeof (pdfPage as any).getBounds === "function") box = (pdfPage as any).getBounds();
+      else if (typeof (pdfPage as any).bound === "function") box = (pdfPage as any).bound();
+      else if (typeof (pdfPage as any).rect === "function") box = (pdfPage as any).rect();
+    }
+
+    // Now normalize box -> boundsPt.
+    // MuPDF boxes are often Rect(0,0,w,h) OR {x0,y0,x1,y1} OR {x0,y0,x1,y1} methods.
+    // Handle all shapes:
+
+    const x0 = Number(box?.x0 ?? box?.x ?? box?.left ?? 0);
+    const y0 = Number(box?.y0 ?? box?.y ?? box?.top ?? 0);
+
+    // If x1/y1 missing, derive from width/height
+    const x1 = Number(box?.x1 ?? box?.right ?? (box?.w != null ? x0 + Number(box.w) : 0));
+    const y1 = Number(box?.y1 ?? box?.bottom ?? (box?.h != null ? y0 + Number(box.h) : 0));
+
+    // Also support array form [x0,y0,x1,y1]
+    let finalX0 = x0, finalY0 = y0, finalX1 = x1, finalY1 = y1;
+    if (Array.isArray(box) && box.length >= 4) {
+      finalX0 = Number(box[0]);
+      finalY0 = Number(box[1]);
+      finalX1 = Number(box[2]);
+      finalY1 = Number(box[3]);
+    }
+
+    const boundsPt = { x0: finalX0, y0: finalY0, x1: finalX1, y1: finalY1 };
+    const pageWidthPt = boundsPt.x1 - boundsPt.x0;
+    const pageHeightPt = boundsPt.y1 - boundsPt.y0;
+
+    console.log("[renderPdfPage] page box resolved:", { boundsPt, pageWidthPt, pageHeightPt, boxType: typeof box, box });
     
-    // Ensure we're using the full box (not auto-zoomed to content)
-    // getBounds() should return the full page box, but we verify it's consistent
-    const boundsPt = { x0: rect.x0, y0: rect.y0, x1: rect.x1, y1: rect.y1 };
-    const pageWidthPt = Math.ceil(rect.x1 - rect.x0);
-    const pageHeightPt = Math.ceil(rect.y1 - rect.y0);
-    
-    // Log which box we're using for debugging
-    console.log("[renderPdfPage] PDF box bounds (CropBox if available, else MediaBox):", {
-      boundsPt,
-      pageWidthPt,
-      pageHeightPt,
-      note: "getBounds() returns CropBox if available, otherwise MediaBox",
-    });
+    // Guard: ensure page dimensions are valid
+    if (pageWidthPt <= 0 || pageHeightPt <= 0) {
+      throw new Error(`Invalid PDF page dimensions: width=${pageWidthPt}, height=${pageHeightPt}. Bounds: ${JSON.stringify(boundsPt)}`);
+    }
     
     // Use points for scale calculation (never use image dimensions)
     const pageWidth = pageWidthPt;
@@ -301,83 +341,61 @@ export async function renderPdfPageToPng(
       throw new Error("Failed to convert pixmap to PNG");
     }
     
-    // mupdf.asPNG() returns a mupdf.Buffer, not a Node.js Buffer
-    // Convert mupdf Buffer to Uint8Array, then to Node.js Buffer
-    console.log("[renderPdfPage] Converting mupdf Buffer to Node.js Buffer");
-    const uint8Array = pngMupdfBuffer.asUint8Array();
-    const nodeBuffer = Buffer.from(uint8Array);
-
-    // Convert to base64
-    const pngBase64 = nodeBuffer.toString("base64");
-
     // Get actual pixmap dimensions (these are the actual rendered dimensions)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const actualW = (pixmap as any).width;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const actualH = (pixmap as any).height;
-    
-    const expectedW = Math.round(pageWidthPt * scale);
-    const expectedH = Math.round(pageHeightPt * scale);
-    
-    // If we are off by more than a few pixels, the renderer is not honoring our chosen box.
-    // In that case, we MUST return geometry that matches what was actually rendered.
-    if (Math.abs(actualW - expectedW) > 8 || Math.abs(actualH - expectedH) > 8) {
-      console.warn("[renderPdfPage] Rendered pixmap size does not match expected box; using EFFECTIVE bounds from getBounds()", {
-        expected: { width: expectedW, height: expectedH },
-        actual: { width: actualW, height: actualH },
-        scale,
-        boundsPt,
-        pageWidthPt,
-        pageHeightPt,
-      });
+    const { widthPx, heightPx } = getPixmapDims(pixmap);
 
-      // Fall back to the effective box that toPixmap is actually using
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const eff = (pdfPage as any).getBounds();
-      const effBoundsPt = { x0: eff.x0, y0: eff.y0, x1: eff.x1, y1: eff.y1 };
-      const effWPt = Math.round(effBoundsPt.x1 - effBoundsPt.x0);
-      const effHPt = Math.round(effBoundsPt.y1 - effBoundsPt.y0);
-
-      // Override what we return so downstream mapping matches the image users see
-      // NOTE: Keep a log so you know this PDF cannot be normalized without a different render API
-      console.warn("[renderPdfPage] Returning effective bounds that match actual rendered image:", {
-        effectiveBoundsPt: effBoundsPt,
-        effectivePageSize: { widthPt: effWPt, heightPt: effHPt },
-        actualRenderSize: { width: actualW, height: actualH },
-      });
-      
-      return {
-        pngBase64,
-        width: actualW,
-        height: actualH,
-        boundsPt: effBoundsPt,
-        pageWidthPt: effWPt,
-        pageHeightPt: effHPt,
-      };
+    console.log("[renderPdfPage] Pixmap dims resolved:", {
+      widthPx,
+      heightPx,
+      pixKeys: pixmap ? Object.keys(pixmap) : null,
+      widthType: typeof pixmap?.width,
+      heightType: typeof pixmap?.height,
+      wType: typeof pixmap?.w,
+      hType: typeof pixmap?.h,
+      hasGetWidth: typeof pixmap?.getWidth === "function",
+      hasGetHeight: typeof pixmap?.getHeight === "function",
+    });
+    
+    // Guard: ensure pixmap dimensions are valid
+    if (!Number.isFinite(widthPx) || !Number.isFinite(heightPx) || widthPx <= 0 || heightPx <= 0) {
+      throw new Error(`Invalid pixmap dimensions: width=${widthPx}, height=${heightPx}`);
     }
     
-    // Log PDF page size vs rendered image size for debugging
-    console.log("[renderPdfPage] PDF page size (points) vs rendered image size (pixels):", {
+    // Geometry check: verify PDF points align with rendered pixels
+    console.log("[renderPdfPage] Geometry check:", {
       pageWidthPt,
       pageHeightPt,
-      boundsPt,
-      renderPx: { width: actualW, height: actualH },
-      scale,
-      expected: { width: expectedW, height: expectedH },
-      match: Math.abs(actualW - expectedW) <= 8 && Math.abs(actualH - expectedH) <= 8,
+      widthPx,
+      heightPx,
+      scaleApproxW: widthPx / pageWidthPt,
+      scaleApproxH: heightPx / pageHeightPt,
     });
-
+    
+    // mupdf.asPNG() returns a mupdf.Buffer, not a Node.js Buffer
+    // Convert mupdf Buffer to Node.js Buffer, then to base64
+    console.log("[renderPdfPage] Converting mupdf Buffer to Node.js Buffer");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pngUint8 = (pngMupdfBuffer as any)?.asUint8Array?.() ?? (pngMupdfBuffer as any)?.asUint8Array ?? pngMupdfBuffer;
+    const pngBuffer = Buffer.isBuffer(pngUint8) ? pngUint8 : Buffer.from(pngUint8);
+    const pngBase64 = pngBuffer.toString("base64");
+    const pngDataUrl = `data:image/png;base64,${pngBase64}`;
+    
     // Return geometry matching the rendered image
-    // - boundsPt: PDF box bounds (CropBox if available, else MediaBox)
-    // - pageWidthPt/pageHeightPt: dimensions of the PDF box
-    // - width/height: actual rendered image pixel dimensions
+    // - boundsPt: PDF box bounds (CropBox if available, else MediaBox) - all real numbers
+    // - pageWidthPt/pageHeightPt: dimensions of the PDF box - computed from bounds
+    // - widthPx/heightPx: actual rendered image pixel dimensions - from pixmap
+    // - pngDataUrl: full data URL for the rendered image
+    // - page: the page number that was rendered (1-indexed)
+    // - totalPages: total number of pages in the PDF document
     return {
-      pngBase64,
-      width: actualW,
-      height: actualH,
+      pngDataUrl,
+      widthPx,
+      heightPx,
       boundsPt,
       pageWidthPt,
       pageHeightPt,
+      page,
+      totalPages: pageCount,
     };
   } catch (error) {
     console.error("[renderPdfPage] Error rendering PDF page:", error);

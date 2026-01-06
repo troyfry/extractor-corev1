@@ -31,51 +31,8 @@ function toSheetCoordSystem(coordSystem?: string): string {
   return coordSystem || "";
 }
 
-// pdf.js - will be loaded dynamically using ESM legacy build
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let pdfjsLibPromise: Promise<any> | null = null;
-
-// Shared helper to initialize pdf.js (used by both useEffect and handleFileUpload)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function initPdfJsLib(): Promise<any> {
-  // Only run in browser
-  if (typeof window === "undefined") {
-    throw new Error("PDF.js can only be initialized in the browser");
-  }
-
-  if (pdfjsLibPromise) {
-    return pdfjsLibPromise;
-  }
-
-  pdfjsLibPromise = (async () => {
-    try {
-      // Import pdfjs-dist ESM legacy build
-      const pdfjsModule = await import("pdfjs-dist/legacy/build/pdf.min.mjs");
-      
-      // Handle default export fallback
-      const pdfjsLib = pdfjsModule.default ?? pdfjsModule;
-      
-      // Configure worker to use file from /public
-      if (pdfjsLib && pdfjsLib.GlobalWorkerOptions) {
-        pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
-      }
-      
-      // Verify getDocument is available
-      if (!pdfjsLib || typeof pdfjsLib.getDocument !== "function") {
-        throw new Error("PDF.js getDocument function not found");
-      }
-      
-      console.log("[PDF.js] Initialized successfully with ESM legacy build");
-      return pdfjsLib;
-    } catch (error) {
-      console.error("[PDF.js] Failed to initialize:", error);
-      pdfjsLibPromise = null; // Reset on error so we can retry
-      throw error;
-    }
-  })();
-
-  return pdfjsLibPromise;
-}
+// PDF rendering now uses server-side MuPDF API (/api/pdf/render-page) with intent=TEMPLATE_CAPTURE
+// This ensures consistent PDF Intent policy enforcement across all template capture flows
 
 type FmProfile = {
   fmKey: string;
@@ -123,9 +80,6 @@ export default function OnboardingTemplatesPage() {
   const [pageHeightPt, setPageHeightPt] = useState<number>(0);
   const [boundsPt, setBoundsPt] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [cropZone, setCropZone] = useState<CropZone | null>(null);
-  // Store the viewport used for rendering (needed for accurate pixel->PDF point conversion)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [currentViewport, setCurrentViewport] = useState<any>(null);
   const [isSelecting, setIsSelecting] = useState(false);
   const [startPos, setStartPos] = useState<{ x: number; y: number } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -141,13 +95,23 @@ export default function OnboardingTemplatesPage() {
   const [selectedPage, setSelectedPage] = useState<number>(1);
   const [pageCount, setPageCount] = useState<number>(0);
   const [coordsPage, setCoordsPage] = useState<number | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [pdfDoc, setPdfDoc] = useState<any>(null);
   const hasInitializedFromQuery = useRef<boolean>(false);
   const [manualCoords, setManualCoords] = useState<{ xPct: string; yPct: string; wPct: string; hPct: string } | null>(null);
   const [manualPoints, setManualPoints] = useState<{ xPt: string; yPt: string; wPt: string; hPt: string } | null>(null);
   const [calculatedPoints, setCalculatedPoints] = useState<{ xPt: number; yPt: number; wPt: number; hPt: number } | null>(null);
   const [imageLoaded, setImageLoaded] = useState(false);
+  const [isTestingExtract, setIsTestingExtract] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    workOrderNumber?: string | null;
+    woNumber?: string | null;
+    extractedText?: string;
+    rawText?: string;
+    confidence?: number;
+    confidenceRaw?: number;
+    confidenceLabel?: string;
+    snippetImageUrl?: string | null;
+  } | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
 
   // Auto-select fmKey from query parameter (will be validated after profiles load)
   useEffect(() => {
@@ -159,13 +123,6 @@ export default function OnboardingTemplatesPage() {
       hasInitializedFromQuery.current = true;
     }
   }, [searchParams]);
-
-  // Initialize pdf.js on mount
-  useEffect(() => {
-    initPdfJsLib().catch(() => {
-      // Error already logged in helper
-    });
-  }, []);
 
   // Load FM profiles on mount
   useEffect(() => {
@@ -501,68 +458,8 @@ export default function OnboardingTemplatesPage() {
       return; // HARD BLOCK: Do not proceed to renderPage
     }
 
-    // ⚠️ STEP 3: PAGE DIMENSION VALIDATION (BLOCK NON-STANDARD SIZES)
-    // Phone photo scans and unusual PDFs have non-standard page dimensions
-    // Standard sizes: Letter (612x792), A4 (595x842), Legal (612x1008), etc.
-    try {
-      const pdfjs = await initPdfJsLib();
-      const arrayBuffer = await file.arrayBuffer();
-      const pdfDoc = await pdfjs.getDocument({ data: arrayBuffer }).promise;
-      
-      if (pdfDoc.numPages < 1) {
-        blockUpload(
-          "no_pages",
-          "PDF has no pages. Please upload a valid work order PDF."
-        );
-        return; // HARD BLOCK
-      }
-
-      // Get first page dimensions
-      const firstPage = await pdfDoc.getPage(1);
-      const viewport = firstPage.getViewport({ scale: 1 });
-      const pageWidthPt = viewport.width;
-      const pageHeightPt = viewport.height;
-
-      // Use client-safe page dimension validation (doesn't import server-side code)
-      const { validatePageDimensions } = await import("@/lib/templates/pageDimensions");
-      const dimensionResult = validatePageDimensions(pageWidthPt, pageHeightPt);
-      const matchesStandard = dimensionResult.isStandard;
-
-      if (!matchesStandard) {
-        // Check for override flag (debug only)
-        const allowOverride = new URLSearchParams(window.location.search).get("allowNonStandardSize") === "true";
-        if (!allowOverride) {
-          blockUpload(
-            "non_standard_page_size",
-            `This PDF has non-standard page dimensions (${pageWidthPt.toFixed(1)} x ${pageHeightPt.toFixed(1)} points). ` +
-            "Template capture requires standard page sizes (Letter, A4, Legal, etc.). " +
-            "Phone photo scans and unusual PDFs are not supported. Please use the original digital work order PDF."
-          );
-          return; // HARD BLOCK: Do not proceed to renderPage
-        } else {
-          console.warn("[Onboarding] Non-standard page size allowed due to override flag", {
-            width: pageWidthPt,
-            height: pageHeightPt,
-          });
-        }
-      } else {
-        console.log("[Onboarding] Page dimensions validated:", {
-          width: pageWidthPt,
-          height: pageHeightPt,
-          matchesStandard: true,
-        });
-      }
-    } catch (dimError) {
-      // If dimension check fails, block upload (fail closed)
-      console.error("[Onboarding] Page dimension validation error:", dimError);
-      blockUpload(
-        "page_dimension_check_error",
-        "Failed to validate PDF page dimensions. Please ensure you're uploading the original digital work order PDF."
-      );
-      return; // HARD BLOCK: Do not proceed to renderPage
-    }
-
-    // ✅ VALIDATION PASSED: PDF is digital (has text layer), filename is clean, and page size is standard
+    // ✅ VALIDATION PASSED: PDF is digital (has text layer) and filename is clean
+    // Server-side rendering will handle page dimension validation and raster detection
     // Now proceed to render and allow template capture
     setPdfFile(file);
     setError(null);
@@ -573,16 +470,12 @@ export default function OnboardingTemplatesPage() {
     setCropZone(null);
     setCoordsPage(null);
     setSelectedPage(1);
-    setPageCount(1); // Will be updated when we get page count from API
-    setPdfDoc(null);
-    setCurrentViewport(null); // Clear viewport (no longer used)
+    // Page count will be set from API response in renderPage()
 
     try {
-      // ⚠️ IMPORTANT: Do NOT normalize PDFs for template capture
-      // Template capture must use the ORIGINAL digital PDF coordinates
-      // Normalization is only for signed PDF processing (OCR/matching)
-      // Render first page using PDF.js (client-side, no MuPDF dependency)
-      await renderPageWithPdfJs(file, 1);
+      // Render first page using server-side MuPDF API with TEMPLATE_CAPTURE intent
+      // This ensures server-side validation (raster detection, page dimensions) and consistent policy enforcement
+      await renderPage(file, 1);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Failed to render PDF";
       console.error("[PDF Render] Error:", err);
@@ -654,65 +547,65 @@ export default function OnboardingTemplatesPage() {
     });
   }
 
-  async function renderPageWithPdfJs(file: File, pageNum: number) {
+  async function renderPage(file: File, pageNum: number) {
     setIsRenderingPdf(true);
     setError(null);
 
     try {
-      const pdfjs = await initPdfJsLib();
-      const buf = await file.arrayBuffer();
+      const formData = new FormData();
+      formData.append("pdf", file);
+      formData.append("page", String(pageNum));
+      formData.append("intent", "TEMPLATE_CAPTURE");
 
-      const loadingTask = pdfjs.getDocument({ data: buf });
-      const doc = await loadingTask.promise;
-      setPageCount(doc.numPages);
-      setPdfDoc(doc);
+      const response = await fetch("/api/pdf/render-page", {
+        method: "POST",
+        body: formData,
+      });
 
-      const page = await doc.getPage(pageNum);
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Failed to render PDF page" }));
+        const errorMessage = errorData.error || "Failed to render PDF page";
+        
+        // Handle server-side validation errors (raster-only PDF, etc.)
+        if (response.status === 400) {
+          // Server blocked the PDF (raster-only, non-standard size, etc.)
+          setError(errorMessage);
+          setPdfFile(null);
+          setPreviewImage(null);
+          setCropZone(null);
+          setPageWidthPt(0);
+          setPageHeightPt(0);
+          setBoundsPt(null);
+          return;
+        }
+        
+        throw new Error(errorMessage);
+      }
 
-      // 1.0 scale gives you "PDF points-ish" viewport units (1/72 inch)
-      // but you can bump scale for clearer preview
-      const scale = 2;
-      const viewport = page.getViewport({ scale });
+      const data = await response.json();
 
-      // Canvas render
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("Canvas context not available");
+      // Update state from API response
+      setPreviewImage(data.pngDataUrl);
+      setImageLoaded(false); // Image load will flip it true
+      setImageWidth(data.widthPx);
+      setImageHeight(data.heightPx);
+      setPageWidthPt(data.pageWidthPt);
+      setPageHeightPt(data.pageHeightPt);
+      setBoundsPt(data.boundsPt);
+      setPageCount(data.totalPages); // Set total pages from API
+      setSelectedPage(data.page); // Set current page from API
 
-      canvas.width = Math.ceil(viewport.width);
-      canvas.height = Math.ceil(viewport.height);
-
-      await page.render({ canvasContext: ctx, viewport }).promise;
-
-      // Preview image
-      const pngDataUrl = canvas.toDataURL("image/png");
-
-      setPreviewImage(pngDataUrl);
-      setImageLoaded(false);
-      setImageWidth(canvas.width);
-      setImageHeight(canvas.height);
-
-      // PDF page size in points:
-      // viewport.width/height at scale=1 equals points (PDF units) typically.
-      const ptViewport = page.getViewport({ scale: 1 });
-      setPageWidthPt(ptViewport.width);
-      setPageHeightPt(ptViewport.height);
-
-      // boundsPt: PDF.js assumes origin at top-left of viewport for rendering.
-      // If your conversion code needs boundsPt, set a simple default:
-      setBoundsPt({ x0: 0, y0: 0, x1: ptViewport.width, y1: ptViewport.height });
-
-      // Clear viewport (no longer needed - we use proportional math)
-      setCurrentViewport(null);
-
-      console.log("[Onboarding] Rendered via PDF.js:", {
+      console.log("[Onboarding] Rendered via MuPDF API:", {
         pageNum,
-        canvas: { w: canvas.width, h: canvas.height },
-        pt: { w: ptViewport.width, h: ptViewport.height },
+        page: data.page,
+        totalPages: data.totalPages,
+        imageSize: { w: data.widthPx, h: data.heightPx },
+        pageSize: { w: data.pageWidthPt, h: data.pageHeightPt },
+        boundsPt: data.boundsPt,
       });
     } catch (e: any) {
-      console.error(e);
-      setError(e?.message || "Failed to render PDF with PDF.js");
+      console.error("[Onboarding] Render error:", e);
+      setError(e?.message || "Failed to render PDF");
       setPreviewImage(null);
       setPageWidthPt(0);
       setPageHeightPt(0);
@@ -726,7 +619,7 @@ export default function OnboardingTemplatesPage() {
     if (!_pdfFile || newPage < 1 || newPage > pageCount) return;
     
     setSelectedPage(newPage);
-    await renderPageWithPdfJs(_pdfFile, newPage);
+    await renderPage(_pdfFile, newPage);
   }
 
   function handlePointerUp(e: React.PointerEvent<HTMLDivElement>) {
@@ -1001,8 +894,8 @@ export default function OnboardingTemplatesPage() {
     // Read displayedRect from imgRef.current.getBoundingClientRect()
     const displayedRect = imgRef.current.getBoundingClientRect();
     
-    // Use renderedWidthPx/renderedHeightPx from PDF.js canvas rendering
-    // These are stored in imageWidth/imageHeight state (set in renderPageWithPdfJs function)
+    // Use renderedWidthPx/renderedHeightPx from MuPDF API rendering
+    // These are stored in imageWidth/imageHeight state (set in renderPage function)
     const renderedWidthPx = imageWidth;
     const renderedHeightPx = imageHeight;
     
@@ -1143,6 +1036,143 @@ export default function OnboardingTemplatesPage() {
     }
   }
 
+  async function handleTestExtract() {
+    // Prevent double-submit
+    if (isTestingExtract) return;
+
+    // Same validation as handleSave
+    if (!selectedFmKey) {
+      setTestError("Please select an FM profile");
+      return;
+    }
+
+    if (!_pdfFile) {
+      setTestError("Please upload a PDF file");
+      return;
+    }
+
+    if (!previewImage || !cropZone) {
+      setTestError("Please draw a crop zone first");
+      return;
+    }
+
+    if (cropZone.width <= 0 || cropZone.height <= 0) {
+      setTestError("Invalid crop zone");
+      return;
+    }
+
+    if (!pageWidthPt || !pageHeightPt || !boundsPt) {
+      setTestError("PDF page dimensions not available");
+      return;
+    }
+
+    if (coordsPage !== selectedPage) {
+      setTestError("Crop zone is on a different page. Please draw a rectangle on the current page.");
+      return;
+    }
+
+    setIsTestingExtract(true);
+    setTestError(null);
+    setTestResult(null);
+
+    try {
+      // Use the same points conversion as handleSave
+      if (!imgRef.current) {
+        throw new Error("Image element not available");
+      }
+
+      const displayedRect = imgRef.current.getBoundingClientRect();
+      const renderedWidthPx = imageWidth;
+      const renderedHeightPx = imageHeight;
+
+      const { xPt, yPt, wPt, hPt } = cssPixelsToPdfPoints(
+        {
+          x: cropZone.x,
+          y: cropZone.y,
+          width: cropZone.width,
+          height: cropZone.height,
+        },
+        { width: displayedRect.width, height: displayedRect.height },
+        { width: renderedWidthPx, height: renderedHeightPx },
+        { width: pageWidthPt, height: pageHeightPt },
+        boundsPt
+      );
+
+      // Validate points
+      const crop: PdfCropPoints = {
+        xPt,
+        yPt,
+        wPt,
+        hPt,
+        pageWidthPt,
+        pageHeightPt,
+        boundsPt,
+      };
+      assertPdfCropPointsValid(crop, selectedFmKey);
+
+      // Build FormData for OCR service
+      const formData = new FormData();
+      formData.append("file", _pdfFile);
+      formData.append("templateId", selectedFmKey); // Use fmKey as templateId
+      formData.append("page", String(selectedPage));
+      formData.append("dpi", "200");
+      formData.append("xPt", String(xPt));
+      formData.append("yPt", String(yPt));
+      formData.append("wPt", String(wPt));
+      formData.append("hPt", String(hPt));
+      formData.append("pageWidthPt", String(pageWidthPt));
+      formData.append("pageHeightPt", String(pageHeightPt));
+
+      // Use Next.js API route to proxy OCR request
+      const ocrEndpoint = "/api/ocr/test-extract";
+
+      console.log("[Test Extract] Calling OCR service:", {
+        endpoint: ocrEndpoint,
+        templateId: selectedFmKey,
+        page: selectedPage,
+        points: { xPt, yPt, wPt, hPt },
+        pageDims: { pageWidthPt, pageHeightPt },
+      });
+
+      const response = await fetch(ocrEndpoint, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorMessage = `OCR service returned ${response.status}`;
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorMessage = errorJson.error || errorJson.message || errorMessage;
+        } catch {
+          errorMessage = errorText || errorMessage;
+        }
+        throw new Error(errorMessage);
+      }
+
+      const result = await response.json();
+      console.log("[Test Extract] OCR result:", result);
+
+      // Normalize response format (handle different field names)
+      setTestResult({
+        workOrderNumber: result.workOrderNumber || result.woNumber || null,
+        woNumber: result.woNumber || result.workOrderNumber || null,
+        extractedText: result.extractedText || result.rawText || "",
+        rawText: result.rawText || result.extractedText || "",
+        confidence: result.confidence || result.confidenceRaw,
+        confidenceRaw: result.confidenceRaw || result.confidence,
+        confidenceLabel: result.confidenceLabel,
+        snippetImageUrl: result.snippetImageUrl || null,
+      });
+    } catch (err) {
+      console.error("[Test Extract] Error:", err);
+      setTestError(err instanceof Error ? err.message : "Failed to test extract");
+    } finally {
+      setIsTestingExtract(false);
+    }
+  }
+
   function handleClearRectangle() {
     setCropZone(null);
     setCoordsPage(null);
@@ -1150,6 +1180,8 @@ export default function OnboardingTemplatesPage() {
     setIsSelecting(false);
     setManualCoords(null);
     setManualPoints(null);
+    setTestResult(null);
+    setTestError(null);
   }
 
   const percentages = calculatePercentages();
@@ -1534,8 +1566,55 @@ export default function OnboardingTemplatesPage() {
             </div>
           )}
 
+          {/* Test Extract Result */}
+          {testError && (
+            <div className="p-4 bg-red-900/20 border border-red-700 rounded-lg text-red-200">
+              <p className="font-medium mb-1">Test Extract Error</p>
+              <p className="text-sm">{testError}</p>
+            </div>
+          )}
+
+          {testResult && (
+            <div className="p-4 bg-purple-900/20 border border-purple-700 rounded-lg text-purple-200">
+              <p className="font-medium mb-2">Test Extract Result</p>
+              {(testResult.workOrderNumber || testResult.woNumber) && (
+                <p className="text-sm mb-1">
+                  <span className="font-semibold">Work Order Number:</span>{" "}
+                  {testResult.workOrderNumber || testResult.woNumber}
+                </p>
+              )}
+              {(testResult.confidence !== undefined || testResult.confidenceRaw !== undefined) && (
+                <p className="text-sm mb-1">
+                  <span className="font-semibold">Confidence:</span>{" "}
+                  {testResult.confidenceLabel && (
+                    <span className="uppercase">{testResult.confidenceLabel} </span>
+                  )}
+                  ({((testResult.confidenceRaw || testResult.confidence || 0) * 100).toFixed(1)}%)
+                </p>
+              )}
+              {(testResult.rawText || testResult.extractedText) && (
+                <p className="text-sm mb-2">
+                  <span className="font-semibold">Extracted Text:</span>{" "}
+                  <span className="font-mono text-xs bg-slate-800/50 px-2 py-1 rounded">
+                    {testResult.rawText || testResult.extractedText}
+                  </span>
+                </p>
+              )}
+              {testResult.snippetImageUrl && (
+                <div className="mt-2">
+                  <p className="text-sm font-semibold mb-1">Snippet Preview:</p>
+                  <img
+                    src={testResult.snippetImageUrl}
+                    alt="OCR snippet"
+                    className="max-w-md border border-purple-600 rounded"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Actions */}
-          <div className="flex gap-4">
+          <div className="flex gap-4 flex-wrap">
             <button
               onClick={handleSave}
               disabled={
@@ -1549,6 +1628,25 @@ export default function OnboardingTemplatesPage() {
               className="px-6 py-3 bg-sky-600 hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
             >
               {isSaving ? "Saving..." : "Save Template Zone"}
+            </button>
+            <button
+              onClick={handleTestExtract}
+              disabled={
+                isTestingExtract ||
+                !selectedFmKey ||
+                !previewImage ||
+                !cropZone ||
+                cropZone.width <= 0 ||
+                cropZone.height <= 0 ||
+                !pageWidthPt ||
+                !pageHeightPt ||
+                !boundsPt ||
+                coordsPage === null ||
+                coordsPage !== selectedPage
+              }
+              className="px-6 py-3 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+            >
+              {isTestingExtract ? "Testing..." : "Test Extract"}
             </button>
             {cropZone && (
               <button

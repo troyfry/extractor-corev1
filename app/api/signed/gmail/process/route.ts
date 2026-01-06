@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
 import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
-import { processSignedPdfUnified } from "@/lib/signed/processor";
+import { processSignedPdf } from "@/lib/process";
 import { createGmailClient } from "@/lib/google/gmail";
 import { extractPdfAttachments } from "@/lib/google/gmailExtract";
 
@@ -209,10 +209,10 @@ export async function POST(req: Request) {
             // Gmail uses URL-safe base64, convert to standard base64
             const pdfBuffer = Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 
-            // Call unified processor with matched fmKey and source metadata
+            // Call process layer with matched fmKey and source metadata
             let processResult;
             try {
-              processResult = await processSignedPdfUnified({
+              processResult = await processSignedPdf({
                 pdfBytes: pdfBuffer,
                 originalFilename: filename,
                 page: 1, // Default to page 1, can be made configurable

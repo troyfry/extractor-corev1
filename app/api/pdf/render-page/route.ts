@@ -3,15 +3,23 @@
  * 
  * POST /api/pdf/render-page
  * Body: multipart/form-data with:
- *   - pdf: File (PDF file)
- *   - page: number (1-based page number)
+ *   - pdf: File (PDF file) - required
+ *   - page: number (1-based page number) - required
+ *   - OPTIONAL: intent (string) - "TEMPLATE_CAPTURE" | "SIGNED_PROCESSING" | "GENERAL_VIEW"
+ *   - OPTIONAL: allowRaster (string "true"/"false") - default false for TEMPLATE_CAPTURE, true otherwise
+ *   - OPTIONAL: skipNormalization (string "true"/"false") - legacy flag, honored if intent missing
  * 
- * Returns: { pngDataUrl, widthPx, heightPx, boundsPt: { x0, y0, x1, y1 }, pageWidthPt, pageHeightPt }
+ * Returns: { pngDataUrl, widthPx, heightPx, boundsPt: { x0, y0, x1, y1 }, pageWidthPt, pageHeightPt, page, totalPages }
+ * 
+ * Intent-based behavior:
+ * - TEMPLATE_CAPTURE: normalize=false, block raster-only PDFs (unless allowRaster=true)
+ * - SIGNED_PROCESSING: normalize=true (unless skipNormalization=true), allowRaster=true
+ * - GENERAL_VIEW or missing: backwards compatible (honor skipNormalization flag)
  */
 
 import { NextResponse } from "next/server";
-import { renderPdfPageToPng } from "@/lib/pdf/renderPdfPage";
-import { detectRasterOnlyPdf } from "@/lib/templates";
+import { renderPdfPage } from "@/lib/process";
+import { parsePdfIntent } from "@/lib/pdf/intent";
 
 export const runtime = "nodejs";
 
@@ -21,7 +29,9 @@ export async function POST(req: Request) {
 
     const file = form.get("pdf");
     const pageRaw = form.get("page");
-    const skipNormalization = form.get("skipNormalization") === "true"; // For template capture
+    const intentRaw = form.get("intent");
+    const allowRasterRaw = form.get("allowRaster");
+    const skipNormalizationRaw = form.get("skipNormalization");
 
     if (!(file instanceof File)) {
       return NextResponse.json({ error: "Missing file" }, { status: 400 });
@@ -32,44 +42,36 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid page" }, { status: 400 });
     }
 
-    const pdfBuffer = Buffer.from(await file.arrayBuffer());
-    
-    // ⚠️ DO NOT normalize PDFs for template capture - template capture needs original coordinates
-    // Normalization is only for signed PDF processing (OCR/matching)
-    // Template capture must use the original PDF to ensure accurate coordinate mapping
-    if (skipNormalization) {
-      console.log("[PDF Render API] Skipping normalization (template capture):", {
-        filename: file.name,
-        size: pdfBuffer.length,
-      });
-      
-      // ⚠️ SERVER-SIDE VALIDATION: Reject raster-only PDFs for template capture
-      // Template capture requires the original digital PDF (text-based)
-      // Scans/signed photos are not allowed
-      const isRasterOnly = await detectRasterOnlyPdf(pdfBuffer);
-      if (isRasterOnly) {
-        return NextResponse.json(
-          { 
-            error: "Template capture requires the original digital PDF (text-based). Scans/signed photos are not allowed." 
-          },
-          { status: 400 }
-        );
-      }
-    }
+    // Parse intent and flags
+    const intent = parsePdfIntent(intentRaw);
+    const allowRaster = allowRasterRaw === "true" || allowRasterRaw === true;
+    const skipNormalization = skipNormalizationRaw === "true" || skipNormalizationRaw === true;
 
-    const out = await renderPdfPageToPng(pdfBuffer, page);
+    // Use process layer to render PDF page
+    const out = await renderPdfPage({
+      pdf: file,
+      page,
+      intent: intent ?? undefined,
+      allowRaster: allowRaster || undefined,
+      skipNormalization: skipNormalization || undefined,
+    });
 
     // Return geometry matching the rendered image
-    // - boundsPt: PDF box bounds (CropBox if available, else MediaBox)
-    // - pageWidthPt/pageHeightPt: dimensions of the PDF box
-    // - widthPx/heightPx: actual rendered image pixel dimensions (renderPx)
+    // - boundsPt: PDF box bounds (CropBox if available, else MediaBox) - all real numbers
+    // - pageWidthPt/pageHeightPt: dimensions of the PDF box - computed from bounds
+    // - widthPx/heightPx: actual rendered image pixel dimensions - from pixmap
+    // - pngDataUrl: full data URL for the rendered image
+    // - page: the page number that was rendered (1-indexed)
+    // - totalPages: total number of pages in the PDF document
     return NextResponse.json({
-      pngDataUrl: `data:image/png;base64,${out.pngBase64}`,
-      widthPx: out.width,  // renderPx.width - actual rendered image dimensions
-      heightPx: out.height, // renderPx.height - actual rendered image dimensions
+      pngDataUrl: out.pngDataUrl, // Full data URL (data:image/png;base64,...)
+      widthPx: out.widthPx, // Actual rendered image width in pixels
+      heightPx: out.heightPx, // Actual rendered image height in pixels
       boundsPt: out.boundsPt, // PDF box bounds (CropBox if available, else MediaBox)
       pageWidthPt: out.pageWidthPt, // PDF box width in points
       pageHeightPt: out.pageHeightPt, // PDF box height in points
+      page: out.page, // Current page number (1-indexed)
+      totalPages: out.totalPages, // Total number of pages in the PDF
     });
   } catch (error) {
     console.error("[PDF Render API] Error:", error);

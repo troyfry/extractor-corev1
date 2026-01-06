@@ -9,7 +9,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { detectRasterOnlyPdf } from "@/lib/templates";
+import { detectRasterOnlyPdf } from "@/lib/process";
 
 export const runtime = "nodejs";
 
@@ -22,10 +22,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing file" }, { status: 400 });
     }
 
-    const pdfBuffer = Buffer.from(await file.arrayBuffer());
-    const isRasterOnly = await detectRasterOnlyPdf(pdfBuffer);
+    const result = await detectRasterOnlyPdf({ pdf: file });
 
-    return NextResponse.json({ isRasterOnly });
+    return NextResponse.json({ isRasterOnly: result.isRasterOnly });
   } catch (error) {
     console.error("[PDF Detect Raster] Error:", error);
     const errorMessage = error instanceof Error ? error.message : "Failed to detect raster PDF";
