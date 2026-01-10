@@ -27,6 +27,20 @@ export default function InboxPage() {
   const [expandedEmails, setExpandedEmails] = useState<Set<string>>(new Set());
   const selectAllCheckboxRef = useRef<HTMLInputElement>(null);
 
+  // Helper function to sort emails by date (oldest first)
+  const sortEmailsByDate = (emailList: GmailFoundEmail[]): GmailFoundEmail[] => {
+    return [...emailList].sort((a, b) => {
+      const dateA = a.date ? new Date(a.date).getTime() : 0;
+      const dateB = b.date ? new Date(b.date).getTime() : 0;
+      // Handle invalid dates - put them at the end
+      if (isNaN(dateA) && isNaN(dateB)) return 0;
+      if (isNaN(dateA)) return 1; // Invalid dates go to end
+      if (isNaN(dateB)) return -1; // Valid dates come first
+      // Return oldest first (ascending order)
+      return dateA - dateB;
+    });
+  };
+
   // Load emails on mount
   useEffect(() => {
     loadEmails();
@@ -54,9 +68,12 @@ export default function InboxPage() {
 
       const data = await response.json();
       if (pageToken) {
-        setEmails((prev) => [...prev, ...data.emails]);
+        // When loading more, combine and sort the entire list to ensure proper chronological order
+        // This ensures the oldest email from ALL loaded pages appears first
+        setEmails((prev) => sortEmailsByDate([...prev, ...data.emails]));
       } else {
-        setEmails(data.emails || []);
+        // Initial load - sort to ensure oldest email is first
+        setEmails(sortEmailsByDate(data.emails || []));
         setSelectedEmails(new Set()); // Clear selection when loading new page
       }
       setNextPageToken(data.nextPageToken || null);

@@ -563,6 +563,7 @@ ${pdfText}`;
     let processingError: Error | null = null;
     let skipSheets = false; // Track if Sheets writes were skipped (for warning message)
     let workspaceResult: Awaited<ReturnType<typeof import("@/lib/workspace/getWorkspace").getWorkspace>> | null = null;
+    let missingFmKeyWarning: string | null = null; // Warning for missing FM profile when issuer has been processed before
 
     try {
       // Validate required configuration
@@ -634,6 +635,53 @@ ${pdfText}`;
           hasFmKey: wo.fmKey !== null && wo.fmKey !== undefined,
         }))
       );
+      
+      // Check for warning: if no FM profile matched but we've processed this issuer before
+      const workOrdersWithoutFmKey = allParsedWorkOrders.filter(wo => !wo.fmKey);
+      if (workOrdersWithoutFmKey.length > 0 && spreadsheetId && accessToken) {
+        try {
+          // Extract issuer domain from email sender
+          const emailMatch = email.from.match(/@([^\s>]+)/);
+          const senderDomain = emailMatch ? emailMatch[1].toLowerCase().trim() : null;
+          
+          if (senderDomain) {
+            // Check if there are existing work orders for this issuer in Sheet1
+            const { getSheetHeadersCached, createSheetsClient, formatSheetRange } = await import("@/lib/google/sheets");
+            const MAIN_SHEET_NAME = "Sheet1";
+            
+            const headerMeta = await getSheetHeadersCached(accessToken, spreadsheetId, MAIN_SHEET_NAME);
+            const issuerLetter = headerMeta.colLetterByLower["issuer"];
+            
+            if (issuerLetter) {
+              // Read the issuer column to check for existing entries
+              const sheets = createSheetsClient(accessToken);
+              const issuerColResp = await sheets.spreadsheets.values.get({
+                spreadsheetId,
+                range: formatSheetRange(MAIN_SHEET_NAME, `${issuerLetter}:${issuerLetter}`),
+              });
+              
+              const issuerValues = issuerColResp.data.values || [];
+              // Check if any row (skip header) contains this issuer domain
+              let foundExistingIssuer = false;
+              for (let i = 1; i < issuerValues.length; i++) {
+                const cellValue = (issuerValues[i]?.[0] || "").toLowerCase().trim();
+                if (cellValue && (cellValue === senderDomain || cellValue.includes(senderDomain) || senderDomain.includes(cellValue))) {
+                  foundExistingIssuer = true;
+                  break;
+                }
+              }
+              
+              if (foundExistingIssuer) {
+                missingFmKeyWarning = `⚠️ Warning: No FM profile configured for "${senderDomain}", but work orders from this issuer have been processed before. Please configure an FM profile to ensure proper processing.`;
+                console.warn(`[Gmail Process] ${missingFmKeyWarning}`);
+              }
+            }
+          }
+        } catch (warningError) {
+          // Non-fatal: if we can't check, just log and continue
+          console.warn(`[Gmail Process] Could not check for existing issuer in Sheets:`, warningError);
+        }
+      }
       
       // In dev mode, allow processing without Sheets (for testing parsing logic)
       const isDevMode = process.env.NODE_ENV !== "production";
@@ -845,6 +893,8 @@ ${pdfText}`;
         labelRemoved,
         ...(skipSheets ? { 
           warning: "No Google Sheets spreadsheet ID configured. Work orders were parsed but not saved to Sheets/Drive. Please configure in Settings." 
+        } : missingFmKeyWarning ? {
+          warning: missingFmKeyWarning
         } : {}),
         ...(aiModelUsed ? { aiModel: aiModelUsed } : {}),
         ...(totalTokens > 0 ? {

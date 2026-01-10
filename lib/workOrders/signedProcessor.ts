@@ -10,6 +10,7 @@ import {
   updateJobWithSignedInfoByWorkOrderNumber,
   writeWorkOrderRecord,
   findWorkOrderRecordByJobId,
+  updateWorkOrderRecordPartial,
   type WorkOrderRecord,
 } from "@/lib/google/sheets";
 import {
@@ -1848,61 +1849,107 @@ export async function processSignedPdf(
   // Update Work_Orders sheet
   if (effectiveWoNumber && jobExistsInSheet1) {
     try {
-      const issuerKey = existingIssuer || normalizedFmKey || "unknown";
-      const jobId = generateJobId(issuerKey, effectiveWoNumber);
+      // First, try to find existing work order by wo_number to get the correct jobId
+      // This ensures we use the same issuer that was used when the work order was originally created
+      const { getSheetHeadersCached, findRowIndexByColumnValue, createSheetsClient, formatSheetRange } = await import("@/lib/google/sheets");
+      const headerMeta = await getSheetHeadersCached(accessToken, spreadsheetId, WORK_ORDERS_SHEET_NAME);
+      const woNumberLetter = headerMeta.colLetterByLower["wo_number"];
       
-      const existingWorkOrder = await findWorkOrderRecordByJobId(
-        accessToken,
-        spreadsheetId,
-        WORK_ORDERS_SHEET_NAME,
-        jobId
-      );
+      let existingWorkOrder: WorkOrderRecord | null = null;
+      let correctJobId: string | null = null;
+      
+      // Try to find by wo_number first (more reliable than guessing the issuer)
+      // This prevents duplicates when the issuer format differs (e.g., "23rdgroup.com" vs "23rdgroup_com")
+      if (woNumberLetter) {
+        const rowIdx = await findRowIndexByColumnValue(
+          accessToken,
+          spreadsheetId,
+          WORK_ORDERS_SHEET_NAME,
+          woNumberLetter,
+          effectiveWoNumber
+        );
+        
+        if (rowIdx !== -1) {
+          console.log(`[Signed Processor] Found existing work order in Work_Orders by wo_number: ${effectiveWoNumber} at row ${rowIdx}`);
+          // Found existing row - read it to get the jobId
+          const sheets = createSheetsClient(accessToken);
+          const rowResponse = await sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range: formatSheetRange(WORK_ORDERS_SHEET_NAME, `${rowIdx}:${rowIdx}`),
+          });
+          
+          const rowData = (rowResponse.data.values?.[0] || []) as string[];
+          const jobIdColIndex = headerMeta.colIndexByLower["jobid"];
+          
+          if (jobIdColIndex >= 0 && rowData[jobIdColIndex]) {
+            correctJobId = String(rowData[jobIdColIndex]).trim();
+            console.log(`[Signed Processor] Using existing jobId from Work_Orders: ${correctJobId}`);
+            // Now fetch the full record using the correct jobId
+            existingWorkOrder = await findWorkOrderRecordByJobId(
+              accessToken,
+              spreadsheetId,
+              WORK_ORDERS_SHEET_NAME,
+              correctJobId
+            );
+          }
+        } else {
+          console.log(`[Signed Processor] No existing work order found in Work_Orders by wo_number: ${effectiveWoNumber}`);
+        }
+      }
+      
+      // If not found by wo_number, try with the issuer we have from Sheet1
+      if (!existingWorkOrder) {
+        const issuerKey = existingIssuer || normalizedFmKey || "unknown";
+        const jobId = generateJobId(issuerKey, effectiveWoNumber);
+        correctJobId = jobId;
+        console.log(`[Signed Processor] Trying to find work order by jobId: ${jobId} (issuer: ${issuerKey})`);
+        
+        existingWorkOrder = await findWorkOrderRecordByJobId(
+          accessToken,
+          spreadsheetId,
+          WORK_ORDERS_SHEET_NAME,
+          jobId
+        );
+        
+        if (existingWorkOrder) {
+          console.log(`[Signed Processor] Found existing work order by jobId: ${jobId}`);
+        } else {
+          console.log(`[Signed Processor] No existing work order found by jobId: ${jobId}, will create new record`);
+        }
+      }
+      
+      // Use the correct jobId (either from existing record or newly generated)
+      const jobId = correctJobId || generateJobId(existingIssuer || normalizedFmKey || "unknown", effectiveWoNumber);
+      console.log(`[Signed Processor] Final jobId for Work_Orders update: ${jobId}`);
 
       // Phase 3: Format decision fields for storage (reuse same logic as Verification)
       const decisionReasonsStr = decisionResult.reasons.join("|");
       const normalizedCandidatesStr = decisionResult.normalizedCandidates.join("|");
       const ocrPassAgreementStr = passAgreement ? "TRUE" : (decisionExtractionMethod === "OCR" ? "FALSE" : null);
 
-      const mergedWorkOrder: WorkOrderRecord = {
-        jobId,
-        fmKey: normalizedFmKey,
-        wo_number: effectiveWoNumber,
-        status: mode === "UPDATED" ? "SIGNED" : (existingWorkOrder?.status ?? "OPEN"),
-        scheduled_date: existingWorkOrder?.scheduled_date ?? null,
-        created_at: existingWorkOrder?.created_at ?? nowIso,
-        timestamp_extracted: nowIso,
-        customer_name: existingWorkOrder?.customer_name ?? null,
-        vendor_name: existingWorkOrder?.vendor_name ?? null,
-        service_address: existingWorkOrder?.service_address ?? null,
-        job_type: existingWorkOrder?.job_type ?? null,
-        job_description: existingWorkOrder?.job_description ?? null,
-        amount: existingWorkOrder?.amount ?? null,
-        currency: existingWorkOrder?.currency ?? null,
-        notes: existingWorkOrder?.notes ?? null,
-        priority: existingWorkOrder?.priority ?? null,
-        calendar_event_link: existingWorkOrder?.calendar_event_link ?? null,
-        work_order_pdf_link: existingWorkOrder?.work_order_pdf_link ?? null,
-        signed_pdf_url: signedPdfUrl ?? existingWorkOrder?.signed_pdf_url ?? null,
-        signed_preview_image_url: snippetDriveUrl ?? existingWorkOrder?.signed_preview_image_url ?? null,
-        signed_at: mode === "UPDATED" ? nowIso : (existingWorkOrder?.signed_at ?? null),
-        source: existingWorkOrder?.source ?? "signed_upload",
-        last_updated_at: nowIso,
-        file_hash: fileHash,
-        // Phase 3: Decision metadata
-        signed_decision_state: decisionResult.state,
-        signed_trust_score: decisionResult.trustScore,
-        signed_decision_reasons: decisionReasonsStr,
-        signed_extraction_method: decisionExtractionMethod,
-        signed_ocr_confidence_raw: decisionExtractionMethod === "OCR" ? ocrConfidenceRaw : null,
-        signed_pass_agreement: ocrPassAgreementStr,
-        signed_candidates: normalizedCandidatesStr,
+      // If Sheet1 was updated with SIGNED status, Work_Orders should also show SIGNED
+      const shouldBeSigned = jobUpdated || mode === "UPDATED";
+      
+      // For signed updates, ONLY update status and signed_at (date) - preserve all other existing data
+      // Create a minimal record with only the fields we want to update
+      const signedUpdateRecord: Partial<WorkOrderRecord> = {
+        status: shouldBeSigned ? "SIGNED" : (existingWorkOrder?.status ?? "OPEN"),
+        signed_at: shouldBeSigned ? nowIso : (existingWorkOrder?.signed_at ?? null),
+        // Optionally update signed PDF URLs if provided, but don't clear if not provided
+        ...(signedPdfUrl ? { signed_pdf_url: signedPdfUrl } : {}),
+        ...(snippetDriveUrl ? { signed_preview_image_url: snippetDriveUrl } : {}),
+        last_updated_at: nowIso, // Always update last_updated_at
       };
 
-      await writeWorkOrderRecord(
+      // Use a partial update function that only updates specified fields
+      // This preserves all existing data and only updates status, signed_at, and related signed fields
+      await updateWorkOrderRecordPartial(
         accessToken,
         spreadsheetId,
         WORK_ORDERS_SHEET_NAME,
-        mergedWorkOrder
+        jobId,
+        effectiveWoNumber,
+        signedUpdateRecord
       );
     } catch (woError) {
       console.error(`[Signed Processor] Error writing to Work_Orders sheet:`, woError);

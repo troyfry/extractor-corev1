@@ -838,9 +838,16 @@ export async function updateJobWithSignedInfoByWorkOrderNumber(
  * Returns true if the record has at least one meaningful field beyond basic identifiers.
  */
 function hasMeaningfulWorkOrderData(record: WorkOrderRecord): boolean {
+  // Always allow records with SIGNED status - these are important updates even if other data is missing
+  if (record.status === "SIGNED") {
+    return true;
+  }
+  
   // Basic identifiers don't count as "meaningful operational data"
   // Meaningful fields are: customer_name, vendor_name, service_address, job_type, 
   // job_description, amount, currency, notes, priority, scheduled_date
+  // Also include signed-related fields (signed_pdf_url, status, signed_at) as meaningful
+  // since signed work orders should be written even if other operational data is missing
   const meaningfulFields = [
     record.customer_name,
     record.vendor_name,
@@ -853,6 +860,12 @@ function hasMeaningfulWorkOrderData(record: WorkOrderRecord): boolean {
     record.priority,
     record.scheduled_date,
     record.work_order_pdf_link,
+    // Signed-related fields are meaningful (for signed work orders)
+    record.signed_pdf_url,
+    record.signed_preview_image_url,
+    record.signed_at,
+    // Status is meaningful (especially non-OPEN statuses)
+    record.status && record.status !== "OPEN" ? record.status : null,
   ];
   
   return meaningfulFields.some(field => field != null && String(field).trim() !== "");
@@ -945,6 +958,12 @@ async function updateWorkOrderRecord(
 ): Promise<void> {
   const sheets = createSheetsClient(accessToken);
 
+  // Read existing row first to preserve data in columns not being updated
+  const existingRowResponse = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, `${rowIndex}:${rowIndex}`),
+  });
+
   const headerResponse = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: formatSheetRange(sheetName, "1:1"),
@@ -952,13 +971,28 @@ async function updateWorkOrderRecord(
 
   const headers = (headerResponse.data.values?.[0] || []) as string[];
   const headersLower = headers.map((h) => h.toLowerCase().trim());
+  
+  // Start with existing row data (preserve all existing values)
+  const existingRow = (existingRowResponse.data.values?.[0] || []) as string[];
+  const rowData: string[] = [...existingRow];
+  
+  // Ensure rowData has enough elements for all headers
+  while (rowData.length < headers.length) {
+    rowData.push("");
+  }
 
-  const rowData: string[] = new Array(headers.length).fill("");
+  // Only update columns that are provided in the record (non-null/non-undefined)
+  // This preserves existing data in columns we're not updating
   for (const col of WORK_ORDER_REQUIRED_COLUMNS) {
     const index = headersLower.indexOf(col.toLowerCase());
     if (index !== -1) {
       const value = record[col as keyof WorkOrderRecord];
-      rowData[index] = value === null || value === undefined ? "" : String(value);
+      // Only update if value is explicitly provided (not null/undefined)
+      // This allows us to update specific fields without clearing others
+      if (value !== null && value !== undefined) {
+        rowData[index] = String(value);
+      }
+      // If value is null/undefined, keep existing value (don't overwrite with empty string)
     }
   }
 
@@ -972,6 +1006,109 @@ async function updateWorkOrderRecord(
   });
 
   console.log(`[Sheets] Updated work order record: ${record.jobId}`);
+}
+
+/**
+ * Update only specific columns in a work order record without overwriting other columns.
+ * This is used for signed updates where we only want to update status and signed_at.
+ * 
+ * @param accessToken Google OAuth access token
+ * @param spreadsheetId Google Sheets spreadsheet ID
+ * @param sheetName Name of the sheet
+ * @param jobId Job ID to find the record
+ * @param woNumber Work order number (fallback for finding record)
+ * @param partialRecord Partial record with only the fields to update
+ */
+export async function updateWorkOrderRecordPartial(
+  accessToken: string,
+  spreadsheetId: string,
+  sheetName: string,
+  jobId: string,
+  woNumber: string,
+  partialRecord: Partial<WorkOrderRecord>
+): Promise<void> {
+  const sheets = createSheetsClient(accessToken);
+
+  // Get headers to find column indices
+  const headerMeta = await getSheetHeadersCached(accessToken, spreadsheetId, sheetName);
+  const headersLower = headerMeta.headersLower;
+
+  // Find the row by jobId or wo_number
+  let rowIndex = -1;
+  const jobIdLetter = headerMeta.colLetterByLower["jobid"];
+  if (jobIdLetter) {
+    rowIndex = await findRowIndexByColumnValue(
+      accessToken,
+      spreadsheetId,
+      sheetName,
+      jobIdLetter,
+      jobId
+    );
+  }
+  
+  // Fallback to wo_number if not found by jobId
+  if (rowIndex === -1) {
+    const woNumberLetter = headerMeta.colLetterByLower["wo_number"];
+    if (woNumberLetter) {
+      rowIndex = await findRowIndexByColumnValue(
+        accessToken,
+        spreadsheetId,
+        sheetName,
+        woNumberLetter,
+        woNumber
+      );
+    }
+  }
+
+  if (rowIndex === -1) {
+    console.warn(`[updateWorkOrderRecordPartial] Record not found for jobId: ${jobId}, wo_number: ${woNumber}`);
+    return;
+  }
+
+  // Read existing row to preserve all other data
+  const existingRowResponse = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, `${rowIndex}:${rowIndex}`),
+  });
+
+  const existingRow = (existingRowResponse.data.values?.[0] || []) as string[];
+  const rowData: string[] = [...existingRow];
+  
+  // Ensure rowData has enough elements for all headers
+  while (rowData.length < headersLower.length) {
+    rowData.push("");
+  }
+
+  // Only update the specific fields provided in partialRecord
+  const updates: Array<{ column: string; value: string }> = [];
+  for (const [key, value] of Object.entries(partialRecord)) {
+    if (value !== null && value !== undefined && key !== "jobId" && key !== "wo_number") {
+      const index = headerMeta.colIndexByLower[key.toLowerCase()];
+      if (index !== -1) {
+        rowData[index] = String(value);
+        updates.push({ column: key, value: String(value) });
+      }
+    }
+  }
+
+  if (updates.length === 0) {
+    console.log(`[updateWorkOrderRecordPartial] No fields to update for jobId: ${jobId}`);
+    return;
+  }
+
+  console.log(`[updateWorkOrderRecordPartial] Updating row ${rowIndex} with fields:`, updates.map(u => u.column).join(", "));
+
+  // Update the row (preserving all existing data, only updating specified fields)
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: formatSheetRange(sheetName, `${rowIndex}:${rowIndex}`),
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [rowData],
+    },
+  });
+
+  console.log(`[updateWorkOrderRecordPartial] ✅ Updated work order record: ${jobId}`);
 }
 
 /**
@@ -1107,13 +1244,49 @@ export async function writeWorkOrderRecord(
     }
 
     // 3) Find existing row by reading ONLY jobId column
-    const existingRowIndex = await findRowIndexByColumnValue(
+    let existingRowIndex = await findRowIndexByColumnValue(
       accessToken,
       spreadsheetId,
       sheetName,
       jobIdLetter,
       record.jobId
     );
+
+    // If not found by jobId, try searching by wo_number as fallback
+    // This handles cases where jobId format differs (e.g., "unknown:493605" vs "23rdgroup_com:493605")
+    if (existingRowIndex === -1 && record.wo_number) {
+      const woNumberLetter = headerMeta.colLetterByLower["wo_number"];
+      if (woNumberLetter) {
+        console.log(`[writeWorkOrderRecord] JobId "${record.jobId}" not found, trying to find by wo_number: ${record.wo_number}`);
+        const woRowIndex = await findRowIndexByColumnValue(
+          accessToken,
+          spreadsheetId,
+          sheetName,
+          woNumberLetter,
+          record.wo_number
+        );
+        
+        if (woRowIndex !== -1) {
+          // Found by wo_number - read the row to get the correct jobId
+          const sheets = createSheetsClient(accessToken);
+          const rowResponse = await sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range: formatSheetRange(sheetName, `${woRowIndex}:${woRowIndex}`),
+          });
+          
+          const rowData = (rowResponse.data.values?.[0] || []) as string[];
+          const existingJobIdColIndex = headerMeta.colIndexByLower["jobid"];
+          
+          if (existingJobIdColIndex >= 0 && rowData[existingJobIdColIndex]) {
+            const existingJobId = String(rowData[existingJobIdColIndex]).trim();
+            console.log(`[writeWorkOrderRecord] Found existing record by wo_number with jobId: ${existingJobId}, updating that record instead`);
+            // Update the record's jobId to match the existing one
+            record.jobId = existingJobId;
+            existingRowIndex = woRowIndex;
+          }
+        }
+      }
+    }
 
     if (existingRowIndex === -1) {
       // No existing row found, append if meaningful

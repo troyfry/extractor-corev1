@@ -101,9 +101,15 @@ export async function GET(request: Request) {
     // Step 4: Debug logging - result already filtered to only PDFs
     const totalPdfAttachments = result.emails.reduce((sum, e) => sum + e.attachmentCount, 0);
     
+    // NOTE: Do NOT sort here - sorting is done on the client side after combining all pages
+    // This ensures the entire list (across all pages) is sorted correctly by oldest date first
+    // Gmail API returns messages in reverse chronological order (newest first), so we need
+    // to combine all pages on the client and sort the entire combined list
+    
     console.log(`[Gmail List API] Summary for label "${labelName || 'INBOX'}":`);
     console.log(`[Gmail List API]   - Emails with PDF attachments: ${result.emails.length}`);
     console.log(`[Gmail List API]   - Total PDF attachments: ${totalPdfAttachments}`);
+    console.log(`[Gmail List API]   - Returning unsorted (client will sort entire list)`);
     
     if (result.nextPageToken) {
       console.log(`[Gmail List API] More emails available (nextPageToken present)`);
@@ -114,7 +120,7 @@ export async function GET(request: Request) {
 
     return NextResponse.json(
       { 
-        emails: result.emails,
+        emails: result.emails, // Return unsorted - client will sort entire combined list
         nextPageToken: result.nextPageToken,
         labelName: labelName || "INBOX", // Return the label name being used
       },

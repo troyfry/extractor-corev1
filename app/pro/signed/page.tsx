@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import AppShell from "@/components/layout/AppShell";
 import MainNavigation from "@/components/layout/MainNavigation";
 import type { FmProfile } from "@/lib/templates/fmProfiles";
@@ -118,9 +118,13 @@ export default function SignedWorkOrdersPage() {
   const [showMismatchModal, setShowMismatchModal] = useState(false);
   const [mismatchModalData, setMismatchModalData] = useState<{ selectedFm: string; detectedFm: string; emailSubject: string } | null>(null);
 
-  // Load FM profiles on mount
+  // Load FM profiles on mount (only once, prevent multiple loads)
+  const fmProfilesLoadedRef = useRef(false);
   useEffect(() => {
-    loadFmProfiles();
+    if (!fmProfilesLoadedRef.current) {
+      loadFmProfiles();
+      fmProfilesLoadedRef.current = true;
+    }
   }, []);
 
   async function loadFmProfiles() {
@@ -253,6 +257,23 @@ export default function SignedWorkOrdersPage() {
   }
 
   async function processFile(fileInfo: FileInfo) {
+    if (!fmKey) {
+      setError("Please select an FM Key first.");
+      return;
+    }
+
+    // Check for FM mismatch (similar to Gmail email filtering)
+    const likelyFm = suggestFmKeyFromSubject(fileInfo.name);
+    if (likelyFm && likelyFm !== fmKey) {
+      setMismatchModalData({
+        selectedFm: fmKey,
+        detectedFm: likelyFm,
+        emailSubject: fileInfo.name, // Reusing field name for filename
+      });
+      setShowMismatchModal(true);
+      return;
+    }
+
     setProcessingFiles((prev) => new Set(prev).add(fileInfo.id));
     setError(null);
 
@@ -293,7 +314,31 @@ export default function SignedWorkOrdersPage() {
       return;
     }
 
+    if (!fmKey) {
+      setError("Please select an FM Key first.");
+      return;
+    }
+
     const filesToProcess = files.filter((f) => selectedFiles.has(f.id));
+    
+    // Check for FM mismatches (similar to Gmail email filtering)
+    const mismatchedFiles = filesToProcess.filter(fileInfo => {
+      const likelyFm = suggestFmKeyFromSubject(fileInfo.name);
+      return likelyFm && likelyFm !== fmKey;
+    });
+    
+    if (mismatchedFiles.length > 0) {
+      const firstMismatch = mismatchedFiles[0];
+      const likelyFm = suggestFmKeyFromSubject(firstMismatch.name);
+      setMismatchModalData({
+        selectedFm: fmKey,
+        detectedFm: likelyFm || "unknown",
+        emailSubject: firstMismatch.name, // Reusing field name for filename
+      });
+      setShowMismatchModal(true);
+      return;
+    }
+    
     const total = filesToProcess.length;
 
     for (let i = 0; i < filesToProcess.length; i++) {
@@ -308,6 +353,29 @@ export default function SignedWorkOrdersPage() {
   async function processAllFiles() {
     if (files.length === 0) {
       setError("No files to process.");
+      return;
+    }
+
+    if (!fmKey) {
+      setError("Please select an FM Key first.");
+      return;
+    }
+
+    // Check for FM mismatches (similar to Gmail email filtering)
+    const mismatchedFiles = files.filter(fileInfo => {
+      const likelyFm = suggestFmKeyFromSubject(fileInfo.name);
+      return likelyFm && likelyFm !== fmKey;
+    });
+    
+    if (mismatchedFiles.length > 0) {
+      const firstMismatch = mismatchedFiles[0];
+      const likelyFm = suggestFmKeyFromSubject(firstMismatch.name);
+      setMismatchModalData({
+        selectedFm: fmKey,
+        detectedFm: likelyFm || "unknown",
+        emailSubject: firstMismatch.name, // Reusing field name for filename
+      });
+      setShowMismatchModal(true);
       return;
     }
 
@@ -1749,10 +1817,10 @@ export default function SignedWorkOrdersPage() {
                   You selected FM: <strong className="text-white">{mismatchModalData.selectedFm}</strong>
                 </p>
                 <p className="text-sm text-gray-300 mb-2">
-                  This email appears to belong to: <strong className="text-white">{mismatchModalData.detectedFm}</strong>
+                  This {sourceMode === "gmail" ? "email" : "file"} appears to belong to: <strong className="text-white">{mismatchModalData.detectedFm}</strong>
                 </p>
                 <p className="text-xs text-gray-400 mt-3 italic">
-                  "{mismatchModalData.emailSubject}"
+                  {sourceMode === "gmail" ? "Email:" : "File:"} "{mismatchModalData.emailSubject}"
                 </p>
               </div>
 
