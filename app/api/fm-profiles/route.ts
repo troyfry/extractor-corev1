@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getPlanFromRequest } from "@/lib/api/getPlanFromRequest";
+import { getPlanFromRequest } from "@/lib/_deprecated/api/getPlanFromRequest";
 import { hasFeature } from "@/lib/plan";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getUserSpreadsheetId } from "@/lib/userSettings/repository";

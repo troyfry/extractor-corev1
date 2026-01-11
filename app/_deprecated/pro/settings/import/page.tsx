@@ -3,7 +3,7 @@
 import { useState } from "react";
 import AppShell from "@/components/layout/AppShell";
 import MainNavigation from "@/components/layout/MainNavigation";
-import type { ImportMapping, ImportPreview } from "@/lib/importer/types";
+import type { ImportMapping, ImportPreview } from "@/lib/_deprecated/importer/types";
 
 export default function ImportPage() {
   const [externalSpreadsheetId, setExternalSpreadsheetId] = useState("");

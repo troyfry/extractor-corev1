@@ -6,7 +6,7 @@
 
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { readExternalHeaders } from "@/lib/importer/readExternalSheet";
+import { readExternalHeaders } from "@/lib/_deprecated/importer/readExternalSheet";
 
 export const runtime = "nodejs";
 

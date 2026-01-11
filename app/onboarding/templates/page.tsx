@@ -7,7 +7,7 @@ import {
   pdfPointsToCssPixels, 
   assertPdfCropPointsValid,
   type PdfCropPoints
-} from "@/lib/domain/coordinates/pdfPoints";
+} from "@/lib/_deprecated/domain/coordinates/pdfPoints";
 
 // Coordinate system constants
 // Internal: use PDF_POINTS_TOP_LEFT to be explicit about origin

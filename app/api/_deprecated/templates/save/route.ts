@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
-import { getPlanFromRequest } from "@/lib/api/getPlanFromRequest";
+import { getPlanFromRequest } from "@/lib/_deprecated/api/getPlanFromRequest";
 import { hasFeature } from "@/lib/plan";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
 import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 import { upsertTemplateToSheet } from "@/lib/templates/sheetsTemplates";
-import { cssPixelsToPdfPoints, validatePdfPoints } from "@/lib/domain/coordinates/pdfPoints";
+import { cssPixelsToPdfPoints, validatePdfPoints } from "@/lib/_deprecated/domain/coordinates/pdfPoints";
 import type { WorkOrderTemplate } from "@/lib/templates/workOrders";
 
 export const runtime = "nodejs";

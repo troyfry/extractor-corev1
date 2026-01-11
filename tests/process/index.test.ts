@@ -20,7 +20,7 @@ vi.mock("@/lib/workOrders/signedOcr", () => ({
   callSignedOcrService: vi.fn(),
 }));
 
-import * as processModule from "@/lib/process";
+import * as processModule from "@/lib/_deprecated/process";
 
 describe("Process Access Layer - Index Exports", () => {
   it("should export renderPdfPage", () => {

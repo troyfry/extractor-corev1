@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
 import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
-import { processSignedPdf } from "@/lib/process";
+import { processSignedPdf } from "@/lib/_deprecated/process";
 import { normalizePdfBuffer } from "@/lib/pdf/normalizePdf";
 
 export const runtime = "nodejs";

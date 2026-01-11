@@ -9,7 +9,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { detectRasterOnlyPdf } from "@/lib/process";
+import { detectRasterOnlyPdf } from "@/lib/_deprecated/process";
 
 export const runtime = "nodejs";
 

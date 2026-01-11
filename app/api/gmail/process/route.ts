@@ -15,7 +15,7 @@ import { loadWorkspace } from "@/lib/workspace/loadWorkspace";
 import { transitionToProcessed, transitionToNeedsReview } from "@/lib/google/gmailLabels";
 import { extractWorkOrderNumberFromText } from "@/lib/workOrders/processing";
 import { isAiParsingEnabled, getAiModelName, getIndustryProfile } from "@/lib/config/ai";
-import { getPlanFromRequest } from "@/lib/api/getPlanFromRequest";
+import { getPlanFromRequest } from "@/lib/_deprecated/api/getPlanFromRequest";
 import { hasFeature } from "@/lib/plan";
 // import { Plan } from "@/lib/plan"; // Unused for now
 import { extractTextFromPdfBuffer as extractTextFromPdfBufferAiParser } from "@/lib/workOrders/aiParser";

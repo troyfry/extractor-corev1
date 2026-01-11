@@ -70,7 +70,7 @@ vi.mock("@/lib/pdf/intent", () => ({
 }));
 
 // Import after mocks
-import { renderPdfPage, detectRasterOnlyPdf } from "@/lib/process";
+import { renderPdfPage, detectRasterOnlyPdf } from "@/lib/_deprecated/process";
 
 describe("Process Access Layer - PDF Operations", () => {
   beforeEach(() => {

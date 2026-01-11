@@ -8,10 +8,10 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { loadWorkspace } from "@/lib/workspace/loadWorkspace";
-import { readExternalRows } from "@/lib/importer/readExternalSheet";
-import { transformRows } from "@/lib/importer/transformRows";
-import { dedupeRecords } from "@/lib/importer/dedupe";
-import type { ImportMapping, ImportPreview } from "@/lib/importer/types";
+import { readExternalRows } from "@/lib/_deprecated/importer/readExternalSheet";
+import { transformRows } from "@/lib/_deprecated/importer/transformRows";
+import { dedupeRecords } from "@/lib/_deprecated/importer/dedupe";
+import type { ImportMapping, ImportPreview } from "@/lib/_deprecated/importer/types";
 
 export const runtime = "nodejs";
 

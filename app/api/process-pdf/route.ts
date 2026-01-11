@@ -23,7 +23,7 @@ import { auth } from "@/auth";
 import { extractWorkOrderNumberFromText } from "@/lib/workOrders/processing";
 import { extractTextFromPdfBuffer } from "@/lib/workOrders/aiParser";
 import { isAiParsingEnabled, getAiModelName, getIndustryProfile } from "@/lib/config/ai";
-import { getPlanFromRequest } from "@/lib/api/getPlanFromRequest";
+import { getPlanFromRequest } from "@/lib/_deprecated/api/getPlanFromRequest";
 import { Plan } from "@/lib/plan";
 import OpenAI from "openai";
 import type { ParsedWorkOrder, ManualProcessResponse } from "@/lib/workOrders/parsedTypes";

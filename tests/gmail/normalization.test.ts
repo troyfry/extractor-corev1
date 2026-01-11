@@ -47,7 +47,7 @@ describe("Gmail Signed PDF Normalization", () => {
 
   it("should normalize PDF buffer before processing", async () => {
     const { normalizePdfBuffer } = await import("@/lib/pdf/normalizePdf");
-    const { processSignedPdf } = await import("@/lib/process");
+    const { processSignedPdf } = await import("@/lib/_deprecated/process");
     
     const originalBuffer = Buffer.from("original pdf content");
     const normalizedBuffer = Buffer.from("normalized pdf content");
@@ -97,7 +97,7 @@ describe("Gmail Signed PDF Normalization", () => {
 
   it("should handle normalization that returns same buffer", async () => {
     const { normalizePdfBuffer } = await import("@/lib/pdf/normalizePdf");
-    const { processSignedPdf } = await import("@/lib/process");
+    const { processSignedPdf } = await import("@/lib/_deprecated/process");
     
     const originalBuffer = Buffer.from("already normalized pdf");
     

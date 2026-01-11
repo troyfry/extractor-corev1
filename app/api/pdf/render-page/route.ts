@@ -18,7 +18,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { renderPdfPage } from "@/lib/process";
+import { renderPdfPage } from "@/lib/_deprecated/process";
 import { parsePdfIntent } from "@/lib/pdf/intent";
 
 export const runtime = "nodejs";

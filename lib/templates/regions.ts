@@ -5,7 +5,7 @@
  * This is the single source of truth for region data structures.
  */
 
-import { validatePdfPoints, assertPdfCropPointsValid, type PdfCropPoints, type BoundsPt } from "@/lib/domain/coordinates/pdfPoints";
+import { validatePdfPoints, assertPdfCropPointsValid, type PdfCropPoints, type BoundsPt } from "@/lib/_deprecated/domain/coordinates/pdfPoints";
 
 /**
  * Coordinate system types for template regions.

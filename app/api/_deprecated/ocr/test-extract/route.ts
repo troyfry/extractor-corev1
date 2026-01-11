@@ -17,7 +17,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { ocrWorkOrderNumberFromUpload } from "@/lib/process";
+import { ocrWorkOrderNumberFromUpload } from "@/lib/_deprecated/process";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 
 export const runtime = "nodejs";
