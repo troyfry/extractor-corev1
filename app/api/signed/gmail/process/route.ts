@@ -304,8 +304,8 @@ export async function POST(req: Request) {
             });
 
             console.log(`[Gmail Process] Processed ${filename}: ${status}`, {
-              woNumber: processResult.data.woNumber,
-              reason: processResult.data.reason,
+              woNumber: processResult.woNumber || processResult.workOrderNumber,
+              reason: processResult.needsReviewReason || null,
             });
           } catch (error) {
             console.error(`[Gmail Process] Error processing attachment ${filename}:`, error);

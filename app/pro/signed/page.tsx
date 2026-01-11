@@ -1139,7 +1139,27 @@ export default function SignedWorkOrdersPage() {
                                   <p className="mt-1"><strong>Work Order:</strong> <span className="font-mono">{item.woNumber}</span></p>
                                 )}
                                 {item.reason && !item.reasonTitle && (
-                                  <p className="mt-1"><strong>Reason:</strong> <span className="text-yellow-300">{item.reason}</span></p>
+                                  <details className="mt-1">
+                                    <summary className="cursor-pointer text-yellow-300 hover:text-yellow-200 flex items-center gap-2">
+                                      <svg
+                                        className="w-4 h-4 transition-transform group-open:rotate-90"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                      >
+                                        <path
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          strokeWidth={2}
+                                          d="M9 5l7 7-7 7"
+                                        />
+                                      </svg>
+                                      <span><strong>Reason:</strong> {item.reason.substring(0, 50)}{item.reason.length > 50 ? "..." : ""}</span>
+                                    </summary>
+                                    <div className="mt-2 pl-6 text-xs text-yellow-200/80">
+                                      <p className="font-mono break-all">{item.reason}</p>
+                                    </div>
+                                  </details>
                                 )}
                                 {item.fileHash && (
                                   <p className="mt-1"><strong>File Hash:</strong> <span className="font-mono text-xs">{item.fileHash.substring(0, 16)}...</span></p>
@@ -1682,19 +1702,50 @@ export default function SignedWorkOrdersPage() {
                               </span>
                             </div>
                             {response.data.automationBlocked && response.data.automationBlockReason && (
-                              <p className="text-sm text-red-300 mt-2">
-                                {response.data.automationBlockReason === "NO_MATCHING_JOB_ROW"
-                                  ? "No matching job in Sheet1"
-                                  : response.data.automationBlockReason === "TEMPLATE_NOT_FOUND"
-                                  ? "Template not found"
-                                  : response.data.automationBlockReason === "TEMPLATE_NOT_CONFIGURED"
-                                  ? "Template not configured"
-                                  : response.data.automationBlockReason === "INVALID_CROP"
-                                  ? "Invalid crop zone"
-                                  : response.data.automationBlockReason === "CROP_TOO_SMALL"
-                                  ? "Crop zone too small"
-                                  : response.data.automationBlockReason}
-                              </p>
+                              <details className="mt-2">
+                                <summary className="text-sm text-red-300 cursor-pointer hover:text-red-200 flex items-center gap-2">
+                                  <svg
+                                    className="w-4 h-4 transition-transform group-open:rotate-90"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M9 5l7 7-7 7"
+                                    />
+                                  </svg>
+                                  <span>
+                                    {response.data.automationBlockReason === "NO_MATCHING_JOB_ROW"
+                                      ? "No matching job in Sheet1"
+                                      : response.data.automationBlockReason === "TEMPLATE_NOT_FOUND"
+                                      ? "Template not found"
+                                      : response.data.automationBlockReason === "TEMPLATE_NOT_CONFIGURED"
+                                      ? "Template not configured"
+                                      : response.data.automationBlockReason === "INVALID_CROP"
+                                      ? "Invalid crop zone"
+                                      : response.data.automationBlockReason === "CROP_TOO_SMALL"
+                                      ? "Crop zone too small"
+                                      : response.data.automationBlockReason}
+                                  </span>
+                                </summary>
+                                <div className="mt-2 pl-6 text-xs text-red-200/80">
+                                  {response.data.automationBlockReason === "TEMPLATE_NOT_CONFIGURED" && (
+                                    <p>Please configure a template for this FM key in the Templates section.</p>
+                                  )}
+                                  {response.data.automationBlockReason === "NO_MATCHING_JOB_ROW" && (
+                                    <p>Add the work order to Sheet1 first, then retry processing.</p>
+                                  )}
+                                  {response.data.automationBlockReason === "INVALID_CROP" && (
+                                    <p>The capture zone coordinates are out of bounds. Please redraw and save the template.</p>
+                                  )}
+                                  {response.data.automationBlockReason === "CROP_TOO_SMALL" && (
+                                    <p>The capture zone is too small to reliably read the work order number. Make it larger and save.</p>
+                                  )}
+                                </div>
+                              </details>
                             )}
                             {response.data.automationStatus === "BLOCKED" && response.data.fixHref && (
                               <button

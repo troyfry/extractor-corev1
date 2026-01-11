@@ -21,6 +21,7 @@ import { generateJobId } from "@/lib/workOrders/sheetsIngestion";
 import { uploadPdfToDrive, getOrCreateFolder } from "@/lib/google/drive";
 import { uploadSnippetImageToDrive } from "@/lib/drive-snippets";
 import { normalizeFmKey } from "@/lib/templates/fmProfiles";
+import { NEEDS_REVIEW_REASONS } from "@/lib/workOrders/reasons";
 
 const WORK_ORDERS_SHEET_NAME = process.env.GOOGLE_SHEETS_WORK_ORDERS_SHEET_NAME || "Work_Orders";
 const MAIN_SHEET_NAME = process.env.GOOGLE_SHEETS_MAIN_SHEET_NAME || "Sheet1";
@@ -124,15 +125,86 @@ export async function processSignedPdfUnified(
   });
 
   // Step 2: Load template/profile (points + expected page dims)
-  let templateConfig: TemplateConfig;
+  let templateConfig: TemplateConfig | null = null;
+  let templateError: Error | null = null;
   try {
     templateConfig = await getTemplateConfigForFmKey(fmKey);
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    if (errorMessage.includes("TEMPLATE_NOT_CONFIGURED") || errorMessage.includes("not found")) {
-      throw new Error(`Template not configured for FM key: ${normalizedFmKey}. Please configure a template first.`);
+    templateError = error instanceof Error ? error : new Error(String(error));
+    const errorMessage = templateError.message;
+    if (!errorMessage.includes("TEMPLATE_NOT_CONFIGURED") && !errorMessage.includes("not found")) {
+      // Only throw for unexpected errors
+      throw new Error(`Failed to load template for FM key ${normalizedFmKey}: ${errorMessage}`);
     }
-    throw new Error(`Failed to load template for FM key ${normalizedFmKey}: ${errorMessage}`);
+    // For TEMPLATE_NOT_CONFIGURED, we'll handle it gracefully below
+    console.log(`[Signed Processor] Template not configured for fmKey="${normalizedFmKey}". Handling gracefully by adding to Needs Review.`);
+  }
+
+  // If template config is missing, handle gracefully by adding to Needs Review
+  if (!templateConfig) {
+    const isTemplateNotConfigured = templateError?.message?.includes("TEMPLATE_NOT_CONFIGURED") || false;
+    const reason = isTemplateNotConfigured 
+      ? NEEDS_REVIEW_REASONS.TEMPLATE_NOT_CONFIGURED 
+      : NEEDS_REVIEW_REASONS.TEMPLATE_NOT_FOUND;
+    
+    console.log(`[Signed Processor] Adding PDF to Needs Review with reason: ${reason}`);
+
+    // Upload PDF to Drive even if template not configured (so it's available for review)
+    let signedPdfUrl: string | null = null;
+    try {
+      const signedFolderId = await getOrCreateFolder(accessToken, SIGNED_DRIVE_FOLDER_NAME);
+      const signedPdfUpload = await uploadPdfToDrive(
+        accessToken,
+        pdfBuffer,
+        originalFilename,
+        signedFolderId
+      );
+      signedPdfUrl = signedPdfUpload.webViewLink || signedPdfUpload.webContentLink;
+    } catch (uploadError) {
+      console.warn("[Signed Processor] Failed to upload PDF to Drive for needs review:", uploadError);
+    }
+
+    // Add to Needs Review sheet
+    const reviewRecord: SignedNeedsReviewRecord = {
+      fmKey: normalizedFmKey,
+      signed_pdf_url: signedPdfUrl,
+      preview_image_url: null,
+      raw_text: "",
+      confidence: "low",
+      reason,
+      manual_work_order_number: null,
+      resolved: null,
+      resolved_at: null,
+      source: source,
+      gmail_message_id: sourceMeta?.gmailMessageId || null,
+      gmail_attachment_id: sourceMeta?.gmailAttachmentId || null,
+      gmail_subject: sourceMeta?.gmailSubject || null,
+      gmail_from: sourceMeta?.gmailFrom || null,
+      gmail_date: sourceMeta?.gmailDate || null,
+    };
+
+    await appendSignedNeedsReviewRow(accessToken, spreadsheetId, reviewRecord);
+
+    // Return NEEDS_REVIEW result
+    return {
+      workOrderNumber: null,
+      woNumber: null,
+      confidence: 0,
+      confidenceLabel: "low",
+      snippetImageUrl: null,
+      snippetDriveUrl: null,
+      snippetUrl: null,
+      signedPdfUrl,
+      normalized: null,
+      needsReview: true,
+      needsReviewReason: reason,
+      sheetRowId: null,
+      debug: {
+        templateId: null,
+        page: null,
+        ocrNormalized: null,
+      },
+    };
   }
 
   // Validate template has required PDF points

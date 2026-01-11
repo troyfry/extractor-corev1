@@ -255,7 +255,14 @@ export async function getTemplateConfigForFmKey(
     
     return config;
   } catch (error) {
-    console.error(`[Template Config] Error getting template for fmKey="${normalizedFmKey}":`, error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    // TEMPLATE_NOT_CONFIGURED is expected and handled gracefully by the processor
+    // Log it as a warning instead of an error to reduce noise
+    if (errorMessage === "TEMPLATE_NOT_CONFIGURED" || errorMessage.includes("TEMPLATE_NOT_CONFIGURED")) {
+      console.warn(`[Template Config] Template not configured for fmKey="${normalizedFmKey}". Will be handled gracefully.`);
+    } else {
+      console.error(`[Template Config] Error getting template for fmKey="${normalizedFmKey}":`, error);
+    }
     
     // Re-throw error - no fallbacks
     throw error;
