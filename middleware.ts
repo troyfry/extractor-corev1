@@ -55,26 +55,15 @@ export default auth(async (req) => {
     return NextResponse.next();
   }
 
-  // Allow access to free tier page without authentication
-  if (pathname === "/free" || pathname.startsWith("/free/")) {
+  const PUBLIC_PATH_PREFIXES = ["/pricing", "/legal"] as const;
+
+  const isPublic =
+    PUBLIC_PATH_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"));
+  
+  if (isPublic) {
     return NextResponse.next();
   }
-
-  // Allow access to free tier API endpoint without authentication
-  if (pathname === "/api/extract-free" || pathname.startsWith("/api/extract-free/")) {
-    return NextResponse.next();
-  }
-
-  // Allow access to pricing page (public)
-  if (pathname === "/pricing" || pathname.startsWith("/pricing/")) {
-    return NextResponse.next();
-  }
-
-  // Allow access to legal pages (public)
-  if (pathname === "/legal" || pathname.startsWith("/legal/")) {
-    return NextResponse.next();
-  }
-
+  
   // Handle onboarding routes
   if (pathname.startsWith("/onboarding")) {
     // If not authenticated, redirect to sign-in
@@ -92,6 +81,12 @@ export default auth(async (req) => {
     response.headers.set("x-pathname", pathname);
     return response;
   }
+
+    // Legacy alias (old bookmarks)
+  if (pathname === "/pro") {
+    return NextResponse.redirect(new URL("/work-orders", req.url));
+  }
+
 
   // Protect all other routes (require authentication)
   if (!isAuthenticated || !userId) {
