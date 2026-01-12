@@ -52,6 +52,12 @@ export interface ProcessSignedPdfParams {
     method: "DIGITAL_TEXT" | "OCR" | "AI_RESCUE";
     confidence: number;
     rationale?: string;
+    candidates?: Array<{
+      value: string;
+      score: number;
+      source: "DIGITAL_TEXT" | "OCR" | "AI_RESCUE";
+      sourceSnippet?: string;
+    }>;
   } | null;
 }
 
@@ -466,51 +472,51 @@ export async function processSignedPdfUnified(
       extraction_confidence: params.extractionResult?.confidence || null,
       extraction_rationale: params.extractionResult?.rationale || null,
       extracted_work_order_number: params.extractionResult?.workOrderNumber || null,
+      // Candidate list (for multiple candidates scenario)
+      normalized_candidates: params.extractionResult?.candidates && params.extractionResult.candidates.length > 0
+        ? params.extractionResult.candidates.map(c => c.value).join("|")
+        : null,
+      // Candidate sources (JSON for DB migration - stores snippets)
+      candidate_sources: params.extractionResult?.candidates && params.extractionResult.candidates.length > 0
+        ? JSON.stringify(params.extractionResult.candidates.map(c => ({
+            value: c.value,
+            snippet: c.sourceSnippet || null,
+            score: c.score,
+            source: c.source,
+          })))
+        : null,
+      chosen_candidate: params.extractionResult?.workOrderNumber || null,
     };
 
     await appendSignedNeedsReviewRow(accessToken, spreadsheetId, reviewRecord);
     // Note: sheetRowId not available from appendSignedNeedsReviewRow
   } else {
-    // Update Work Orders sheet
+    // Update Work Orders sheet - ONLY update status and signed fields
+    // All other data was already extracted at upload time (one and done)
     if (workOrderNumber) {
       const jobId = generateJobId(null, workOrderNumber);
       
-      // Find existing work order
-      const existingWorkOrder = await findWorkOrderRecordByJobId(
+      const nowIso = new Date().toISOString();
+      
+      // Use partial update to only change status and signed fields
+      // This preserves all existing data that was extracted at upload time
+      const { updateWorkOrderRecordPartial } = await import("@/lib/google/sheets");
+      await updateWorkOrderRecordPartial(
         accessToken,
         spreadsheetId,
         WORK_ORDERS_SHEET_NAME,
-        jobId
-      );
-
-      const nowIso = new Date().toISOString();
-      const mergedWorkOrder: WorkOrderRecord = {
         jobId,
-        fmKey: normalizedFmKey,
-        wo_number: workOrderNumber,
-        status: "SIGNED",
-        scheduled_date: existingWorkOrder?.scheduled_date ?? null,
-        created_at: existingWorkOrder?.created_at ?? nowIso,
-        timestamp_extracted: existingWorkOrder?.timestamp_extracted ?? nowIso,
-        customer_name: existingWorkOrder?.customer_name ?? null,
-        vendor_name: existingWorkOrder?.vendor_name ?? null,
-        service_address: existingWorkOrder?.service_address ?? null,
-        job_type: existingWorkOrder?.job_type ?? null,
-        job_description: existingWorkOrder?.job_description ?? null,
-        amount: existingWorkOrder?.amount ?? null,
-        currency: existingWorkOrder?.currency ?? null,
-        notes: existingWorkOrder?.notes ?? null,
-        priority: existingWorkOrder?.priority ?? null,
-        calendar_event_link: existingWorkOrder?.calendar_event_link ?? null,
-        work_order_pdf_link: existingWorkOrder?.work_order_pdf_link ?? null,
-        signed_pdf_url: signedPdfUrl,
-        signed_preview_image_url: snippetDriveUrl,
-        signed_at: nowIso,
-        source: existingWorkOrder?.source ?? (source === "UPLOAD" ? "signed_upload" : "signed_gmail"),
-        last_updated_at: nowIso,
-      };
-
-      await writeWorkOrderRecord(accessToken, spreadsheetId, WORK_ORDERS_SHEET_NAME, mergedWorkOrder);
+        workOrderNumber,
+        {
+          status: "SIGNED",
+          signed_pdf_url: signedPdfUrl,
+          signed_preview_image_url: snippetDriveUrl,
+          signed_at: nowIso,
+          last_updated_at: nowIso,
+        }
+      );
+      
+      console.log(`[Signed Processor] ✅ Updated work order status to SIGNED: ${jobId}`);
 
       // Also update Sheet1 if work order exists there
       try {

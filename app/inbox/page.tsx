@@ -6,6 +6,8 @@ import MainNavigation from "@/components/layout/MainNavigation";
 import type { GmailFoundEmail } from "@/lib/google/gmail";
 import { WORK_ORDER_LABEL_NAME } from "@/lib/google/gmailConfig";
 import { getAiHeaders } from "@/lib/byok-client";
+import { ROUTES } from "@/lib/routes";
+import Link from "next/link";
 
 export default function InboxPage() {
   const [emails, setEmails] = useState<GmailFoundEmail[]>([]);
@@ -14,6 +16,7 @@ export default function InboxPage() {
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState<string | null>(null);
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<{
     workOrders: number;
@@ -26,6 +29,8 @@ export default function InboxPage() {
   const [currentLabelName, setCurrentLabelName] = useState<string>("Gmail Inbox");
   const [selectedEmails, setSelectedEmails] = useState<Set<string>>(new Set());
   const [expandedEmails, setExpandedEmails] = useState<Set<string>>(new Set());
+  const [hasFmProfiles, setHasFmProfiles] = useState<boolean | null>(null);
+  const [isCheckingFmProfiles, setIsCheckingFmProfiles] = useState(true);
   const selectAllCheckboxRef = useRef<HTMLInputElement>(null);
 
   // Helper function to sort emails by date (oldest first)
@@ -42,10 +47,35 @@ export default function InboxPage() {
     });
   };
 
+  // Check for FM profiles on mount
+  useEffect(() => {
+    checkFmProfiles();
+  }, []);
+
   // Load emails on mount
   useEffect(() => {
     loadEmails();
   }, []);
+
+  const checkFmProfiles = async () => {
+    setIsCheckingFmProfiles(true);
+    try {
+      const response = await fetch("/api/onboarding/fm-profiles");
+      if (response.ok) {
+        const data = await response.json();
+        const profiles = data.profiles || [];
+        setHasFmProfiles(profiles.length > 0);
+      } else {
+        // If endpoint fails, assume no profiles (conservative approach)
+        setHasFmProfiles(false);
+      }
+    } catch (err) {
+      console.error("Failed to check FM profiles:", err);
+      setHasFmProfiles(false);
+    } finally {
+      setIsCheckingFmProfiles(false);
+    }
+  };
 
   const loadEmails = async (pageToken?: string) => {
     if (pageToken) {
@@ -91,6 +121,12 @@ export default function InboxPage() {
   };
 
   const processEmail = async (messageId: string) => {
+    // Check if FM profiles are configured
+    if (hasFmProfiles === false) {
+      setError("Please configure at least one FM Profile before processing work orders. Go to Settings or Onboarding to add an FM Profile.");
+      return;
+    }
+
     setIsProcessing(messageId);
     setError(null);
     setSuccessMessage(null);
@@ -144,6 +180,12 @@ export default function InboxPage() {
   const processBatch = async () => {
     if (selectedEmails.size === 0) return;
 
+    // Check if FM profiles are configured
+    if (hasFmProfiles === false) {
+      setError("Please configure at least one FM Profile before processing work orders. Go to Settings or Onboarding to add an FM Profile.");
+      return;
+    }
+
     setIsBatchProcessing(true);
     setError(null);
     setSuccessMessage(null);
@@ -155,7 +197,12 @@ export default function InboxPage() {
     let labelRemovedCount = 0;
 
     try {
-      for (const messageId of messageIds) {
+      for (let i = 0; i < messageIds.length; i++) {
+        const messageId = messageIds[i];
+        
+        // Update progress
+        setBatchProgress({ current: i + 1, total: messageIds.length });
+
         try {
           const headers = getAiHeaders();
           const response = await fetch("/api/gmail/process", {
@@ -188,6 +235,9 @@ export default function InboxPage() {
         }
       }
 
+      // Clear progress
+      setBatchProgress(null);
+
       // Show batch success message
       if (processedCount > 0) {
         setSuccessMessage({
@@ -208,6 +258,7 @@ export default function InboxPage() {
       setError(err instanceof Error ? err.message : "Failed to process emails");
     } finally {
       setIsBatchProcessing(false);
+      setBatchProgress(null);
     }
   };
 
@@ -275,10 +326,12 @@ export default function InboxPage() {
             {selectedEmails.size > 0 && (
               <button
                 onClick={processBatch}
-                disabled={isBatchProcessing}
-                className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
+                disabled={isBatchProcessing || hasFmProfiles === false}
+                className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isBatchProcessing ? "Processing..." : `Process ${selectedEmails.size} Selected`}
+                {isBatchProcessing 
+                  ? (batchProgress ? `Processing ${batchProgress.current} of ${batchProgress.total}` : "Processing...")
+                  : `Process ${selectedEmails.size} Selected`}
               </button>
             )}
           </div>
@@ -294,6 +347,47 @@ export default function InboxPage() {
               >
                 ×
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* FM Profile Warning */}
+        {hasFmProfiles === false && !isCheckingFmProfiles && (
+          <div className="p-4 bg-yellow-900/20 border border-yellow-700 rounded-lg text-yellow-200">
+            <div className="flex items-start gap-3">
+              <svg className="w-5 h-5 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <div className="flex-1">
+                <p className="font-medium mb-1">FM Profile Required</p>
+                <p className="text-sm text-yellow-300">
+                  You need to configure at least one FM Profile before processing work orders. 
+                  <Link href={ROUTES.onboardingFmProfiles} className="underline hover:text-yellow-100 ml-1">
+                    Add an FM Profile
+                  </Link>
+                  {" or "}
+                  <Link href={ROUTES.settings} className="underline hover:text-yellow-100">
+                    go to Settings
+                  </Link>
+                  .
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Batch Processing Progress */}
+        {batchProgress && (
+          <div className="p-4 bg-blue-900/20 border border-blue-700 rounded-lg text-blue-200">
+            <div className="flex items-center gap-3">
+              <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <div>
+                <p className="font-medium">Processing {batchProgress.current} of {batchProgress.total}</p>
+                <p className="text-sm text-blue-300">Please wait while emails are being processed...</p>
+              </div>
             </div>
           </div>
         )}
@@ -388,8 +482,9 @@ export default function InboxPage() {
                         </button>
                         <button
                           onClick={() => processEmail(email.id)}
-                          disabled={isProcessing === email.id}
-                          className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
+                          disabled={isProcessing === email.id || hasFmProfiles === false}
+                          className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={hasFmProfiles === false ? "FM Profile required to process work orders" : undefined}
                         >
                           {isProcessing === email.id ? "Processing..." : "Process"}
                         </button>

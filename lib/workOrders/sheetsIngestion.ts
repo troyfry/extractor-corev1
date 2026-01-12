@@ -8,6 +8,7 @@
 import type { ParsedWorkOrder } from "./parsedTypes";
 import { writeJobRecord, ensureColumnsExist, type JobRecord, writeWorkOrderRecord, type WorkOrderRecord } from "@/lib/google/sheets";
 import { uploadPdfToDrive, getOrCreateFolder } from "@/lib/google/drive";
+import { extractWorkOrderDetailsFromPdf } from "./extractFromPdf";
 
 /**
  * Normalize a string for use in jobId.
@@ -42,6 +43,7 @@ export function generateJobId(issuer: string | null, woNumber: string | null): s
 /**
  * Write a parsed work order directly to Google Sheets.
  * Uploads PDF to Drive if provided.
+ * Extracts full work order details from PDF BEFORE uploading (one-time extraction).
  * 
  * @param parsedWorkOrder Parsed work order (no DB dependency)
  * @param accessToken Google OAuth access token
@@ -51,6 +53,9 @@ export function generateJobId(issuer: string | null, woNumber: string | null): s
  * @param pdfFilename Optional PDF filename
  * @param sheetName Sheet name (default: "Sheet1" or "Verification")
  * @param source Source of the work order (e.g., "email", "manual_upload", "api")
+ * @param aiEnabled Whether AI extraction is enabled
+ * @param openaiKey OpenAI API key for extraction
+ * @param emailSubject Email subject for context (optional)
  */
 export async function writeWorkOrderToSheets(
   parsedWorkOrder: ParsedWorkOrder,
@@ -60,7 +65,10 @@ export async function writeWorkOrderToSheets(
   pdfBuffer?: Buffer,
   pdfFilename?: string,
   sheetName?: string,
-  source: string = "manual_upload"
+  source: string = "manual_upload",
+  aiEnabled?: boolean,
+  openaiKey?: string | null,
+  emailSubject?: string
 ): Promise<void> {
   const woNumber = parsedWorkOrder.workOrderNumber;
   const jobId = generateJobId(issuerKey, woNumber);
@@ -72,6 +80,39 @@ export async function writeWorkOrderToSheets(
 
   // Ensure columns exist in the target sheet
   await ensureColumnsExist(accessToken, spreadsheetId, targetSheetName);
+
+  // Extract full work order details from PDF BEFORE uploading to Drive (one-time extraction)
+  if (pdfBuffer && pdfFilename && aiEnabled && openaiKey) {
+    try {
+      console.log(`[Sheets Ingestion] Extracting full work order details from PDF: ${pdfFilename}`);
+      const extractedDetails = await extractWorkOrderDetailsFromPdf({
+        pdfBuffer,
+        pdfFilename,
+        aiEnabled,
+        openaiKey,
+        fmKey: parsedWorkOrder.fmKey || null,
+        workOrderNumber: woNumber || null,
+        emailSubject,
+      });
+      
+      // Merge extracted details with parsed work order (extracted takes precedence)
+      if (extractedDetails.customerName) parsedWorkOrder.customerName = extractedDetails.customerName;
+      if (extractedDetails.serviceAddress) parsedWorkOrder.serviceAddress = extractedDetails.serviceAddress;
+      if (extractedDetails.jobType) parsedWorkOrder.jobType = extractedDetails.jobType;
+      if (extractedDetails.jobDescription) parsedWorkOrder.jobDescription = extractedDetails.jobDescription;
+      if (extractedDetails.amount) parsedWorkOrder.amount = extractedDetails.amount;
+      if (extractedDetails.currency) parsedWorkOrder.currency = extractedDetails.currency;
+      if (extractedDetails.notes) parsedWorkOrder.notes = extractedDetails.notes;
+      if (extractedDetails.priority) parsedWorkOrder.priority = extractedDetails.priority;
+      if (extractedDetails.vendorName) parsedWorkOrder.vendorName = extractedDetails.vendorName;
+      if (extractedDetails.scheduledDate) parsedWorkOrder.scheduledDate = extractedDetails.scheduledDate;
+      
+      console.log(`[Sheets Ingestion] ✅ Extracted and merged work order details from PDF`);
+    } catch (error) {
+      console.warn(`[Sheets Ingestion] Failed to extract details from PDF (non-fatal):`, error);
+      // Continue with original parsedWorkOrder values
+    }
+  }
 
   // Upload PDF to Drive if provided (required - throw on failure)
   let originalPdfUrl: string | null = null;
@@ -178,6 +219,9 @@ export async function writeWorkOrderToSheets(
  * @param pdfBuffers Optional array of PDF buffers (must match parsedWorkOrders length)
  * @param pdfFilenames Optional array of PDF filenames (must match parsedWorkOrders length)
  * @param source Source of the work orders (e.g., "email", "manual_upload", "api")
+ * @param aiEnabled Whether AI extraction is enabled
+ * @param openaiKey OpenAI API key for extraction
+ * @param emailSubject Email subject for context (optional)
  */
 export async function writeWorkOrdersToSheets(
   parsedWorkOrders: ParsedWorkOrder[],
@@ -186,7 +230,10 @@ export async function writeWorkOrdersToSheets(
   issuerKey: string,
   pdfBuffers?: Buffer[],
   pdfFilenames?: string[],
-  source: string = "manual_upload"
+  source: string = "manual_upload",
+  aiEnabled?: boolean,
+  openaiKey?: string | null,
+  emailSubject?: string
 ): Promise<void> {
   // Ensure "Verification" sheet exists
   await ensureColumnsExist(accessToken, spreadsheetId, "Verification");
@@ -205,7 +252,10 @@ export async function writeWorkOrdersToSheets(
       pdfBuffer,
       pdfFilename,
       undefined, // sheetName - use default
-      source
+      source,
+      aiEnabled,
+      openaiKey,
+      emailSubject
     );
   }
 }

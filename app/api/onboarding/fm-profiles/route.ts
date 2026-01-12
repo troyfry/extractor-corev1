@@ -74,15 +74,38 @@ export async function GET() {
       accessToken: user.googleAccessToken,
     });
 
-    // Map to response format
-    const mappedProfiles = profiles.map((p) => ({
-      fmKey: p.fmKey,
-      displayName: p.fmLabel || p.fmKey,
-      senderDomains: p.senderDomains
-        ? p.senderDomains.split(",").map((d) => d.trim()).filter(Boolean)
-        : [],
-      senderEmails: [], // Not stored in current schema, return empty array
-    }));
+    // Calculate completeness for each profile
+    const { calculateFmProfileCompleteness } = await import("@/lib/signed/fieldAuthorityPolicy");
+
+    // Map to response format with completeness info
+    const mappedProfiles = profiles.map((p) => {
+      const completeness = calculateFmProfileCompleteness({
+        // Use percentage values directly (from FM_Profiles sheet)
+        xPct: p.xPct,
+        yPct: p.yPct,
+        wPct: p.wPct,
+        hPct: p.hPct,
+        page: p.page,
+        senderDomains: p.senderDomains,
+      });
+
+      return {
+        fmKey: p.fmKey,
+        displayName: p.fmLabel || p.fmKey,
+        senderDomains: p.senderDomains
+          ? p.senderDomains.split(",").map((d) => d.trim()).filter(Boolean)
+          : [],
+        senderEmails: [], // Not stored in current schema, return empty array
+        // Completeness info for UI badges
+        completeness: {
+          score: completeness.score,
+          hasWoNumberRegion: completeness.hasWoNumberRegion,
+          hasPage: completeness.hasPage,
+          hasSenderDomains: completeness.hasSenderDomains,
+          completeness: completeness.completeness,
+        },
+      };
+    });
 
     return NextResponse.json({ profiles: mappedProfiles });
   } catch (error) {

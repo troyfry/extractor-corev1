@@ -34,6 +34,13 @@ type FmProfile = {
   displayName: string;
   senderDomains?: string[];
   senderEmails?: string[];
+  completeness?: {
+    score: number;
+    hasWoNumberRegion: boolean;
+    hasPage: boolean;
+    hasSenderDomains: boolean;
+    completeness: "HIGH" | "MEDIUM" | "LOW";
+  };
 };
 
 type GmailEmail = {
@@ -372,18 +379,53 @@ export default function SignedUploadPage() {
                   Loading profiles...
                 </div>
               ) : (
-                <select
-                  value={fmKey}
-                  onChange={(e) => setFmKey(e.target.value)}
-                  className="w-full px-4 py-2 bg-gray-900 border border-gray-700 rounded text-white focus:outline-none focus:border-blue-500"
-                >
-                  <option value="">- Select FM Key -</option>
-                  {profiles.map((profile) => (
-                    <option key={profile.fmKey} value={profile.fmKey}>
-                      {profile.displayName} ({profile.fmKey})
-                    </option>
-                  ))}
-                </select>
+                <div>
+                  <select
+                    value={fmKey}
+                    onChange={(e) => setFmKey(e.target.value)}
+                    className="w-full px-4 py-2 bg-gray-900 border border-gray-700 rounded text-white focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="">- Select FM Key -</option>
+                    {profiles.map((profile) => {
+                      const hasWoRegion = profile.completeness?.hasWoNumberRegion ?? false;
+                      const badge = hasWoRegion ? "✅" : "⚠️";
+                      const badgeText = hasWoRegion 
+                        ? "WO# region configured" 
+                        : "No WO# region";
+                      
+                      return (
+                        <option key={profile.fmKey} value={profile.fmKey}>
+                          {badge} {profile.displayName} ({profile.fmKey}) - {badgeText}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  {fmKey && (() => {
+                    const selectedProfile = profiles.find(p => p.fmKey === fmKey);
+                    const completeness = selectedProfile?.completeness;
+                    if (!completeness) return null;
+                    
+                    return (
+                      <div className="mt-2 text-xs">
+                        {completeness.hasWoNumberRegion ? (
+                          <div className="flex items-center gap-2 text-green-400">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <span>WO# region configured — high trust extraction</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 text-yellow-400">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                            <span>No WO# region — requires review more often</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
               )}
               <p className="text-xs text-gray-400 mt-2">
                 You are processing signed work orders for this FM only.

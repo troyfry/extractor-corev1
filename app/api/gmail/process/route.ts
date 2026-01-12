@@ -372,6 +372,10 @@ export async function POST(request: Request) {
       console.log(`[Gmail Process] Selected work order PDF: "${bestPdf.pdf.filename}" (score: ${bestPdf.score}). Ignoring ${email.pdfAttachments.length - 1} other PDF(s).`);
     }
     
+    // Read AI configuration from headers (optional) - outside loop so it's available for extraction
+    const aiEnabled = request.headers.get("x-ai-enabled") === "true";
+    const apiKey = request.headers.get("x-openai-key")?.trim() || null;
+
     // Process the selected PDF(s)
     console.log(`[Gmail Process] Processing ${pdfsToProcess.length} PDF attachment(s) for message ${messageId}`);
     for (const pdfAttachment of pdfsToProcess) {
@@ -396,10 +400,6 @@ export async function POST(request: Request) {
         .join("\n\n");
 
       let parsedWorkOrders: ParsedWorkOrder[] = [];
-
-      // Read AI configuration from headers (optional)
-      const aiEnabled = request.headers.get("x-ai-enabled") === "true";
-      const apiKey = request.headers.get("x-openai-key")?.trim() || null;
 
       // Try AI parsing first (if enabled and key provided)
       if (aiEnabled && apiKey && isAiParsingEnabled(aiEnabled, apiKey)) {
@@ -636,6 +636,11 @@ ${pdfText}`;
         }
       }
 
+      // Require at least one FM profile before processing
+      if (fmProfiles.length === 0) {
+        throw new Error("No FM Profiles configured. Please add at least one FM Profile in Settings or Onboarding before processing work orders.");
+      }
+
       // Match FM profiles for each work order
       const { matchFmProfile } = await import("@/lib/templates/fmProfileMatching");
       console.log(`[Gmail Process] Starting FM profile matching for ${allParsedWorkOrders.length} work order(s)`);
@@ -751,6 +756,7 @@ ${pdfText}`;
 
         // Write to Sheets with PDF upload to Drive
         // This will throw if ANY step fails (Drive upload OR Sheets write)
+        // Extract full work order details from PDFs BEFORE uploading (one-time extraction)
         const { writeWorkOrdersToSheets } = await import("@/lib/workOrders/sheetsIngestion");
         await writeWorkOrdersToSheets(
           allParsedWorkOrders,
@@ -759,7 +765,10 @@ ${pdfText}`;
           issuerKey, // Use issuerKey from email sender domain (stable)
           pdfBuffers.length > 0 ? pdfBuffers : undefined,
           pdfFilenames.length > 0 ? pdfFilenames : undefined,
-          "email" // Source: Gmail processing
+          "email", // Source: Gmail processing
+          aiEnabled, // Pass AI enabled flag
+          apiKey, // Pass OpenAI key for extraction
+          email.subject // Pass email subject for context
         );
         
         console.log("[Gmail Process] Successfully wrote work orders to Sheets + Drive");

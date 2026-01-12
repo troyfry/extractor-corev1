@@ -30,6 +30,7 @@ export const SIGNED_NEEDS_REVIEW_COLUMNS = [
   "trust_score",
   "decision_reasons",
   "normalized_candidates",
+  "candidate_sources",
   "extraction_method",
   "extraction_confidence",
   "extraction_rationale",
@@ -71,6 +72,7 @@ export type SignedNeedsReviewRecord = {
   trust_score?: number | null;
   decision_reasons?: string | null; // Pipe-separated: "OK_FORMAT|DIGITAL_TEXT_STRONG"
   normalized_candidates?: string | null; // Pipe-separated: "1234567|1234568"
+  candidate_sources?: string | null; // JSON array of {value, snippet} for DB migration
   extraction_method?: "DIGITAL_TEXT" | "OCR" | "AI_RESCUE" | null;
   extraction_confidence?: number | null; // 0..1
   extraction_rationale?: string | null;

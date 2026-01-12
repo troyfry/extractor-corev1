@@ -22,6 +22,12 @@ export default async function SignInPage({
     redirect(callbackUrl);
   }
 
+  // Define Server Action inline with proper closure
+  async function signInAction() {
+    "use server";
+    await signIn("google", { callbackUrl });
+  }
+
   return (
     <div className="min-h-screen bg-gray-900 flex items-center justify-center px-4">
       <div className="max-w-md w-full bg-gray-800 rounded-lg shadow-lg p-8">
@@ -33,12 +39,7 @@ export default async function SignInPage({
             Please sign in with your Google account to continue.
           </p>
 
-          <form
-            action={async () => {
-              "use server";
-              await signIn("google", { callbackUrl });
-            }}
-          >
+          <form action={signInAction}>
             <button
               type="submit"
               className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-white hover:bg-gray-100 text-gray-900 font-medium rounded-md transition-colors"

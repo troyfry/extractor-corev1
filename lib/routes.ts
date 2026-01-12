@@ -1,8 +1,8 @@
 export const ROUTES = {
-  home: "/work-orders",
+    home: "/work-orders",
 
-  workOrders: "/work-orders",
-  inbox: "/inbox",
+    workOrders: "/work-orders",
+    inbox: "/inbox",
 
   signed: "/signed",
   signedUpload: "/signed/upload",
@@ -11,22 +11,22 @@ export const ROUTES = {
   invoices: "/invoices",
   integrations: "/integrations",
 
-  onboarding: "/onboarding",
+    onboarding: "/onboarding",
   onboardingGoogle: "/onboarding/google",
   onboardingGmail: "/onboarding/gmail",
   onboardingDone: "/onboarding/done",
   onboardingFmProfiles: "/onboarding/fm-profiles",
   onboardingTemplates: "/onboarding/templates",
   onboardingOpenai: "/onboarding/openai",
-  settings: "/settings",
-  pricing: "/pricing",
-  legal: "/legal",
+    settings: "/settings",
+    pricing: "/pricing",
+    legal: "/legal",
   legalPrivacy: "/legal/privacy",
   legalTerms: "/legal/terms",
-  signIn: "/auth/signin",
+    signIn: "/auth/signin",
   portal: "/portal",
   pro: "/pro",
   free: "/free",
   dashboard: "/dashboard",
-} as const;
+  } as const;
   
