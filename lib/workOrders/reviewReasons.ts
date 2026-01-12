@@ -1,3 +1,5 @@
+import { ROUTES } from "@/lib/routes";
+
 export type NeedsReviewReason =
   | "TEMPLATE_NOT_CONFIGURED"
   | "INVALID_CROP"
@@ -29,8 +31,8 @@ export interface NeedsReviewUx {
 
 export function getNeedsReviewUx(reason: NeedsReviewReason, fmKey?: string): NeedsReviewUx {
   const templatesLink = fmKey
-    ? `/onboarding/templates?fmKey=${encodeURIComponent(fmKey)}`
-    : "/onboarding/templates";
+    ? `${ROUTES.onboardingTemplates}?fmKey=${encodeURIComponent(fmKey)}`
+    : ROUTES.onboardingTemplates;
 
   const map: Record<string, NeedsReviewUx> = {
     TEMPLATE_NOT_CONFIGURED: {
@@ -65,14 +67,14 @@ export function getNeedsReviewUx(reason: NeedsReviewReason, fmKey?: string): Nee
       title: "FM company not selected",
       message: "This signed PDF didn't include an FM key. Select the FM company and retry.",
       actionLabel: "Pick FM key",
-      href: "/pro/signed/upload",
+      href: ROUTES.signedUpload,
       tone: "danger",
     },
     FMKEY_MISMATCH: {
       title: "Issuer mismatch — please confirm",
       message: "This signed PDF doesn't match the selected issuer profile. Switch issuer and reprocess, or confirm manually.",
       actionLabel: "Reprocess with correct issuer",
-      href: "/pro/signed/upload",
+      href: ROUTES.signedUpload,
       tone: "warning",
     },
     TEMPLATE_NOT_FOUND: {
@@ -121,7 +123,7 @@ export function getNeedsReviewUx(reason: NeedsReviewReason, fmKey?: string): Nee
       title: "WO not found in Sheet1",
       message: "This signed work order can't be matched because the original job row isn't in Sheet1. Upload/extract the original work order first, then resolve.",
       actionLabel: "Go to extractor",
-      href: "/pro",
+      href: ROUTES.pro,
       tone: "danger",
     },
     UPDATE_FAILED: {

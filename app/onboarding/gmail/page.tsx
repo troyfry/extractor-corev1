@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
+import { ROUTES } from "@/lib/routes";
 import {
   WORK_ORDERS_LABEL_NAME,
   SIGNED_WORK_ORDERS_LABEL_NAME,
@@ -58,7 +59,7 @@ export default function OnboardingGmailPage() {
       sessionStorage.setItem("gmailProcessedLabelName", processedLabel);
 
       // Continue to done page which will complete onboarding
-      router.push("/onboarding/done");
+      router.push(ROUTES.onboardingDone);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
       setIsSubmitting(false);
@@ -67,7 +68,7 @@ export default function OnboardingGmailPage() {
 
   const handleSkip = () => {
     // Use defaults - continue to done page
-    router.push("/onboarding/done");
+    router.push(ROUTES.onboardingDone);
   };
 
   return (

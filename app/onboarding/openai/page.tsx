@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
+import { ROUTES } from "@/lib/routes";
 
 export default function OnboardingOpenAIPage() {
   const router = useRouter();
@@ -29,7 +30,7 @@ export default function OnboardingOpenAIPage() {
       }
 
       setIsSubmitting(false);
-      router.push("/onboarding/fm-profiles");
+      router.push(ROUTES.onboardingFmProfiles);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
       setIsSubmitting(false);
@@ -54,7 +55,7 @@ export default function OnboardingOpenAIPage() {
       }
 
       setIsSubmitting(false);
-      router.push("/onboarding/fm-profiles");
+      router.push(ROUTES.onboardingFmProfiles);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
       setIsSubmitting(false);

@@ -2,6 +2,7 @@
 
 import React from "react";
 import Link from "next/link";
+import { ROUTES } from "@/lib/routes";
 
 export default function OnboardingPage() {
   // Onboarding status is checked server-side in layout.tsx
@@ -18,7 +19,7 @@ export default function OnboardingPage() {
         
         <div className="space-y-4">
           <Link
-            href="/onboarding/google"
+            href={ROUTES.onboardingGoogle}
             className="inline-block px-6 py-3 bg-sky-600 hover:bg-sky-700 text-white rounded-lg font-medium transition-colors"
           >
             Start Setup →

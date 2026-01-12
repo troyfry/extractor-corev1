@@ -5,6 +5,7 @@ import AppShell from "@/components/layout/AppShell";
 import MainNavigation from "@/components/layout/MainNavigation";
 import type { GmailFoundEmail } from "@/lib/google/gmail";
 import { WORK_ORDER_LABEL_NAME } from "@/lib/google/gmailConfig";
+import { getAiHeaders } from "@/lib/byok-client";
 
 export default function InboxPage() {
   const [emails, setEmails] = useState<GmailFoundEmail[]>([]);
@@ -95,9 +96,13 @@ export default function InboxPage() {
     setSuccessMessage(null);
 
     try {
+      const headers = getAiHeaders();
       const response = await fetch("/api/gmail/process", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          ...headers,
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           messageId,
           autoRemoveLabel: autoRemoveLabel,
@@ -152,9 +157,13 @@ export default function InboxPage() {
     try {
       for (const messageId of messageIds) {
         try {
+          const headers = getAiHeaders();
           const response = await fetch("/api/gmail/process", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              ...headers,
+              "Content-Type": "application/json",
+            },
             body: JSON.stringify({
               messageId,
               autoRemoveLabel: autoRemoveLabel,

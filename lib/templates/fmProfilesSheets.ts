@@ -60,21 +60,34 @@ export async function ensureFmProfileSheet(
     // Create sheet if it doesn't exist
     if (!sheetExists) {
       console.log(`[FM Profiles] Creating "${sheetName}" sheet`);
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId,
-        requestBody: {
-          requests: [
-            {
-              addSheet: {
-                properties: {
-                  title: sheetName,
+      try {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId,
+          requestBody: {
+            requests: [
+              {
+                addSheet: {
+                  properties: {
+                    title: sheetName,
+                  },
                 },
               },
-            },
-          ],
-        },
-      });
-      console.log(`[FM Profiles] Created "${sheetName}" sheet`);
+            ],
+          },
+        });
+        console.log(`[FM Profiles] Created "${sheetName}" sheet`);
+      } catch (createError: any) {
+        // Handle case where sheet was created between check and create (race condition)
+        const errorMessage = getErrorMessage(createError);
+        if (errorMessage.includes("already exists") || errorMessage.includes("duplicate")) {
+          console.log(`[FM Profiles] Sheet "${sheetName}" already exists (race condition), continuing...`);
+        } else {
+          // Re-throw if it's a different error
+          throw createError;
+        }
+      }
+    } else {
+      console.log(`[FM Profiles] Sheet "${sheetName}" already exists`);
     }
 
     // Get current header row

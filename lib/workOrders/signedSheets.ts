@@ -31,6 +31,9 @@ export const SIGNED_NEEDS_REVIEW_COLUMNS = [
   "decision_reasons",
   "normalized_candidates",
   "extraction_method",
+  "extraction_confidence",
+  "extraction_rationale",
+  "extracted_work_order_number",
   "ocr_pass_agreement",
   "ocr_confidence_raw",
   "chosen_candidate",
@@ -68,7 +71,10 @@ export type SignedNeedsReviewRecord = {
   trust_score?: number | null;
   decision_reasons?: string | null; // Pipe-separated: "OK_FORMAT|DIGITAL_TEXT_STRONG"
   normalized_candidates?: string | null; // Pipe-separated: "1234567|1234568"
-  extraction_method?: "DIGITAL_TEXT" | "OCR" | null;
+  extraction_method?: "DIGITAL_TEXT" | "OCR" | "AI_RESCUE" | null;
+  extraction_confidence?: number | null; // 0..1
+  extraction_rationale?: string | null;
+  extracted_work_order_number?: string | null;
   ocr_pass_agreement?: "TRUE" | "FALSE" | null;
   ocr_confidence_raw?: number | null; // 0..1
   chosen_candidate?: string | null;
@@ -229,6 +235,9 @@ export async function appendSignedNeedsReviewRow(
     decision_reasons: record.decision_reasons || null,
     normalized_candidates: record.normalized_candidates || null,
     extraction_method: record.extraction_method || null,
+    extraction_confidence: record.extraction_confidence != null ? String(record.extraction_confidence) : null,
+    extraction_rationale: record.extraction_rationale || null,
+    extracted_work_order_number: record.extracted_work_order_number || null,
     ocr_pass_agreement: record.ocr_pass_agreement || null,
     ocr_confidence_raw: record.ocr_confidence_raw != null ? String(record.ocr_confidence_raw) : null,
     chosen_candidate: record.chosen_candidate || null,

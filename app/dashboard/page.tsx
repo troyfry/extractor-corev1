@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { ROUTES } from "@/lib/routes";
 import AppShell from "@/components/layout/AppShell";
 import MainNavigation from "@/components/layout/MainNavigation";
 import ResultsTable from "@/components/work-orders/ResultsTable";
@@ -39,7 +40,7 @@ export default function DashboardPage() {
         const response = await fetch("/api/auth/session");
         const session = await response.json();
         if (!session || !session.user) {
-          router.push("/auth/signin");
+          router.push(ROUTES.signIn);
           return;
         }
         
@@ -61,7 +62,7 @@ export default function DashboardPage() {
         }
       } catch (error) {
         console.error("Error checking auth:", error);
-        router.push("/auth/signin");
+        router.push(ROUTES.signIn);
       }
     };
     // Check auth in background - don't block rendering
@@ -169,7 +170,7 @@ export default function DashboardPage() {
 
           if (!response.ok) {
             if (response.status === 401) {
-              router.push("/auth/signin");
+              router.push(ROUTES.signIn);
               return;
             }
             const errorData = await response.json().catch(() => ({ error: "Failed to process PDF" }));
@@ -261,7 +262,7 @@ export default function DashboardPage() {
                     To save work orders to Google Sheets, please configure your spreadsheet ID in Settings.
                   </p>
                   <a
-                    href="/settings"
+                    href={ROUTES.settings}
                     className="inline-flex items-center gap-1 text-yellow-300 hover:text-yellow-200 text-sm font-medium underline"
                   >
                     Go to Settings

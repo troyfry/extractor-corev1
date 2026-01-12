@@ -20,6 +20,7 @@
 
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
+import { ROUTES } from "@/lib/routes";
 
 export default auth(async (req) => {
   const { pathname } = req.nextUrl;
@@ -55,7 +56,7 @@ export default auth(async (req) => {
     return NextResponse.next();
   }
 
-  const PUBLIC_PATH_PREFIXES = ["/pricing", "/legal"] as const;
+  const PUBLIC_PATH_PREFIXES = [ROUTES.pricing, ROUTES.legal] as const;
 
   const isPublic =
     PUBLIC_PATH_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"));
@@ -68,7 +69,7 @@ export default auth(async (req) => {
   if (pathname.startsWith("/onboarding")) {
     // If not authenticated, redirect to sign-in
     if (!isAuthenticated || !userId) {
-      const signInUrl = new URL("/auth/signin", req.url);
+      const signInUrl = new URL(ROUTES.signIn, req.url);
       const callbackUrl = req.nextUrl.pathname + req.nextUrl.search;
       signInUrl.searchParams.set("callbackUrl", callbackUrl);
       return NextResponse.redirect(signInUrl);
@@ -83,15 +84,15 @@ export default auth(async (req) => {
   }
 
     // Legacy alias (old bookmarks)
-  if (pathname === "/pro") {
-    return NextResponse.redirect(new URL("/work-orders", req.url));
+  if (pathname === ROUTES.pro) {
+    return NextResponse.redirect(new URL(ROUTES.workOrders, req.url));
   }
 
 
   // Protect all other routes (require authentication)
   if (!isAuthenticated || !userId) {
     // Redirect to sign-in page
-    const signInUrl = new URL("/auth/signin", req.url);
+    const signInUrl = new URL(ROUTES.signIn, req.url);
     const callbackUrl = req.nextUrl.pathname + req.nextUrl.search;
     signInUrl.searchParams.set("callbackUrl", callbackUrl);
     return NextResponse.redirect(signInUrl);

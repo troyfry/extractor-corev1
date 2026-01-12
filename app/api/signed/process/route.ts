@@ -4,6 +4,9 @@ import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
 import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
 import { processSignedPdf } from "@/lib/_deprecated/process";
 import { normalizePdfBuffer } from "@/lib/pdf/normalizePdf";
+import { extractWorkOrderNumber } from "@/lib/signed/extractWorkOrderNumber";
+import { getTemplateConfigForFmKey } from "@/lib/workOrders/templateConfig";
+import { useUserOpenAIKey } from "@/lib/useUserOpenAIKey";
 
 export const runtime = "nodejs";
 
@@ -56,6 +59,10 @@ export async function POST(req: Request) {
     const pageOverride = formData.get("page");
     const pageNumber = pageOverride ? parseInt(String(pageOverride), 10) : 1;
 
+    // Get AI settings from headers (for 3-layer extraction)
+    const aiEnabled = req.headers.get("x-ai-enabled") === "true";
+    const openaiKey = req.headers.get("x-openai-key")?.trim() || null;
+
     const arrayBuffer = await file.arrayBuffer();
     const originalPdfBuffer = Buffer.from(arrayBuffer);
     const originalFilename = file.name || "signed-work-order.pdf";
@@ -87,6 +94,57 @@ export async function POST(req: Request) {
       });
     }
 
+    // Step: Run 3-layer extraction flow (Digital → OCR → AI Rescue)
+    let extractionResult = null;
+    try {
+      // Try to get template config for OCR coordinates (optional)
+      let ocrConfig = null;
+      try {
+        const templateConfig = await getTemplateConfigForFmKey(rawFmKey);
+        if (
+          templateConfig.xPt !== undefined &&
+          templateConfig.yPt !== undefined &&
+          templateConfig.wPt !== undefined &&
+          templateConfig.hPt !== undefined &&
+          templateConfig.pageWidthPt !== undefined &&
+          templateConfig.pageHeightPt !== undefined
+        ) {
+          ocrConfig = {
+            page: pageNumber,
+            xPt: templateConfig.xPt,
+            yPt: templateConfig.yPt,
+            wPt: templateConfig.wPt,
+            hPt: templateConfig.hPt,
+            pageWidthPt: templateConfig.pageWidthPt,
+            pageHeightPt: templateConfig.pageHeightPt,
+            dpi: 200,
+          };
+        }
+      } catch (error) {
+        // Template not found - OCR config will be null (extraction will skip OCR layer)
+        console.log("[Signed Process] Template config not available for OCR, will skip OCR layer:", error);
+      }
+
+      extractionResult = await extractWorkOrderNumber({
+        pdfBuffer: normalizedPdfBuffer,
+        aiEnabled,
+        openaiKey,
+        fmKey: rawFmKey,
+        ocrConfig,
+        expectedDigits: 7, // Default, can be made configurable
+      });
+
+      console.log("[Signed Process] 3-layer extraction complete:", {
+        method: extractionResult.method,
+        confidence: extractionResult.confidence,
+        workOrderNumber: extractionResult.workOrderNumber,
+        rationale: extractionResult.rationale,
+      });
+    } catch (error) {
+      console.error("[Signed Process] 3-layer extraction failed:", error);
+      // Continue with existing flow if extraction fails
+    }
+
     // Call process layer with normalized PDF
     const result = await processSignedPdf({
       pdfBytes: normalizedPdfBuffer,
@@ -99,6 +157,13 @@ export async function POST(req: Request) {
       dpi: 200,
       woNumberOverride: woNumberOverride || undefined,
       manualReason: manualReason || undefined,
+      // Pass extraction results to processor
+      extractionResult: extractionResult ? {
+        workOrderNumber: extractionResult.workOrderNumber,
+        method: extractionResult.method,
+        confidence: extractionResult.confidence,
+        rationale: extractionResult.rationale || undefined,
+      } : null,
     });
 
     // Map unified result to existing response format for compatibility
@@ -139,6 +204,14 @@ export async function POST(req: Request) {
         },
         chosenPage: result.debug?.page || null,
         attemptedPages: String(result.debug?.page || ""),
+        // 3-layer extraction results
+        extraction: extractionResult ? {
+          workOrderNumber: extractionResult.workOrderNumber,
+          method: extractionResult.method,
+          confidence: extractionResult.confidence,
+          rationale: extractionResult.rationale || null,
+          candidates: extractionResult.candidates || null,
+        } : null,
       },
     };
 

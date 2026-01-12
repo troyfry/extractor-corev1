@@ -17,7 +17,9 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { cookies } from "next/headers";
+import { ROUTES } from "@/lib/routes";
 import { OnboardingHeader } from "@/app/components/onboarding/OnboardingHeader";
+import { headers } from "next/headers";
 
 export default async function OnboardingLayout({
   children,
@@ -33,14 +35,23 @@ export default async function OnboardingLayout({
   }
 
   const cookieStore = await cookies();
+  const headersList = await headers();
+  // Get pathname from middleware header (set in middleware.ts)
+  const pathname = headersList.get("x-pathname") || "";
   
   // Resume logic: decide next step from cookies
   const cookieOnboardingCompleted = cookieStore.get("onboardingCompleted")?.value;
   const cookieWorkspaceReady = cookieStore.get("workspaceReady")?.value;
   
   // Rule 1: Full onboarding completed → redirect to /pro
-  if (cookieOnboardingCompleted === "true") {
-    redirect("/pro");
+  // EXCEPTION: Allow access to FM Profiles and Templates pages (they're settings, not onboarding)
+  const isSettingsPage = pathname === "/onboarding/fm-profiles" || 
+                         pathname.startsWith("/onboarding/fm-profiles/") ||
+                         pathname === "/onboarding/templates" ||
+                         pathname.startsWith("/onboarding/templates/");
+  
+  if (cookieOnboardingCompleted === "true" && !isSettingsPage) {
+    redirect(ROUTES.pro);
   }
   
   // Rule 2: No workspace → go to /onboarding/google (allow rendering - user might be on correct step)

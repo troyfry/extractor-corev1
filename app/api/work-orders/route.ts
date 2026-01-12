@@ -138,8 +138,10 @@ export async function POST(req: Request) {
             parsedWorkOrders,
             accessToken,
             spreadsheetId,
-            issuerKey
-            // No PDF buffers for this route
+            issuerKey,
+            undefined, // No PDF buffers for this route
+            undefined, // No PDF filenames for this route
+            "api" // Source: API endpoint
           );
           console.log("[work-orders] Successfully wrote work orders to Sheets");
         }
@@ -164,22 +166,186 @@ export async function POST(req: Request) {
  * GET /api/work-orders
  * Get all work orders for the authenticated user from Google Sheets.
  * 
- * Note: Since Sheets + Drive is the system of record, this endpoint
- * would need to read from Sheets. For now, returns empty array.
- * TODO: Implement Sheets reading if needed.
+ * Reads from Work_Orders sheet and maps to WorkOrder type.
  */
 export async function GET() {
   try {
-    // Require authentication for Pro tier
+    // Require authentication
     const user = await getCurrentUser();
     if (!user) {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    // Sheets + Drive is the system of record - work orders are not stored in DB
-    // To read work orders, query Google Sheets directly
-    // For now, return empty array
-    return NextResponse.json({ workOrders: [] }, { status: 200 });
+    // Get Google access token
+    if (!user.googleAccessToken) {
+      return NextResponse.json(
+        { error: "Google authentication required. Please sign in with Google." },
+        { status: 401 }
+      );
+    }
+
+    // Get workspace (don't throw - return specific error code)
+    const { getWorkspace } = await import("@/lib/workspace/getWorkspace");
+    const { rehydrateWorkspaceCookies } = await import("@/lib/workspace/workspaceCookies");
+    const workspaceResult = await getWorkspace();
+    
+    if (!workspaceResult) {
+      // Check cookies to determine if this is a "needs onboarding" vs "temporary error" case
+      const { cookies } = await import("next/headers");
+      const { readWorkspaceCookies } = await import("@/lib/workspace/workspaceCookies");
+      const cookieStore = await cookies();
+      const wsCookies = readWorkspaceCookies(cookieStore);
+      
+      const isWorkspaceReady = wsCookies.workspaceReady === "true" && wsCookies.spreadsheetId;
+      
+      if (!isWorkspaceReady) {
+        // No workspace configured - return specific error code that frontend can handle
+        return NextResponse.json(
+          { 
+            error: "Workspace not configured",
+            needsOnboarding: true 
+          },
+          { status: 404 } // 404 = resource not found (workspace)
+        );
+      }
+      
+      // Cookie says ready but workspace couldn't be loaded - might be temporary error
+      return NextResponse.json(
+        { 
+          error: "Workspace temporarily unavailable",
+          needsOnboarding: false 
+        },
+        { status: 503 } // 503 = service temporarily unavailable
+      );
+    }
+    
+    const spreadsheetId = workspaceResult.workspace.spreadsheetId;
+
+    // Read Work_Orders sheet
+    const { createSheetsClient, formatSheetRange, WORK_ORDER_REQUIRED_COLUMNS } = await import("@/lib/google/sheets");
+    const { getColumnRange } = await import("@/lib/google/sheetsCache");
+    const sheets = createSheetsClient(user.googleAccessToken);
+
+    const WORK_ORDERS_SHEET_NAME = process.env.GOOGLE_SHEETS_WORK_ORDERS_SHEET_NAME || "Work_Orders";
+
+    // Get all data from Work_Orders sheet
+    const allDataResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: formatSheetRange(WORK_ORDERS_SHEET_NAME, getColumnRange(WORK_ORDER_REQUIRED_COLUMNS.length)),
+    });
+
+    const rows = allDataResponse.data.values || [];
+    if (rows.length === 0) {
+      const response = NextResponse.json({ workOrders: [] }, { status: 200 });
+      if (workspaceResult.source === "users_sheet") {
+        rehydrateWorkspaceCookies(response, workspaceResult.workspace);
+      }
+      return response;
+    }
+
+    // First row is headers
+    const headers = rows[0] as string[];
+    const headersLower = headers.map((h) => (h || "").toLowerCase().trim());
+
+    // Helper to get column index by name (case-insensitive)
+    const getIndex = (colName: string): number => {
+      return headersLower.indexOf(colName.toLowerCase());
+    };
+
+    // Map data rows to WorkOrder type
+    const workOrders: Array<import("@/lib/workOrders/types").WorkOrder> = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.length === 0) continue;
+
+      const woNumberCol = getIndex("wo_number");
+      const jobIdCol = getIndex("jobid");
+      
+      // Skip rows without wo_number (required field)
+      if (woNumberCol === -1 || !row[woNumberCol]) continue;
+
+      const woNumber = String(row[woNumberCol] || "").trim();
+      if (!woNumber) continue;
+
+      const jobId = jobIdCol !== -1 && row[jobIdCol] ? String(row[jobIdCol]) : "";
+      const createdAt = getIndex("created_at") !== -1 && row[getIndex("created_at")] 
+        ? String(row[getIndex("created_at")]) 
+        : new Date().toISOString();
+      const timestampExtracted = getIndex("timestamp_extracted") !== -1 && row[getIndex("timestamp_extracted")]
+        ? String(row[getIndex("timestamp_extracted")])
+        : createdAt;
+
+      // Map sheet columns to WorkOrder type
+      const workOrder: import("@/lib/workOrders/types").WorkOrder = {
+        id: jobId || `wo-${woNumber}-${i}`, // Fallback ID if jobId missing
+        jobId: jobId || `wo-${woNumber}-${i}`,
+        userId: getIndex("user_id") !== -1 && row[getIndex("user_id")] 
+          ? String(row[getIndex("user_id")]) 
+          : null,
+        timestampExtracted,
+        workOrderNumber: woNumber,
+        fmKey: getIndex("fmkey") !== -1 && row[getIndex("fmkey")]
+          ? String(row[getIndex("fmkey")]).trim()
+          : null,
+        status: getIndex("status") !== -1 && row[getIndex("status")]
+          ? String(row[getIndex("status")]).trim()
+          : null,
+        customerName: getIndex("customer_name") !== -1 && row[getIndex("customer_name")]
+          ? String(row[getIndex("customer_name")])
+          : null,
+        vendorName: getIndex("vendor_name") !== -1 && row[getIndex("vendor_name")]
+          ? String(row[getIndex("vendor_name")])
+          : null,
+        serviceAddress: getIndex("service_address") !== -1 && row[getIndex("service_address")]
+          ? String(row[getIndex("service_address")])
+          : null,
+        jobType: getIndex("job_type") !== -1 && row[getIndex("job_type")]
+          ? String(row[getIndex("job_type")])
+          : null,
+        jobDescription: getIndex("job_description") !== -1 && row[getIndex("job_description")]
+          ? String(row[getIndex("job_description")])
+          : null,
+        scheduledDate: getIndex("scheduled_date") !== -1 && row[getIndex("scheduled_date")]
+          ? String(row[getIndex("scheduled_date")])
+          : null,
+        amount: getIndex("amount") !== -1 && row[getIndex("amount")]
+          ? String(row[getIndex("amount")])
+          : null,
+        currency: getIndex("currency") !== -1 && row[getIndex("currency")]
+          ? String(row[getIndex("currency")])
+          : null,
+        notes: getIndex("notes") !== -1 && row[getIndex("notes")]
+          ? String(row[getIndex("notes")])
+          : null,
+        priority: getIndex("priority") !== -1 && row[getIndex("priority")]
+          ? String(row[getIndex("priority")])
+          : null,
+        calendarEventLink: getIndex("calendar_event_link") !== -1 && row[getIndex("calendar_event_link")]
+          ? String(row[getIndex("calendar_event_link")])
+          : null,
+        workOrderPdfLink: getIndex("work_order_pdf_link") !== -1 && row[getIndex("work_order_pdf_link")]
+          ? String(row[getIndex("work_order_pdf_link")])
+          : null,
+        signedPdfUrl: getIndex("signed_pdf_url") !== -1 && row[getIndex("signed_pdf_url")]
+          ? String(row[getIndex("signed_pdf_url")]).trim()
+          : null,
+        signedPreviewImageUrl: getIndex("signed_preview_image_url") !== -1 && row[getIndex("signed_preview_image_url")]
+          ? String(row[getIndex("signed_preview_image_url")]).trim()
+          : null,
+        createdAt,
+      };
+
+      workOrders.push(workOrder);
+    }
+
+    console.log(`[Work Orders GET] Returning ${workOrders.length} work order(s)`);
+
+    // Rehydrate cookies if workspace was loaded from Users Sheet
+    const response = NextResponse.json({ workOrders }, { status: 200 });
+    if (workspaceResult.source === "users_sheet") {
+      rehydrateWorkspaceCookies(response, workspaceResult.workspace);
+    }
+    return response;
   } catch (error) {
     console.error("Error fetching work orders:", error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";

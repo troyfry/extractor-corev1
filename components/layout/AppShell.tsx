@@ -3,6 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { ROUTES } from "@/lib/routes";
 import UserMenu from "@/components/auth/UserMenu";
 import PlanSelector from "@/components/plan/PlanSelector";
 import PlanBanner from "@/components/plan/PlanBanner";
@@ -18,7 +19,7 @@ export default function AppShell({ children }: AppShellProps) {
   const { plan } = useCurrentPlan();
   const isFree = isFreePlan(plan);
   const pathname = usePathname();
-  const isFreePage = pathname === "/free" || pathname?.startsWith("/free/");
+  const isFreePage = pathname === ROUTES.free || pathname?.startsWith(`${ROUTES.free}/`);
 
   return (
     <div className="min-h-screen bg-gray-900">
@@ -40,7 +41,7 @@ export default function AppShell({ children }: AppShellProps) {
               {/* Show Upgrade to Pro link on /free page OR in dev mode */}
               {(isFreePage || isDevMode) && (
                 <Link
-                  href="/pricing"
+                  href={ROUTES.pricing}
                   className="px-3 py-1 bg-blue-600 text-white rounded text-xs font-medium hover:bg-blue-700 transition-colors"
                 >
                   {isFreePage ? "Upgrade to Pro" : "Pricing"}

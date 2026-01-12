@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { ROUTES } from "@/lib/routes";
 
 export function ResetOnboardingButton() {
   const router = useRouter();
@@ -23,7 +24,7 @@ export function ResetOnboardingButton() {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to reset onboarding");
       }
-      router.push("/onboarding/google");
+      router.push(ROUTES.onboardingGoogle);
       router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Reset failed");

@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { ROUTES } from "@/lib/routes";
 import { 
   cssPixelsToPdfPoints, 
   pdfPointsToCssPixels, 
@@ -1665,7 +1666,7 @@ export default function OnboardingTemplatesPage() {
                   } catch (e) {
                     console.error("Failed to mark onboarding complete:", e);
                   }
-                  router.push("/pro");
+                  router.push(ROUTES.pro);
                 }}
                 className="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-medium transition-colors"
               >

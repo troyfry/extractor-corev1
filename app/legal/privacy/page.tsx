@@ -1,5 +1,6 @@
 import AppShell from "@/components/layout/AppShell";
 import Link from "next/link";
+import { ROUTES } from "@/lib/routes";
 
 export default function PrivacyPage() {
   const lastUpdated = new Date().toLocaleDateString("en-US", {
@@ -13,13 +14,13 @@ export default function PrivacyPage() {
       <main className="mx-auto max-w-3xl px-4 py-10">
         <div className="mb-6 flex items-center justify-between">
           <Link
-            href="/legal"
+            href={ROUTES.legal}
             className="text-sm text-gray-400 hover:text-gray-300 underline underline-offset-4 transition-colors"
           >
             ← Back to Legal
           </Link>
           <Link
-            href="/free"
+            href={ROUTES.free}
             className="text-sm text-blue-400 hover:text-blue-300 underline underline-offset-4 transition-colors"
           >
             Back to App →

@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
+import { ROUTES } from "@/lib/routes";
 
 export default function OnboardingGooglePage() {
   const router = useRouter();
@@ -46,7 +47,7 @@ export default function OnboardingGooglePage() {
       
       // Continue to Gmail label configuration
       setTimeout(() => {
-        router.push("/onboarding/gmail");
+        router.push(ROUTES.onboardingGmail);
       }, 2000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");

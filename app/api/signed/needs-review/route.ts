@@ -42,11 +42,20 @@ export async function GET() {
     const headers = (rows[0] || []) as string[];
     const headersLower = headers.map((h) => (h || "").toLowerCase().trim());
 
-    // Map rows to objects
+    // Create a mapping from lowercase header to original header (for case-sensitive fields)
+    const headerMap: Record<string, string> = {};
+    headers.forEach((h, idx) => {
+      const lower = (h || "").toLowerCase().trim();
+      headerMap[lower] = h || "";
+    });
+
+    // Map rows to objects using canonical column names from SIGNED_NEEDS_REVIEW_COLUMNS
     const items = rows.slice(1).map((row) => {
       const item: Record<string, string | null> = {};
-      headersLower.forEach((header, idx) => {
-        item[header] = row[idx] ? String(row[idx]).trim() : null;
+      headersLower.forEach((headerLower, idx) => {
+        // Use the original header case for the key (preserves "fmKey" instead of "fmkey")
+        const canonicalHeader = headerMap[headerLower] || headerLower;
+        item[canonicalHeader] = row[idx] ? String(row[idx]).trim() : null;
       });
       return item;
     });

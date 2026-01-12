@@ -14,6 +14,8 @@ export type WorkOrder = {
   userId: string | null; // User ID from Google OAuth 'sub' claim (optional for free version)
   timestampExtracted: string; // ISO string
   workOrderNumber: string;
+  fmKey: string | null; // FM Profile key
+  status: string | null; // Work order status (OPEN, SIGNED, etc.)
   customerName: string | null;
   vendorName: string | null;
   serviceAddress: string | null;
@@ -26,6 +28,8 @@ export type WorkOrder = {
   priority: string | null;
   calendarEventLink: string | null;
   workOrderPdfLink: string | null;
+  signedPdfUrl: string | null; // Signed PDF URL
+  signedPreviewImageUrl: string | null; // Signed preview image URL
   createdAt: string; // ISO string
 };
 

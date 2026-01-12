@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
+import { ROUTES } from "@/lib/routes";
 
 export default function HomePage() {
-  redirect("/work-orders");
+  redirect(ROUTES.workOrders);
 }

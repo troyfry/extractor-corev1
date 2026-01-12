@@ -6,7 +6,7 @@
  */
 
 import type { ParsedWorkOrder } from "./parsedTypes";
-import { writeJobRecord, ensureColumnsExist, type JobRecord } from "@/lib/google/sheets";
+import { writeJobRecord, ensureColumnsExist, type JobRecord, writeWorkOrderRecord, type WorkOrderRecord } from "@/lib/google/sheets";
 import { uploadPdfToDrive, getOrCreateFolder } from "@/lib/google/drive";
 
 /**
@@ -50,6 +50,7 @@ export function generateJobId(issuer: string | null, woNumber: string | null): s
  * @param pdfBuffer Optional PDF buffer to upload to Drive
  * @param pdfFilename Optional PDF filename
  * @param sheetName Sheet name (default: "Sheet1" or "Verification")
+ * @param source Source of the work order (e.g., "email", "manual_upload", "api")
  */
 export async function writeWorkOrderToSheets(
   parsedWorkOrder: ParsedWorkOrder,
@@ -58,7 +59,8 @@ export async function writeWorkOrderToSheets(
   issuerKey: string,
   pdfBuffer?: Buffer,
   pdfFilename?: string,
-  sheetName?: string
+  sheetName?: string,
+  source: string = "manual_upload"
 ): Promise<void> {
   const woNumber = parsedWorkOrder.workOrderNumber;
   const jobId = generateJobId(issuerKey, woNumber);
@@ -120,9 +122,50 @@ export async function writeWorkOrderToSheets(
     parsedWorkOrderFmKey: parsedWorkOrder.fmKey,
   });
 
-  // Write to Sheets
+  // Write to Sheet1 (job process tracking)
   await writeJobRecord(accessToken, spreadsheetId, targetSheetName, record);
   console.log(`[Sheets Ingestion] ✅ Wrote work order to ${targetSheetName}: ${jobId} (fmKey: ${record.fmKey})`);
+
+  // Also write to Work_Orders sheet with detailed fields
+  if (woNumber && woNumber.trim() !== "") {
+    const WORK_ORDERS_SHEET_NAME = process.env.GOOGLE_SHEETS_WORK_ORDERS_SHEET_NAME || "Work_Orders";
+    const nowIso = parsedWorkOrder.timestampExtracted || new Date().toISOString();
+    
+    const workOrderRecord: WorkOrderRecord = {
+      jobId,
+      fmKey: parsedWorkOrder.fmKey || null,
+      wo_number: woNumber,
+      status: "OPEN",
+      scheduled_date: parsedWorkOrder.scheduledDate ?? null,
+      created_at: nowIso,
+      timestamp_extracted: nowIso,
+      customer_name: parsedWorkOrder.customerName ?? null,
+      vendor_name: parsedWorkOrder.vendorName ?? null,
+      service_address: parsedWorkOrder.serviceAddress ?? null,
+      job_type: parsedWorkOrder.jobType ?? null,
+      job_description: parsedWorkOrder.jobDescription ?? null,
+      amount: parsedWorkOrder.amount != null ? String(parsedWorkOrder.amount) : null,
+      currency: parsedWorkOrder.currency ?? null,
+      notes: parsedWorkOrder.notes ?? null,
+      priority: parsedWorkOrder.priority ?? null,
+      calendar_event_link: null,
+      work_order_pdf_link: originalPdfUrl,
+      signed_pdf_url: null,
+      signed_preview_image_url: null,
+      signed_at: null,
+      source: source,
+      last_updated_at: nowIso,
+      file_hash: null,
+    };
+
+    try {
+      await writeWorkOrderRecord(accessToken, spreadsheetId, WORK_ORDERS_SHEET_NAME, workOrderRecord);
+      console.log(`[Sheets Ingestion] ✅ Wrote detailed work order to ${WORK_ORDERS_SHEET_NAME}: ${jobId}`);
+    } catch (error) {
+      // Log but don't fail - Sheet1 write succeeded, Work_Orders is supplementary
+      console.error(`[Sheets Ingestion] ⚠️ Failed to write to ${WORK_ORDERS_SHEET_NAME}, but Sheet1 write succeeded:`, error);
+    }
+  }
 }
 
 /**
@@ -134,6 +177,7 @@ export async function writeWorkOrderToSheets(
  * @param issuerKey Issuer key derived from email sender domain (for stable jobId)
  * @param pdfBuffers Optional array of PDF buffers (must match parsedWorkOrders length)
  * @param pdfFilenames Optional array of PDF filenames (must match parsedWorkOrders length)
+ * @param source Source of the work orders (e.g., "email", "manual_upload", "api")
  */
 export async function writeWorkOrdersToSheets(
   parsedWorkOrders: ParsedWorkOrder[],
@@ -141,7 +185,8 @@ export async function writeWorkOrdersToSheets(
   spreadsheetId: string,
   issuerKey: string,
   pdfBuffers?: Buffer[],
-  pdfFilenames?: string[]
+  pdfFilenames?: string[],
+  source: string = "manual_upload"
 ): Promise<void> {
   // Ensure "Verification" sheet exists
   await ensureColumnsExist(accessToken, spreadsheetId, "Verification");
@@ -158,7 +203,9 @@ export async function writeWorkOrdersToSheets(
       spreadsheetId,
       issuerKey,
       pdfBuffer,
-      pdfFilename
+      pdfFilename,
+      undefined, // sheetName - use default
+      source
     );
   }
 }

@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useSession, signIn } from "next-auth/react";
+import { ROUTES } from "@/lib/routes";
 
 type FmProfile = {
   fmKey: string;
@@ -90,7 +91,7 @@ export default function OnboardingFmProfilesPage() {
       }
 
       setIsSubmitting(false);
-      router.push("/onboarding/templates");
+      router.push(ROUTES.onboardingTemplates);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
       setIsSubmitting(false);
@@ -115,7 +116,7 @@ export default function OnboardingFmProfilesPage() {
         <div className="max-w-4xl mx-auto">
           <p className="mb-4 text-slate-200">You need to sign in to continue onboarding.</p>
           <button
-            onClick={() => signIn(undefined, { callbackUrl: "/onboarding/fm-profiles" })}
+            onClick={() => signIn(undefined, { callbackUrl: ROUTES.onboardingFmProfiles })}
             className="px-6 py-3 bg-sky-600 hover:bg-sky-700 text-white rounded-lg font-medium transition-colors"
           >
             Sign in

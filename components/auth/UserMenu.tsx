@@ -11,6 +11,7 @@
 import { useSession, signIn, signOut } from "next-auth/react";
 import { useState } from "react";
 import Link from "next/link";
+import { ROUTES } from "@/lib/routes";
 
 export default function UserMenu() {
   const { data: session, status } = useSession();
@@ -96,7 +97,7 @@ export default function UserMenu() {
             </div>
             <div className="py-1">
               <Link
-                href="/settings"
+                href={ROUTES.settings}
                 onClick={() => setIsMenuOpen(false)}
                 className="block w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
               >

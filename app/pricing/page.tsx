@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
+import { ROUTES } from "@/lib/routes";
 import AppShell from "@/components/layout/AppShell";
 import MainNavigation from "@/components/layout/MainNavigation";
 import { isDevMode } from "@/lib/env";
@@ -54,7 +55,7 @@ export default function PricingPage() {
           </p>
           <div className="flex flex-wrap justify-center gap-4">
             <Link
-              href="/free"
+              href={ROUTES.free}
               className="px-6 py-3 bg-gray-700 text-white rounded hover:bg-gray-600 font-medium transition-colors"
             >
               Use Free Version
@@ -149,7 +150,7 @@ export default function PricingPage() {
                 </li>
               </ul>
               <Link
-                href="/free"
+                href={ROUTES.free}
                 className="block w-full text-center px-6 py-3 bg-blue-600 text-white rounded hover:bg-blue-700 font-medium transition-colors"
               >
                 Use Free Version

@@ -410,12 +410,50 @@ export async function POST(request: Request) {
           // Build prompt with PDF and email text
           const prompt = `You are a Work Order Extraction Engine for ${profile.label}.
 
-Extract work order information from the following PDF text and email text and return it as JSON.
+Extract ALL available work order information from the following PDF text and email text. Be thorough and extract every field that appears in the document.
 
-IMPORTANT FIELD CLARIFICATIONS:
-- "vendor_name": This is the Facility Management Platform/Company that *sends* the work order (e.g., ServiceChannel, Corrigo, FMX, Hippo, ServiceTrade, Brightly). It is NOT the service provider or contractor (e.g., a cleaning company, HVAC company, etc.) that performs the work. Look for this in the email "From" field, PDF headers/footers, or work order system identifiers.
-- "customer_name": This is the job site, client, or facility where the work is to be performed.
-- "service_address": This is the physical address where the work is to be done.
+EXTRACTION RULES (follow strictly):
+
+1. COMPLETENESS: Extract EVERY field that appears in the document. Do not skip fields that are present.
+
+2. FIELD LOCATIONS - Check these areas for each field:
+   - "work_order_number": Look in headers, top of document, subject line, work order # field
+   - "customer_name": Look for facility name, location name, client name, store name (e.g., "Petco # 2811")
+   - "vendor_name": Facility management platform (ServiceChannel, Corrigo, FMX, etc.) - NOT the service provider. Look in email "From" field, PDF headers/footers, or work order system identifiers.
+   - "service_address": Full address including street, city, state, zip - check address fields, location sections
+   - "job_type": Service type, work type, category (e.g., "Floor Scrub and Buff", "HVAC Repair")
+   - "job_description": Detailed description of the work to be performed - check description fields, work details sections
+   - "scheduled_date": Service date, scheduled date, appointment date (convert to ISO format YYYY-MM-DD) - check date fields, schedule sections
+   - "priority": Priority level if mentioned (e.g., "High", "Urgent", "Normal")
+   - "amount": Look for dollar amounts, totals, invoice amounts, service fees (extract numeric only, no $ or commas) - check throughout entire document
+   - "nte_amount": "Not To Exceed" amount if present
+   - "notes": ALL additional information, instructions, special notes, service frequency, check-in requirements, etc.
+   - "service_category": Category or classification if present
+   - "facility_id": Facility ID, location ID, store number if present
+
+3. AMOUNT EXTRACTION:
+   - Search the ENTIRE document for any dollar amounts
+   - Look in: totals, fees, charges, NTE fields, invoice amounts, service costs
+   - Extract ONLY numeric characters (remove $, commas, spaces)
+   - If you find "$5,678.00" extract "5678.00"
+   - If amount is missing but NTE is present, use NTE value for amount
+
+4. NOTES EXTRACTION:
+   - Extract ALL text that provides additional context, instructions, or requirements
+   - Include: service frequency ("1x Mon", "Weekly", "Monthly")
+   - Include: special instructions ("Crews must check in/out using Superclean IVR")
+   - Include: any text that doesn't fit in other fields
+   - Combine multiple note sections with " | " separator
+
+5. CONSISTENCY:
+   - Use the SAME extraction logic for ALL work orders in the same document
+   - If one work order has notes, check if others do too
+   - If one work order has an amount, check if others do too
+   - Be thorough - don't assume a field is missing just because it's in a different location
+
+6. MISSING FIELDS:
+   - Only return empty string "" or null if you have thoroughly searched and the field is truly not present
+   - Double-check before marking a field as empty
 
 Return a JSON object with this structure:
 {
@@ -427,7 +465,7 @@ Return a JSON object with this structure:
       "service_address": "string or null",
       "job_type": "string or null",
       "job_description": "string or null",
-      "scheduled_date": "ISO date string or null",
+      "scheduled_date": "ISO date string (YYYY-MM-DD) or null",
       "priority": "string or null",
       "amount": "numeric string (no currency symbols) or null",
       "currency": "USD or other",
@@ -720,7 +758,8 @@ ${pdfText}`;
           spreadsheetId!,
           issuerKey, // Use issuerKey from email sender domain (stable)
           pdfBuffers.length > 0 ? pdfBuffers : undefined,
-          pdfFilenames.length > 0 ? pdfFilenames : undefined
+          pdfFilenames.length > 0 ? pdfFilenames : undefined,
+          "email" // Source: Gmail processing
         );
         
         console.log("[Gmail Process] Successfully wrote work orders to Sheets + Drive");
@@ -790,27 +829,14 @@ ${pdfText}`;
               workOrderRecord
             );
             
-            // Verify the write by reading back the record
-            const verifyRecord = await findWorkOrderRecordByJobId(
-              accessToken,
-              spreadsheetId!,
-              WORK_ORDERS_SHEET_NAME,
-              jobId
-            );
-            
-            console.log(`[Gmail Process] ✅ Work_Orders sheet updated and verified:`, {
+            // Don't verify immediately - saves a read request and avoids quota issues
+            // The write operation itself will succeed or fail, and we log that
+            console.log(`[Gmail Process] ✅ Work_Orders sheet updated:`, {
               jobId,
               fmKey: workOrderRecord.fmKey,
               woNumber: workOrderRecord.wo_number,
               status: workOrderRecord.status,
-              verified: !!verifyRecord,
-              verifiedFmKey: verifyRecord?.fmKey,
-              verifiedWoNumber: verifyRecord?.wo_number,
             });
-            
-            if (verifyRecord && verifyRecord.fmKey !== workOrderRecord.fmKey) {
-              console.warn(`[Gmail Process] ⚠️ WARNING: fmKey mismatch! Expected "${workOrderRecord.fmKey}", but sheet has "${verifyRecord.fmKey}"`);
-            }
           } catch (woError) {
             // Log but don't fail the request
             console.error(`[Gmail Process] Error writing to Work_Orders sheet for ${jobId}:`, {

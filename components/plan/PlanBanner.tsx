@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import { ROUTES } from "@/lib/routes";
 import { useCurrentPlan } from "@/lib/plan-context";
 import { getPlanLabel, isPremiumPlan } from "@/lib/plan-helpers";
 import { isDevMode } from "@/lib/env";
@@ -48,7 +49,7 @@ export default function PlanBanner({ showUpgrade = true, className = "" }: PlanB
       </span>
       {isMounted && showUpgrade && (!isPremiumPlan(plan) || isDevMode) && (
         <Link
-          href="/pricing"
+          href={ROUTES.pricing}
           className="px-3 py-1 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 transition-colors"
         >
           {isPremiumPlan(plan) && isDevMode ? "Pricing" : "Upgrade"}

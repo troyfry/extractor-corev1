@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ROUTES } from "@/lib/routes";
 import AppShell from "@/components/layout/AppShell";
 
 export default function LegalIndexPage() {
@@ -14,7 +15,7 @@ export default function LegalIndexPage() {
         <div className="mb-6 flex items-center justify-between">
           <div></div>
           <Link
-            href="/free"
+            href={ROUTES.free}
             className="text-sm text-blue-400 hover:text-blue-300 underline underline-offset-4 transition-colors"
           >
             Back to App →
@@ -37,7 +38,7 @@ export default function LegalIndexPage() {
               Learn what information we collect, how we use it, and how we protect it.
             </p>
             <Link
-              href="/legal/privacy"
+              href={ROUTES.legalPrivacy}
               className="text-sm font-medium text-blue-400 hover:text-blue-300 underline underline-offset-4 transition-colors"
             >
               View Privacy Policy
@@ -50,7 +51,7 @@ export default function LegalIndexPage() {
               Understand the rules for using the Free Work Order Extractor and any paid plans.
             </p>
             <Link
-              href="/legal/terms"
+              href={ROUTES.legalTerms}
               className="text-sm font-medium text-blue-400 hover:text-blue-300 underline underline-offset-4 transition-colors"
             >
               View Terms of Use

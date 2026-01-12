@@ -582,6 +582,7 @@ async function updateJobRecord(
 
 /**
  * Find a job record by jobId.
+ * Optimized to read only the jobId column first, then read just the matching row.
  * 
  * @param accessToken Google OAuth access token
  * @param spreadsheetId Google Sheets spreadsheet ID
@@ -598,44 +599,61 @@ export async function findJobRecordByJobId(
   const sheets = createSheetsClient(accessToken);
 
   try {
-    const allDataResponse = await sheets.spreadsheets.values.get({
+    // Get headers (cached)
+    const headerMeta = await getSheetHeadersCached(accessToken, spreadsheetId, sheetName);
+    
+    // Find row index by reading only the jobId column (much more efficient)
+    const jobIdLetter = headerMeta.colLetterByLower["jobid"];
+    if (!jobIdLetter) {
+      return null;
+    }
+
+    const rowIndex = await findRowIndexByColumnValue(
+      accessToken,
       spreadsheetId,
-      range: formatSheetRange(sheetName, getColumnRange(REQUIRED_COLUMNS.length)),
+      sheetName,
+      jobIdLetter,
+      jobId
+    );
+
+    if (rowIndex === -1) {
+      return null;
+    }
+
+    // Read only the specific row (not the entire sheet)
+    const rowResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: formatSheetRange(sheetName, `${rowIndex}:${rowIndex}`),
     });
 
-    const rows = allDataResponse.data.values || [];
-    if (rows.length === 0) {
+    const rowData = (rowResponse.data.values?.[0] || []) as string[];
+    if (!rowData || rowData.length === 0) {
       return null;
     }
 
-    const headers = rows[0] as string[];
-    const headersLower = headers.map((h) => h.toLowerCase().trim());
+    // Build record from row data
+    const record: Partial<JobRecord> = {};
+    const headersLower = headerMeta.headersLower;
 
-    // Find jobId column index
-    const jobIdColIndex = headersLower.indexOf("jobid");
-    if (jobIdColIndex === -1) {
-      return null;
-    }
-
-    // Find row with matching jobId
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      if (row && row[jobIdColIndex] === jobId) {
-        // Build record from row
-        const record: Partial<JobRecord> = {};
-        for (const col of REQUIRED_COLUMNS) {
-          const colIndex = headersLower.indexOf(col.toLowerCase());
-          if (colIndex !== -1 && row[colIndex] !== undefined) {
-            const value = row[colIndex];
-            (record as Record<string, unknown>)[col] = value === "" ? null : value;
-          }
-        }
-        return record as JobRecord;
+    for (const col of REQUIRED_COLUMNS) {
+      const colIndex = headerMeta.colIndexByLower[col.toLowerCase()];
+      if (colIndex !== undefined && colIndex >= 0 && rowData[colIndex] !== undefined) {
+        const value = rowData[colIndex];
+        (record as Record<string, unknown>)[col] = value === "" ? null : value;
       }
     }
 
-    return null;
+    return record as JobRecord;
   } catch (error) {
+    // Handle quota errors gracefully - don't throw, just log and return null
+    if (error && typeof error === "object" && "code" in error && error.code === 429) {
+      console.warn("[Sheets] Quota exceeded when finding job record, returning null:", {
+        jobId,
+        sheetName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
     console.error("[Sheets] Error finding job record:", error);
     throw error;
   }
@@ -643,6 +661,7 @@ export async function findJobRecordByJobId(
 
 /**
  * Find a work order record by jobId.
+ * Optimized to read only the jobId column first, then read just the matching row.
  * 
  * @param accessToken Google OAuth access token
  * @param spreadsheetId Google Sheets spreadsheet ID
@@ -659,43 +678,61 @@ export async function findWorkOrderRecordByJobId(
   const sheets = createSheetsClient(accessToken);
 
   try {
-    const allDataResponse = await sheets.spreadsheets.values.get({
+    // Get headers (cached)
+    const headerMeta = await getSheetHeadersCached(accessToken, spreadsheetId, sheetName);
+    
+    // Find row index by reading only the jobId column (much more efficient)
+    const jobIdLetter = headerMeta.colLetterByLower["jobid"];
+    if (!jobIdLetter) {
+      return null;
+    }
+
+    const rowIndex = await findRowIndexByColumnValue(
+      accessToken,
       spreadsheetId,
-      range: formatSheetRange(sheetName, getColumnRange(WORK_ORDER_REQUIRED_COLUMNS.length)),
+      sheetName,
+      jobIdLetter,
+      jobId
+    );
+
+    if (rowIndex === -1) {
+      return null;
+    }
+
+    // Read only the specific row (not the entire sheet)
+    const rowResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: formatSheetRange(sheetName, `${rowIndex}:${rowIndex}`),
     });
 
-    const rows = allDataResponse.data.values || [];
-    if (rows.length === 0) {
+    const rowData = (rowResponse.data.values?.[0] || []) as string[];
+    if (!rowData || rowData.length === 0) {
       return null;
     }
 
-    const headers = rows[0] as string[];
-    const headersLower = headers.map((h) => h.toLowerCase().trim());
+    // Build record from row data
+    const record: Partial<WorkOrderRecord> = {};
+    const headersLower = headerMeta.headersLower;
 
-    const jobIdColIndex = headersLower.indexOf("jobid");
-    if (jobIdColIndex === -1) {
-      return null;
-    }
-
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      if (row && row[jobIdColIndex] === jobId) {
-        const record: Partial<WorkOrderRecord> = {};
-
-        for (const col of WORK_ORDER_REQUIRED_COLUMNS) {
-          const colIndex = headersLower.indexOf(col.toLowerCase());
-          if (colIndex !== -1 && row[colIndex] !== undefined) {
-            const value = row[colIndex];
-            (record as Record<string, unknown>)[col] = value === "" ? null : value;
-          }
-        }
-
-        return record as WorkOrderRecord;
+    for (const col of WORK_ORDER_REQUIRED_COLUMNS) {
+      const colIndex = headerMeta.colIndexByLower[col.toLowerCase()];
+      if (colIndex !== undefined && colIndex >= 0 && rowData[colIndex] !== undefined) {
+        const value = rowData[colIndex];
+        (record as Record<string, unknown>)[col] = value === "" ? null : value;
       }
     }
 
-    return null;
+    return record as WorkOrderRecord;
   } catch (error) {
+    // Handle quota errors gracefully - don't throw, just log and return null
+    if (error && typeof error === "object" && "code" in error && error.code === 429) {
+      console.warn("[Sheets] Quota exceeded when finding work order record, returning null:", {
+        jobId,
+        sheetName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
     console.error("[Sheets] Error finding work order record:", error);
     throw error;
   }
@@ -1160,34 +1197,71 @@ export async function getSheetHeadersCached(
 
 /**
  * Find row index by column value (reads only one column, not entire sheet).
+ * Includes retry logic with exponential backoff for quota errors.
  */
 export async function findRowIndexByColumnValue(
   accessToken: string,
   spreadsheetId: string,
   sheetName: string,
   columnLetter: string,
-  targetValue: string
+  targetValue: string,
+  retryCount: number = 0
 ): Promise<number> {
   const sheets = createSheetsClient(accessToken);
+  const maxRetries = 2;
+  const baseDelay = 1000; // 1 second
 
-  // Read only the column (e.g., C:C)
-  const colResp = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: formatSheetRange(sheetName, `${columnLetter}:${columnLetter}`),
-  });
+  try {
+    // Read only the column (e.g., C:C)
+    const colResp = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: formatSheetRange(sheetName, `${columnLetter}:${columnLetter}`),
+    });
 
-  const colValues = colResp.data.values || [];
-  const normalizedTarget = (targetValue || "").trim();
+    const colValues = colResp.data.values || [];
+    const normalizedTarget = (targetValue || "").trim();
 
-  // values[0] is header; row index is 1-based
-  for (let i = 1; i < colValues.length; i++) {
-    const cell = (colValues[i]?.[0] || "").trim();
-    if (cell === normalizedTarget) {
-      return i + 1; // 1-based row index in Sheets
+    // values[0] is header; row index is 1-based
+    for (let i = 1; i < colValues.length; i++) {
+      const cell = (colValues[i]?.[0] || "").trim();
+      if (cell === normalizedTarget) {
+        return i + 1; // 1-based row index in Sheets
+      }
     }
-  }
 
-  return -1;
+    return -1;
+  } catch (error) {
+    // Handle quota errors with retry
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === 429 &&
+      retryCount < maxRetries
+    ) {
+      const delay = baseDelay * Math.pow(2, retryCount); // Exponential backoff
+      console.warn(
+        `[Sheets] Quota exceeded, retrying after ${delay}ms (attempt ${retryCount + 1}/${maxRetries})`
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return findRowIndexByColumnValue(
+        accessToken,
+        spreadsheetId,
+        sheetName,
+        columnLetter,
+        targetValue,
+        retryCount + 1
+      );
+    }
+    
+    // If quota error and max retries reached, return -1 (not found) instead of throwing
+    if (error && typeof error === "object" && "code" in error && error.code === 429) {
+      console.warn("[Sheets] Quota exceeded, max retries reached, returning -1");
+      return -1;
+    }
+    
+    throw error;
+  }
 }
 
 /**

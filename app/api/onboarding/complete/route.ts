@@ -6,6 +6,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { ROUTES } from "@/lib/routes";
 import { completeOnboarding } from "@/lib/onboarding/status";
 import { resetApiCallCount, getApiCallCount } from "@/lib/onboarding/usersSheet";
 import { getCurrentUser } from "@/lib/auth/currentUser";
@@ -180,7 +181,7 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { 
           error: message,
-          redirectTo: "/onboarding/templates",
+          redirectTo: ROUTES.onboardingTemplates,
         },
         { status: 400 }
       );

@@ -46,6 +46,13 @@ export interface ProcessSignedPdfParams {
   dpi?: number;
   woNumberOverride?: string;
   manualReason?: string;
+  // 3-layer extraction results (optional, passed from API route)
+  extractionResult?: {
+    workOrderNumber: string | null;
+    method: "DIGITAL_TEXT" | "OCR" | "AI_RESCUE";
+    confidence: number;
+    rationale?: string;
+  } | null;
 }
 
 export interface ProcessSignedPdfResult {
@@ -60,6 +67,7 @@ export interface ProcessSignedPdfResult {
   normalized?: boolean | null;
   needsReview: boolean;
   needsReviewReason?: string | null; // Reason why review is needed (only when needsReview === true)
+  alreadyProcessed?: boolean; // True if work order was already signed/processed
   sheetRowId?: string | null;
   debug?: {
     templateId?: string;
@@ -254,6 +262,7 @@ export async function processSignedPdfUnified(
 
   // Check if work order exists in Sheet1 or Work_Orders before deciding
   let workOrderExists = false;
+  let workOrderAlreadySigned = false;
   if (workOrderNumber) {
     const jobId = generateJobId(null, workOrderNumber);
     
@@ -267,6 +276,14 @@ export async function processSignedPdfUnified(
     
     if (existingWorkOrder) {
       workOrderExists = true;
+      // Check if work order is already signed (high confidence extraction + already SIGNED status)
+      const isSigned = existingWorkOrder.status?.toUpperCase() === "SIGNED" || 
+                       (existingWorkOrder.signed_pdf_url && existingWorkOrder.signed_pdf_url.trim() !== "");
+      
+      // If we have high confidence extraction and work order is already signed, mark as already processed
+      if (isSigned && params.extractionResult && params.extractionResult.confidence >= 0.80) {
+        workOrderAlreadySigned = true;
+      }
     } else {
       // Check Sheet1 by wo_number
       try {
@@ -282,6 +299,8 @@ export async function processSignedPdfUnified(
           const headers = rows[0] as string[];
           const headersLower = headers.map((h) => h.toLowerCase().trim());
           const woColIndex = headersLower.indexOf("wo_number");
+          const statusColIndex = headersLower.indexOf("status");
+          const signedPdfColIndex = headersLower.indexOf("signed_pdf_url");
           
           if (woColIndex !== -1) {
             const normalizedTarget = workOrderNumber.trim();
@@ -290,6 +309,15 @@ export async function processSignedPdfUnified(
               const cellValue = (row?.[woColIndex] || "").trim();
               if (cellValue && cellValue === normalizedTarget) {
                 workOrderExists = true;
+                
+                // Check if already signed
+                const status = statusColIndex !== -1 ? (row[statusColIndex] || "").trim().toUpperCase() : "";
+                const signedPdfUrl = signedPdfColIndex !== -1 ? (row[signedPdfColIndex] || "").trim() : "";
+                const isSigned = status === "SIGNED" || signedPdfUrl !== "";
+                
+                if (isSigned && params.extractionResult && params.extractionResult.confidence >= 0.80) {
+                  workOrderAlreadySigned = true;
+                }
                 break;
               }
             }
@@ -303,9 +331,33 @@ export async function processSignedPdfUnified(
   }
 
   // Decide needsReview:
+  // - If work order already signed with high confidence extraction → blocked (already processed)
   // - If no work order number OR low confidence → needs review
   // - If work order number but work order doesn't exist in sheets → needs review (original work order not found)
   // - If work order exists and (high/medium confidence OR override) → no review needed
+  if (workOrderAlreadySigned) {
+    // Work order already processed - return early without updating
+    return {
+      workOrderNumber,
+      woNumber: workOrderNumber,
+      confidence: params.extractionResult?.confidence || ocrResult.confidenceRaw,
+      confidenceLabel: params.extractionResult && params.extractionResult.confidence >= 0.80 ? "high" : ocrResult.confidenceLabel,
+      snippetImageUrl: null,
+      snippetDriveUrl: null,
+      snippetUrl: null,
+      signedPdfUrl: null,
+      normalized: null,
+      needsReview: false, // Not needs review, but blocked
+      needsReviewReason: "Work order already processed (already signed)",
+      alreadyProcessed: true,
+      sheetRowId: null,
+      debug: {
+        templateId: templateConfig.templateId,
+        page,
+      },
+    };
+  }
+  
   if (!workOrderNumber || ocrResult.confidenceLabel === "low") {
     needsReview = true;
   } else if (!workOrderExists) {
@@ -409,6 +461,11 @@ export async function processSignedPdfUnified(
       gmail_subject: sourceMeta?.gmailSubject || null,
       gmail_from: sourceMeta?.gmailFrom || null,
       gmail_date: sourceMeta?.gmailDate || null,
+      // 3-layer extraction results
+      extraction_method: params.extractionResult?.method || null,
+      extraction_confidence: params.extractionResult?.confidence || null,
+      extraction_rationale: params.extractionResult?.rationale || null,
+      extracted_work_order_number: params.extractionResult?.workOrderNumber || null,
     };
 
     await appendSignedNeedsReviewRow(accessToken, spreadsheetId, reviewRecord);

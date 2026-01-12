@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
+import { ROUTES } from "@/lib/routes";
 
 export default function ProAliasPage() {
-  redirect("/work-orders"); // or "/work-orders" if that's your real home
+  redirect(ROUTES.workOrders);
 }

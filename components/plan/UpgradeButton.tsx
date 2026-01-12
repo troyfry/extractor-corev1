@@ -2,6 +2,7 @@
 
 import React from "react";
 import Link from "next/link";
+import { ROUTES } from "@/lib/routes";
 import { useCurrentPlan } from "@/lib/plan-context";
 import { isFreePlan } from "@/lib/plan-helpers";
 import { isDevMode } from "@/lib/env";
@@ -25,7 +26,7 @@ export default function UpgradeButton({ className = "" }: UpgradeButtonProps) {
 
   return (
     <Link
-      href="/pricing"
+      href={ROUTES.pricing}
       className={`inline-flex items-center gap-1 text-sm text-gray-400 hover:text-gray-300 transition-colors ${className}`}
     >
       {isFreePlan(plan) ? "Upgrade to Pro →" : "View Pricing →"}

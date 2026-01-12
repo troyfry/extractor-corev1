@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { ROUTES } from "@/lib/routes";
 
 export default function OnboardingDonePage() {
   const router = useRouter();
@@ -43,7 +44,7 @@ export default function OnboardingDonePage() {
 
         setIsCompleting(false);
         // Redirect immediately
-        router.push("/pro");
+        router.push(ROUTES.pro);
       } catch (err) {
         setError(err instanceof Error ? err.message : "An error occurred");
         setIsCompleting(false);
@@ -66,7 +67,7 @@ export default function OnboardingDonePage() {
             <h1 className="text-3xl font-semibold mb-4 text-red-400">Error</h1>
             <p className="text-slate-300 mb-4">{error}</p>
             <Link
-              href="/onboarding"
+              href={ROUTES.onboarding}
               className="inline-block px-6 py-3 bg-sky-600 hover:bg-sky-700 text-white rounded-lg font-medium transition-colors"
             >
               Try Again
@@ -79,7 +80,7 @@ export default function OnboardingDonePage() {
               You&apos;re all set up. Redirecting to your dashboard...
             </p>
             <Link
-              href="/pro"
+              href={ROUTES.pro}
               className="inline-block px-6 py-3 bg-sky-600 hover:bg-sky-700 text-white rounded-lg font-medium transition-colors"
             >
               Go to Dashboard →

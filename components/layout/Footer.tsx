@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ROUTES } from "@/lib/routes";
 
 export default function Footer() {
   return (
@@ -8,21 +9,21 @@ export default function Footer() {
       <div className="max-w-6xl mx-auto px-4">
         <div className="space-x-4 mb-4">
           <Link
-            href="/legal"
+            href={ROUTES.legal}
             className="hover:text-gray-300 underline underline-offset-4 transition-colors"
           >
             Legal
           </Link>
 
           <Link
-            href="/legal/privacy"
+            href={ROUTES.legalPrivacy}
             className="hover:text-gray-300 underline underline-offset-4 transition-colors"
           >
             Privacy Policy
           </Link>
 
           <Link
-            href="/legal/terms"
+            href={ROUTES.legalTerms}
             className="hover:text-gray-300 underline underline-offset-4 transition-colors"
           >
             Terms of Use

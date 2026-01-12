@@ -3,6 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { ROUTES } from "@/lib/routes";
 import { useCurrentPlan } from "@/lib/plan-context";
 import { hasFeature } from "@/lib/plan";
 import { canUseProFeatures, canUsePremiumFeatures } from "@/lib/planVisibility";
@@ -41,7 +42,7 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
     {
       id: "gmail",
       label: "From Inbox",
-      href: "/inbox",
+      href: ROUTES.inbox,
       icon: (
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
@@ -53,7 +54,7 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
     {
       id: "file",
       label: "From File",
-      href: isFreePlan ? "/free" : "/dashboard",
+      href: isFreePlan ? ROUTES.free : ROUTES.dashboard,
       icon: (
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -63,7 +64,7 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
     {
       id: "signed",
       label: "Signed Documents",
-      href: "/pro/signed",
+      href: ROUTES.signed,
       icon: (
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -74,7 +75,7 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
     {
       id: "work-orders",
       label: "Work Orders",
-      href: "/pro/work-orders",
+      href: ROUTES.workOrders,
       icon: (
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
@@ -85,7 +86,7 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
     {
       id: "invoices",
       label: "Invoices",
-      href: "/invoices",
+      href: ROUTES.invoices,
       icon: (
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -98,7 +99,7 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
     {
       id: "portal",
       label: "Portal",
-      href: "/portal",
+      href: ROUTES.portal,
       icon: (
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
@@ -111,7 +112,7 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
     {
       id: "integrations",
       label: "Integrations",
-      href: "/integrations",
+      href: ROUTES.integrations,
       icon: (
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -149,18 +150,18 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
     // CRITICAL: Free users should NEVER see "From Inbox" (Gmail) as active
     if (isFreePlan && !canUsePro) {
       // Explicitly prevent Gmail/Inbox from being active for Free users
-      if (item.id === "gmail" || item.href === "/inbox") {
+      if (item.id === "gmail" || item.href === ROUTES.inbox) {
         return false;
       }
       // If user is on Gmail page (/inbox) but is Free plan, show "From File" as active
       // This handles the case where redirect is in progress
-      if (pathname === "/inbox" && item.id === "file") {
+      if (pathname === ROUTES.inbox && item.id === "file") {
         return true;
       }
       // Only "From File" should be active for Free users
       // Match /free or /manual (legacy redirect)
       if (item.id === "file") {
-        return pathname === "/free" || pathname === "/manual" || pathname?.startsWith("/free");
+        return pathname === ROUTES.free || pathname === "/manual" || pathname?.startsWith(`${ROUTES.free}/`);
       }
       // Other nav items shouldn't be active for Free users
       return false;
@@ -169,19 +170,19 @@ export default function MainNavigation({ currentMode }: MainNavigationProps) {
     // For Pro/Premium users, use normal pathname matching
     // For "From File", match both /dashboard and /manual (legacy redirect)
     if (item.id === "file") {
-      return pathname === "/dashboard" || pathname === "/manual" || pathname?.startsWith("/dashboard");
+      return pathname === ROUTES.dashboard || pathname === "/manual" || pathname?.startsWith(`${ROUTES.dashboard}/`);
     }
-    // For "Signed Documents", match /pro/signed
+    // For "Signed Documents", match /signed
     if (item.id === "signed") {
-      return pathname === "/pro/signed" || pathname?.startsWith("/pro/signed");
+      return pathname === ROUTES.signed || pathname?.startsWith(`${ROUTES.signed}/`);
     }
-    // For "Work Orders", match /pro/work-orders
+    // For "Work Orders", match /work-orders
     if (item.id === "work-orders") {
-      return pathname === "/pro/work-orders" || pathname?.startsWith("/pro/work-orders");
+      return pathname === ROUTES.workOrders || pathname?.startsWith(`${ROUTES.workOrders}/`);
     }
     // For "From Inbox" (Gmail), match /inbox
     if (item.id === "gmail") {
-      return pathname === "/inbox" || pathname?.startsWith("/inbox");
+      return pathname === ROUTES.inbox || pathname?.startsWith(`${ROUTES.inbox}/`);
     }
     return pathname === item.href || (item.href !== "/" && pathname?.startsWith(item.href));
   };
