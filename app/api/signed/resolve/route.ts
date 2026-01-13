@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { workspaceRequired } from "@/lib/workspace/workspaceRequired";
 import { rehydrateWorkspaceCookies } from "@/lib/workspace/workspaceCookies";
+import { logLegacyUpdateWarning } from "@/lib/readAdapter/guardrails";
 import {
   updateJobWithSignedInfoByWorkOrderNumber,
   writeWorkOrderRecord,
@@ -66,6 +67,13 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
+
+    // Log warning if DB is primary (guardrail)
+    await logLegacyUpdateWarning("/api/signed/resolve", {
+      reviewRowId,
+      fmKey,
+      woNumber,
+    });
 
     // Look up the Needs_Review_Signed row by review_id
     const reviewRow = await findSignedNeedsReviewRowById(

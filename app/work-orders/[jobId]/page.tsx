@@ -53,6 +53,8 @@ export default function WorkOrderDetailPage() {
       if (response.ok) {
         const data = await response.json();
         setWorkOrder(data.workOrder);
+        setDataSource(data.dataSource || "LEGACY");
+        setFallbackUsed(data.fallbackUsed || false);
       } else if (response.status === 404) {
         setError("Work order not found");
       } else {
@@ -151,6 +153,22 @@ export default function WorkOrderDetailPage() {
                     {workOrder.status || "OPEN"}
                   </span>
                 </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`px-3 py-1 rounded-full text-xs font-medium ${
+                    dataSource === "DB"
+                      ? "bg-green-900/30 text-green-300 border border-green-700"
+                      : "bg-gray-800 text-gray-300 border border-gray-700"
+                  }`}
+                >
+                  Data Source: {dataSource}
+                </span>
+                {fallbackUsed && (
+                  <span className="px-3 py-1 rounded-full text-xs font-medium bg-orange-900/30 text-orange-300 border border-orange-700">
+                    DB unavailable — showing Legacy
+                  </span>
+                )}
               </div>
             </div>
           </div>

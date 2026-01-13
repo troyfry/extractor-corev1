@@ -106,6 +106,28 @@ function ParityTool() {
               </div>
             </div>
           )}
+          {result.fieldDrifts && (
+            <div className="mt-3 pt-3 border-t">
+              <span className="font-medium text-purple-700">Field Drifts ({result.fieldDrifts.totalMismatches}):</span>
+              <div className="text-xs text-gray-600 mt-1 grid grid-cols-2 gap-2">
+                <div>Status: {result.fieldDrifts.counts.status}</div>
+                <div>Signed At: {result.fieldDrifts.counts.signed_at_presence}</div>
+                <div>Amount: {result.fieldDrifts.counts.amount}</div>
+                <div>Scheduled Date: {result.fieldDrifts.counts.scheduled_date}</div>
+              </div>
+              {result.fieldDrifts.sample.length > 0 && (
+                <div className="text-xs text-gray-600 mt-2">
+                  <div className="font-medium mb-1">Sample mismatches:</div>
+                  {result.fieldDrifts.sample.slice(0, 3).map((drift, idx) => (
+                    <div key={idx} className="mb-1">
+                      {drift.workOrderNumber} ({drift.field}): DB="{drift.dbValue}" Legacy="{drift.legacyValue}"
+                    </div>
+                  ))}
+                  {result.fieldDrifts.sample.length > 3 && <div>...and {result.fieldDrifts.sample.length - 3} more</div>}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

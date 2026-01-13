@@ -8,6 +8,13 @@ import { getColumnRange } from "@/lib/google/sheetsCache";
 
 export const runtime = "nodejs";
 
+/**
+ * GET /api/signed/needs-review
+ * Get signed documents that need review.
+ * 
+ * Uses read adapter to route to DB or legacy based on feature flag + workspace setting.
+ * Falls back to legacy if DB read fails.
+ */
 export async function GET() {
   try {
     const user = await getCurrentUser();
@@ -23,53 +30,52 @@ export async function GET() {
       );
     }
 
-    // Get workspace (centralized resolution)
-    const workspaceResult = await workspaceRequired();
-    const spreadsheetId = workspaceResult.workspace.spreadsheetId;
-
-    // Read Needs_Review_Signed sheet
-    const sheets = createSheetsClient(accessToken);
-    const sheetsResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: formatSheetRange(SIGNED_NEEDS_REVIEW_SHEET_NAME, getColumnRange(SIGNED_NEEDS_REVIEW_COLUMNS.length)),
+    // Use read adapter (routes to DB or legacy based on feature flag + workspace setting)
+    const { listSignedDocsUnified } = await import("@/lib/readAdapter/signedDocs");
+    const result = await listSignedDocsUnified({
+      decision: "NEEDS_REVIEW", // Filter to needs review items
+      limit: 100, // Reasonable limit
     });
 
-    const rows = sheetsResponse.data.values || [];
-    if (rows.length === 0) {
-      return NextResponse.json({ items: [] });
-    }
-
-    const headers = (rows[0] || []) as string[];
-    const headersLower = headers.map((h) => (h || "").toLowerCase().trim());
-
-    // Create a mapping from lowercase header to original header (for case-sensitive fields)
-    const headerMap: Record<string, string> = {};
-    headers.forEach((h, idx) => {
-      const lower = (h || "").toLowerCase().trim();
-      headerMap[lower] = h || "";
-    });
-
-    // Map rows to objects using canonical column names from SIGNED_NEEDS_REVIEW_COLUMNS
-    const items = rows.slice(1).map((row) => {
-      const item: Record<string, string | null> = {};
-      headersLower.forEach((headerLower, idx) => {
-        // Use the original header case for the key (preserves "fmKey" instead of "fmkey")
-        const canonicalHeader = headerMap[headerLower] || headerLower;
-        item[canonicalHeader] = row[idx] ? String(row[idx]).trim() : null;
-      });
-      return item;
-    });
-
-    // Filter to only unresolved items
-    const unresolved = items.filter(
-      (item) => (item.resolved || "").toUpperCase() !== "TRUE"
+    // Filter to needs review items (unmatched or needs review decision)
+    const needsReviewItems = result.items.filter(
+      (doc) => doc.decision === "UNMATCHED" || doc.decision === "NEEDS_REVIEW"
     );
 
-    // Rehydrate cookies if workspace was loaded from Users Sheet
-    const response = NextResponse.json({ items: unresolved });
-    if (workspaceResult.source === "users_sheet") {
+    // Map unified format to legacy format for backward compatibility
+    const items = needsReviewItems.map((doc) => ({
+      review_id: doc.id,
+      created_at: doc.createdAt,
+      fmKey: doc.fmKey,
+      signed_pdf_url: doc.signedPdfUrl,
+      preview_image_url: doc.signedPreviewImageUrl,
+      raw_text: null, // Not in unified format
+      confidence: doc.extractionConfidence,
+      reason: doc.extractionRationale || "Needs review",
+      manual_work_order_number: doc.extractedWorkOrderNumber,
+      resolved: doc.decision === "MATCHED" ? "TRUE" : null,
+      resolved_at: doc.decision === "MATCHED" ? doc.createdAt : null,
+      reason_note: null,
+      extraction_method: doc.extractionMethod,
+      extraction_confidence: doc.extractionConfidence,
+      extraction_rationale: doc.extractionRationale,
+      extracted_work_order_number: doc.extractedWorkOrderNumber,
+    }));
+
+    // Rehydrate cookies if needed (for legacy compatibility)
+    const { getWorkspace } = await import("@/lib/workspace/getWorkspace");
+    const workspaceResult = await getWorkspace();
+    
+    const response = NextResponse.json({ 
+      items,
+      dataSource: result.dataSource, // Include data source in response
+      fallbackUsed: result.fallbackUsed, // Include fallback indicator
+    });
+    
+    if (workspaceResult && workspaceResult.source === "users_sheet") {
       rehydrateWorkspaceCookies(response, workspaceResult.workspace);
     }
+    
     return response;
   } catch (error) {
     console.error("Error in GET /api/signed/needs-review", error);

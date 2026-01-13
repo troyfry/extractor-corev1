@@ -125,6 +125,94 @@ export async function GET() {
       }).length
     );
 
+    // Field drift analysis for a sample of matched work orders
+    const matchedDb = dbWorkOrders.filter((wo) => {
+      const key = `${wo.work_order_number || ""}:${wo.fm_key || ""}`;
+      return legacyKeySet.has(key);
+    });
+
+    const matchedLegacy = legacyWorkOrders.filter((wo) => {
+      const key = `${wo.workOrderNumber}:${wo.fmKey || ""}`;
+      return dbKeySet.has(key);
+    });
+
+    // Compare fields for matched work orders (sample of 20)
+    const fieldDrifts: Array<{
+      workOrderNumber: string;
+      fmKey: string | null;
+      field: string;
+      dbValue: string | null;
+      legacyValue: string | null;
+    }> = [];
+
+    const sampleSize = Math.min(20, matchedDb.length, matchedLegacy.length);
+    for (let i = 0; i < sampleSize; i++) {
+      const dbWo = matchedDb[i];
+      const legacyWo = matchedLegacy.find(
+        (wo) => wo.workOrderNumber === dbWo.work_order_number && wo.fmKey === dbWo.fm_key
+      );
+
+      if (!legacyWo) continue;
+
+      // Compare status
+      if (dbWo.status !== legacyWo.status) {
+        fieldDrifts.push({
+          workOrderNumber: dbWo.work_order_number || "",
+          fmKey: dbWo.fm_key,
+          field: "status",
+          dbValue: dbWo.status,
+          legacyValue: legacyWo.status || null,
+        });
+      }
+
+      // Compare signed_at presence
+      const dbHasSignedAt = !!dbWo.signed_at;
+      const legacyHasSignedAt = !!legacyWo.signedAt;
+      if (dbHasSignedAt !== legacyHasSignedAt) {
+        fieldDrifts.push({
+          workOrderNumber: dbWo.work_order_number || "",
+          fmKey: dbWo.fm_key,
+          field: "signed_at_presence",
+          dbValue: dbHasSignedAt ? "present" : "absent",
+          legacyValue: legacyHasSignedAt ? "present" : "absent",
+        });
+      }
+
+      // Compare amount (normalize for comparison)
+      const dbAmount = dbWo.amount ? String(dbWo.amount).trim() : null;
+      const legacyAmount = legacyWo.amount ? String(legacyWo.amount).trim() : null;
+      if (dbAmount !== legacyAmount) {
+        fieldDrifts.push({
+          workOrderNumber: dbWo.work_order_number || "",
+          fmKey: dbWo.fm_key,
+          field: "amount",
+          dbValue: dbAmount,
+          legacyValue: legacyAmount,
+        });
+      }
+
+      // Compare scheduled_date
+      const dbScheduledDate = dbWo.scheduled_date ? String(dbWo.scheduled_date).trim() : null;
+      const legacyScheduledDate = legacyWo.scheduledDate ? String(legacyWo.scheduledDate).trim() : null;
+      if (dbScheduledDate !== legacyScheduledDate) {
+        fieldDrifts.push({
+          workOrderNumber: dbWo.work_order_number || "",
+          fmKey: dbWo.fm_key,
+          field: "scheduled_date",
+          dbValue: dbScheduledDate,
+          legacyValue: legacyScheduledDate,
+        });
+      }
+    }
+
+    // Count mismatches by field
+    const driftCounts = {
+      status: fieldDrifts.filter((d) => d.field === "status").length,
+      signed_at_presence: fieldDrifts.filter((d) => d.field === "signed_at_presence").length,
+      amount: fieldDrifts.filter((d) => d.field === "amount").length,
+      scheduled_date: fieldDrifts.filter((d) => d.field === "scheduled_date").length,
+    };
+
     return NextResponse.json({
       dbCount: dbWorkOrders.length,
       legacyCount: legacyWorkOrders.length,
@@ -132,6 +220,11 @@ export async function GET() {
       onlyInDb: onlyInDb.slice(0, 20), // Limit to 20 for display
       onlyInLegacy: onlyInLegacy.slice(0, 20), // Limit to 20 for display
       differences: onlyInDb.length + onlyInLegacy.length,
+      fieldDrifts: {
+        counts: driftCounts,
+        totalMismatches: fieldDrifts.length,
+        sample: fieldDrifts.slice(0, 20), // Limit to 20 for display
+      },
     });
   } catch (error) {
     console.error("[DB Reconcile Sample API] Error:", error);
