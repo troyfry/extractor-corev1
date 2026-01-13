@@ -101,6 +101,25 @@ export async function POST(req: Request) {
       let ocrConfig = null;
       try {
         const templateConfig = await getTemplateConfigForFmKey(rawFmKey);
+        console.log("[Signed Process] Template config loaded:", {
+          fmKey: rawFmKey,
+          templateId: templateConfig.templateId,
+          hasCoordinates: !!(templateConfig.xPt !== undefined &&
+            templateConfig.yPt !== undefined &&
+            templateConfig.wPt !== undefined &&
+            templateConfig.hPt !== undefined &&
+            templateConfig.pageWidthPt !== undefined &&
+            templateConfig.pageHeightPt !== undefined),
+          coordinates: {
+            xPt: templateConfig.xPt,
+            yPt: templateConfig.yPt,
+            wPt: templateConfig.wPt,
+            hPt: templateConfig.hPt,
+            pageWidthPt: templateConfig.pageWidthPt,
+            pageHeightPt: templateConfig.pageHeightPt,
+          },
+        });
+        
         if (
           templateConfig.xPt !== undefined &&
           templateConfig.yPt !== undefined &&
@@ -119,10 +138,20 @@ export async function POST(req: Request) {
             pageHeightPt: templateConfig.pageHeightPt,
             dpi: 200,
           };
+          console.log("[Signed Process] OCR config created:", ocrConfig);
+        } else {
+          console.warn("[Signed Process] Template config missing required coordinates:", {
+            xPt: templateConfig.xPt,
+            yPt: templateConfig.yPt,
+            wPt: templateConfig.wPt,
+            hPt: templateConfig.hPt,
+            pageWidthPt: templateConfig.pageWidthPt,
+            pageHeightPt: templateConfig.pageHeightPt,
+          });
         }
       } catch (error) {
         // Template not found - OCR config will be null (extraction will skip OCR layer)
-        console.log("[Signed Process] Template config not available for OCR, will skip OCR layer:", error);
+        console.error("[Signed Process] Template config not available for OCR, will skip OCR layer:", error);
       }
 
       extractionResult = await extractWorkOrderNumber({
@@ -139,7 +168,13 @@ export async function POST(req: Request) {
         confidence: extractionResult.confidence,
         workOrderNumber: extractionResult.workOrderNumber,
         rationale: extractionResult.rationale,
+        candidates: extractionResult.candidates,
       });
+      
+      // Log snippet URL if available (for visual verification of what was captured)
+      if (extractionResult.debug) {
+        console.log("[Signed Process] Extraction debug info:", extractionResult.debug);
+      }
     } catch (error) {
       console.error("[Signed Process] 3-layer extraction failed:", error);
       // Continue with existing flow if extraction fails
@@ -166,6 +201,51 @@ export async function POST(req: Request) {
       } : null,
     });
 
+    // Shadow write to DB (non-blocking - don't fail if DB write fails)
+    try {
+      const { ingestSignedAuthoritative } = await import("@/lib/db/services/ingestSigned");
+      const { getOrCreateWorkspace } = await import("@/lib/db/services/workspace");
+      
+      // Get or create workspace in DB
+      const workspaceId = await getOrCreateWorkspace(
+        spreadsheetId,
+        user.id,
+        undefined // driveFolderId not available here
+      );
+
+      await ingestSignedAuthoritative({
+        workspaceId,
+        pdfBuffer: normalizedPdfBuffer,
+        signedPdfUrl: result.signedPdfUrl || null, // Don't pass empty string, pass null
+        signedPreviewImageUrl: result.snippetDriveUrl || result.snippetImageUrl || null,
+        fmKey: rawFmKey || null,
+        extractionResult: extractionResult ? {
+          workOrderNumber: extractionResult.workOrderNumber,
+          method: extractionResult.method,
+          confidence: extractionResult.confidence,
+          rationale: extractionResult.rationale || undefined,
+          candidates: extractionResult.candidates || undefined,
+        } : null,
+        workOrderNumber: woNumberOverride || extractionResult?.workOrderNumber || null,
+        sourceMetadata: {
+          filename: originalFilename,
+          source: "UPLOAD",
+        },
+      });
+      console.log("[Signed Process] ✅ Shadow wrote signed document to DB");
+    } catch (dbError) {
+      // Log but don't fail - DB is shadow write
+      console.warn("[Signed Process] ⚠️ Failed to shadow write signed document to DB (non-fatal):", dbError);
+    }
+
+    // Log snippet URLs prominently for visual verification
+    console.log("📸 [Signed Process] FINAL SNIPPET URLs (what OCR captured):", {
+      snippetImageUrl: result.snippetImageUrl || null,
+      snippetDriveUrl: result.snippetDriveUrl || null,
+      snippetUrl: result.snippetUrl || null,
+      note: "Open snippetUrl in browser to see what region was cropped",
+    });
+
     // Map unified result to existing response format for compatibility
     // Use standardized fields from processSignedPdfUnified
     const responseData = {
@@ -183,7 +263,7 @@ export async function POST(req: Request) {
         signedPdfUrl: result.signedPdfUrl || null,
         snippetImageUrl: result.snippetImageUrl || null,
         snippetDriveUrl: result.snippetDriveUrl || null,
-        snippetUrl: result.snippetUrl || null, // Standardized field
+        snippetUrl: result.snippetUrl || null, // Standardized field - OPEN THIS TO SEE WHAT WAS CAPTURED
         jobExistsInSheet1: false, // Will be determined by processor
         retryAttempted: false,
         alternatePageAttempted: false,

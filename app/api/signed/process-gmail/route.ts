@@ -252,6 +252,48 @@ export async function POST(req: Request) {
       } : null,
     });
 
+    // Shadow write to DB (non-blocking - don't fail if DB write fails)
+    try {
+      const { ingestSignedAuthoritative } = await import("@/lib/db/services/ingestSigned");
+      const { getOrCreateWorkspace } = await import("@/lib/db/services/workspace");
+      
+      // Get or create workspace in DB
+      const workspaceId = await getOrCreateWorkspace(
+        spreadsheetId,
+        user.id,
+        undefined // driveFolderId not available here
+      );
+
+      await ingestSignedAuthoritative({
+        workspaceId,
+        pdfBuffer: normalizedPdfBuffer,
+        signedPdfUrl: result.signedPdfUrl || null, // Don't pass empty string, pass null
+        signedPreviewImageUrl: result.snippetDriveUrl || result.snippetImageUrl || null,
+        fmKey: rawFmKey || null,
+        extractionResult: extractionResult ? {
+          workOrderNumber: extractionResult.workOrderNumber,
+          method: extractionResult.method,
+          confidence: extractionResult.confidence,
+          rationale: extractionResult.rationale || undefined,
+          candidates: extractionResult.candidates || undefined,
+        } : null,
+        workOrderNumber: extractionResult?.workOrderNumber || null,
+        sourceMetadata: {
+          messageId,
+          attachmentId,
+          filename: originalFilename,
+          gmailFrom: full.data.payload?.headers?.find((h: any) => h.name?.toLowerCase() === "from")?.value || null,
+          gmailSubject: full.data.payload?.headers?.find((h: any) => h.name?.toLowerCase() === "subject")?.value || null,
+          gmailDate: full.data.payload?.headers?.find((h: any) => h.name?.toLowerCase() === "date")?.value || null,
+          source: "GMAIL",
+        },
+      });
+      console.log("[Signed Process Gmail] ✅ Shadow wrote signed document to DB");
+    } catch (dbError) {
+      // Log but don't fail - DB is shadow write
+      console.warn("[Signed Process Gmail] ⚠️ Failed to shadow write signed document to DB (non-fatal):", dbError);
+    }
+
     // Map unified result to existing response format for compatibility
     const isAlreadyProcessed = result.alreadyProcessed === true;
     const responseData = {

@@ -14,6 +14,8 @@
     "verify": "pnpm test"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^0.9.0",
+    "drizzle-orm": "^0.36.0",
     "googleapis": "^144.0.0",
     "mupdf": "^1.26.4",
     "next": "^15.0.0",
@@ -31,6 +33,7 @@
     "@vitest/ui": "^4.0.16",
     "autoprefixer": "^10.4.19",
     "dotenv": "^16.4.5",
+    "drizzle-kit": "^0.24.0",
     "eslint": "^8.57.1",
     "eslint-config-next": "^15.0.0",
     "postcss": "^8.4.38",

@@ -74,6 +74,31 @@ export async function extractWorkOrderNumber(
   // If OCR config is available, get cropped text first (more accurate than full PDF)
   if (ocrConfig && pdfBuffer) {
     try {
+      // Log coordinates being sent to OCR service
+      console.log("[Extract WO] Calling OCR service with coordinates:", {
+        fmKey,
+        page: ocrConfig.page,
+        xPt: ocrConfig.xPt,
+        yPt: ocrConfig.yPt,
+        wPt: ocrConfig.wPt,
+        hPt: ocrConfig.hPt,
+        pageWidthPt: ocrConfig.pageWidthPt,
+        pageHeightPt: ocrConfig.pageHeightPt,
+        dpi: ocrConfig.dpi || 200,
+        cropRegion: {
+          x: ocrConfig.xPt,
+          y: ocrConfig.yPt,
+          width: ocrConfig.wPt,
+          height: ocrConfig.hPt,
+          area: ocrConfig.wPt * ocrConfig.hPt,
+        },
+        pageArea: ocrConfig.pageWidthPt * ocrConfig.pageHeightPt,
+        cropPercentage: {
+          width: (ocrConfig.wPt / ocrConfig.pageWidthPt) * 100,
+          height: (ocrConfig.hPt / ocrConfig.pageHeightPt) * 100,
+        },
+      });
+
       const ocrResult = await callSignedOcrService(pdfBuffer, "extraction.pdf", {
         templateId: fmKey || "extraction",
         page: ocrConfig.page,
@@ -90,14 +115,41 @@ export async function extractWorkOrderNumber(
       // Use OCR text from cropped region (more accurate - only the work order number area)
       if (ocrResult.rawText && ocrResult.rawText.trim().length > 0) {
         croppedOcrText = ocrResult.rawText;
-        console.log("[Extract WO] Using cropped OCR text for extraction (from FM coordinates):", {
+        console.log("[Extract WO] OCR returned cropped text:", {
           textLength: croppedOcrText.length,
-          preview: croppedOcrText.substring(0, 100),
+          preview: croppedOcrText.substring(0, 200),
+          fullText: croppedOcrText, // Show full text to see what was actually read
+          woNumberFromOcr: ocrResult.woNumber,
+          confidence: ocrResult.confidenceRaw,
+          snippetImageUrl: ocrResult.snippetImageUrl, // Show snippet image URL to visually verify what was captured
+        });
+        
+        // Log snippet URL prominently for visual verification
+        if (ocrResult.snippetImageUrl) {
+          console.log("📸 [Extract WO] SNIPPET IMAGE URL (what OCR captured):", ocrResult.snippetImageUrl);
+        } else {
+          console.warn("⚠️ [Extract WO] No snippet image URL returned from OCR service");
+        }
+      } else {
+        console.warn("[Extract WO] OCR returned empty text:", {
+          rawText: ocrResult.rawText,
+          woNumber: ocrResult.woNumber,
+          confidence: ocrResult.confidenceRaw,
+          snippetImageUrl: ocrResult.snippetImageUrl,
         });
       }
     } catch (error) {
-      console.log("[Extract WO] OCR extraction failed, will use full PDF text:", {
+      console.error("[Extract WO] OCR extraction failed:", {
         error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        coordinates: ocrConfig ? {
+          xPt: ocrConfig.xPt,
+          yPt: ocrConfig.yPt,
+          wPt: ocrConfig.wPt,
+          hPt: ocrConfig.hPt,
+          pageWidthPt: ocrConfig.pageWidthPt,
+          pageHeightPt: ocrConfig.pageHeightPt,
+        } : null,
       });
     }
   }
@@ -118,11 +170,31 @@ export async function extractWorkOrderNumber(
   }
 
   const finalText = croppedOcrText || digitalText;
+  
+  // Log what text we're working with
+  console.log("[Extract WO] Text available for extraction:", {
+    hasCroppedOcrText: !!croppedOcrText,
+    croppedOcrTextLength: croppedOcrText?.length || 0,
+    croppedOcrTextPreview: croppedOcrText?.substring(0, 200) || null,
+    hasDigitalText: !!digitalText,
+    digitalTextLength: digitalText?.length || 0,
+    digitalTextPreview: digitalText?.substring(0, 200) || null,
+    finalTextLength: finalText?.length || 0,
+    finalTextPreview: finalText?.substring(0, 500) || null,
+    expectedDigits,
+  });
+  
   // Extract candidates and their source snippets (line context)
   const candidateSnippets = new Map<string, string>(); // candidate -> snippet
   
   if (finalText && finalText.trim().length > 0) {
     digitalCandidates = extractCandidatesFromText(finalText, expectedDigits);
+    
+    console.log("[Extract WO] Candidates extracted:", {
+      candidateCount: digitalCandidates.length,
+      candidates: digitalCandidates.slice(0, 10), // Show first 10
+      expectedDigits,
+    });
     
     // Extract source snippets for each candidate (for context)
     if (digitalCandidates.length > 0) {
@@ -140,7 +212,17 @@ export async function extractWorkOrderNumber(
           }
         }
       }
+      
+      console.log("[Extract WO] Candidate snippets:", {
+        snippets: Array.from(candidateSnippets.entries()).slice(0, 5),
+      });
     }
+  } else {
+    console.warn("[Extract WO] No text available for extraction:", {
+      hasCroppedOcrText: !!croppedOcrText,
+      hasDigitalText: !!digitalText,
+      hasPdfBuffer: !!pdfBuffer,
+    });
   }
 
   // Track provenance: determine input scope and region usage
@@ -443,6 +525,22 @@ IMPORTANT: Return ONLY the JSON object, no markdown, no code blocks, no explanat
     finalReasons.push("AI_SKIPPED_NO_REGION");
   }
 
+  // Log why extraction failed
+  console.log("[Extract WO] Extraction failed - returning null:", {
+    bestCandidate,
+    bestCandidateLength: bestCandidate?.length || 0,
+    expectedDigits,
+    candidateCount: digitalCandidates.length,
+    allCandidates: digitalCandidates.slice(0, 10),
+    hasCroppedOcrText: !!croppedOcrText,
+    hasDigitalText: !!digitalText,
+    finalTextLength: finalText?.length || 0,
+    finalTextFull: finalText?.substring(0, 1000) || null, // Show first 1000 chars
+    reasons: finalReasons,
+    aiEnabled: !!aiEnabled,
+    hasOcrConfig: !!ocrConfig,
+  });
+
   return {
     workOrderNumber: bestCandidate && bestCandidate.length >= expectedDigits - 1 ? bestCandidate : null,
     method: digitalCandidates.length > 0 ? "DIGITAL_TEXT" : "OCR",
@@ -460,6 +558,7 @@ IMPORTANT: Return ONLY the JSON object, no markdown, no code blocks, no explanat
       candidateCount: digitalCandidates.length,
       hasOcrConfig: !!ocrConfig,
       aiEnabled: !!aiEnabled,
+      finalTextPreview: finalText?.substring(0, 500) || null, // Include in debug
     },
     provenance: buildProvenance(woNumberMethod, pipelinePath, finalReasons),
   };

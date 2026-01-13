@@ -130,6 +130,8 @@ export async function callSignedOcrService(
   // Debug log with all conversion details
   console.log(`[Signed OCR] Points to pixels conversion (clamped):`, {
     requestId: config.requestId,
+    templateId: config.templateId,
+    page: config.page,
     dpi,
     pageWidthPt,
     pageHeightPt,
@@ -139,6 +141,17 @@ export async function callSignedOcrService(
     finalPoints: { xPt: finalXPt, yPt: finalYPt, wPt: finalWPt, hPt: finalHPt },
     imageDimensions: { widthPx: imageWidthPx, heightPx: imageHeightPx },
     scale,
+    cropRegion: {
+      x: finalXPt,
+      y: finalYPt,
+      width: finalWPt,
+      height: finalHPt,
+      area: finalWPt * finalHPt,
+    },
+    cropPercentage: {
+      width: (finalWPt / pageWidthPt) * 100,
+      height: (finalHPt / pageHeightPt) * 100,
+    },
   });
 
   const formData = new FormData();
@@ -295,11 +308,15 @@ export async function callSignedOcrService(
   console.log("[Signed OCR] Parsed OCR service response:", {
     workOrderNumber: data.workOrderNumber,
     workOrderNumberType: typeof data.workOrderNumber,
+    workOrderNumberLength: data.workOrderNumber?.length || 0,
     confidence: data.confidence,
     confidenceType: typeof data.confidence,
-    rawText: data.rawText?.substring(0, 50),
+    rawTextLength: data.rawText?.length || 0,
+    rawText: data.rawText, // Show FULL raw text to see what OCR actually read
+    rawTextPreview: data.rawText?.substring(0, 200),
     hasSnippetImageUrl: !!data.snippetImageUrl,
     hasCropDebug: !!data.cropDebug,
+    cropDebug: data.cropDebug, // Show normalization info
   });
 
   // Ensure confidence is a number

@@ -773,6 +773,53 @@ ${pdfText}`;
         
         console.log("[Gmail Process] Successfully wrote work orders to Sheets + Drive");
 
+        // Shadow write to DB (non-blocking - don't fail if DB write fails)
+        try {
+          const { ingestWorkOrderAuthoritative } = await import("@/lib/db/services/ingestWorkOrder");
+          const { getOrCreateWorkspace } = await import("@/lib/db/services/workspace");
+          
+          // Get or create workspace in DB
+          const workspaceId = await getOrCreateWorkspace(
+            spreadsheetId!,
+            user.id,
+            undefined // driveFolderId not available here
+          );
+
+          // Ingest each work order to DB
+          // Note: PDF links are uploaded to Drive by writeWorkOrdersToSheets, but we don't have them here
+          // They'll be synced via export jobs later
+          for (let i = 0; i < allParsedWorkOrders.length; i++) {
+            const parsedWO = allParsedWorkOrders[i];
+            const pdfBuffer = pdfBuffers[i];
+            const pdfFilename = pdfFilenames[i];
+
+            try {
+              await ingestWorkOrderAuthoritative({
+                workspaceId,
+                userId: user.id,
+                spreadsheetId: spreadsheetId!,
+                parsedWorkOrder: parsedWO,
+                pdfBuffer,
+                sourceType: "GMAIL",
+                workOrderPdfLink: null, // Will be synced from Sheets via export job
+                sourceMetadata: {
+                  messageId: email.id,
+                  filename: pdfFilename,
+                  emailSubject: email.subject,
+                  emailFrom: email.from,
+                },
+              });
+              console.log(`[Gmail Process] ✅ Shadow wrote work order to DB: ${parsedWO.workOrderNumber}`);
+            } catch (dbError) {
+              // Log but don't fail - DB is shadow write
+              console.warn(`[Gmail Process] ⚠️ Failed to shadow write work order to DB:`, dbError);
+            }
+          }
+        } catch (dbError) {
+          // Log but don't fail - DB is shadow write
+          console.warn("[Gmail Process] ⚠️ Failed to shadow write work orders to DB (non-fatal):", dbError);
+        }
+
         // Also write to Work_Orders sheet (master ledger, no duplicates)
         const { writeWorkOrderRecord, findWorkOrderRecordByJobId } = await import("@/lib/google/sheets");
         const { generateJobId } = await import("@/lib/workOrders/sheetsIngestion");

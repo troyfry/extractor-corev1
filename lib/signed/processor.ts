@@ -22,6 +22,11 @@ import { uploadPdfToDrive, getOrCreateFolder } from "@/lib/google/drive";
 import { uploadSnippetImageToDrive } from "@/lib/drive-snippets";
 import { normalizeFmKey } from "@/lib/templates/fmProfiles";
 import { NEEDS_REVIEW_REASONS } from "@/lib/workOrders/reasons";
+import { findWorkOrderByWoNumber, isDbSignedLookupEnabled } from "./dbLookup";
+import { getWorkspaceIdForUser } from "@/lib/db/utils/getWorkspaceId";
+import { db } from "@/lib/db/drizzle";
+import { signed_match, work_orders } from "@/lib/db/schema";
+import { eq, and } from "drizzle-orm";
 
 const WORK_ORDERS_SHEET_NAME = process.env.GOOGLE_SHEETS_WORK_ORDERS_SHEET_NAME || "Work_Orders";
 const MAIN_SHEET_NAME = process.env.GOOGLE_SHEETS_MAIN_SHEET_NAME || "Sheet1";
@@ -255,93 +260,222 @@ export async function processSignedPdfUnified(
     workOrderNumber: ocrResult.woNumber,
     confidenceLabel: ocrResult.confidenceLabel,
     confidenceRaw: ocrResult.confidenceRaw,
+    rawTextLength: ocrResult.rawText?.length || 0,
+    rawTextPreview: ocrResult.rawText?.substring(0, 500) || null,
+    snippetImageUrl: ocrResult.snippetImageUrl, // Show snippet image URL
   });
-
-  // Step 4: Decide outcome
-  let workOrderNumber: string | null = ocrResult.woNumber;
-  let needsReview: boolean;
-
-  // If override provided, use it
-  if (woNumberOverride) {
-    workOrderNumber = woNumberOverride.trim();
+  
+  // Log snippet URL prominently for visual verification
+  if (ocrResult.snippetImageUrl) {
+    console.log("📸 [Signed Processor] OCR SNIPPET IMAGE URL (what was captured):", ocrResult.snippetImageUrl);
+  } else {
+    console.warn("⚠️ [Signed Processor] No snippet image URL from OCR service");
   }
 
-  // Check if work order exists in Sheet1 or Work_Orders before deciding
+  // Step 4: Decide outcome
+  // Priority: woNumberOverride > extractionResult > ocrResult
+  let workOrderNumber: string | null = null;
+  
+  // Check if we have extraction result from 3-layer extraction (more accurate)
+  if (params.extractionResult?.workOrderNumber) {
+    workOrderNumber = params.extractionResult.workOrderNumber;
+    console.log("[Signed Processor] Using work order number from 3-layer extraction:", {
+      workOrderNumber,
+      method: params.extractionResult.method,
+      confidence: params.extractionResult.confidence,
+      rationale: params.extractionResult.rationale,
+    });
+  } else if (ocrResult.woNumber) {
+    workOrderNumber = ocrResult.woNumber;
+    console.log("[Signed Processor] Using work order number from OCR result:", {
+      workOrderNumber,
+      confidence: ocrResult.confidenceRaw,
+    });
+  } else {
+    console.warn("[Signed Processor] No work order number found:", {
+      hasExtractionResult: !!params.extractionResult,
+      extractionResultWoNumber: params.extractionResult?.workOrderNumber || null,
+      ocrResultWoNumber: ocrResult.woNumber || null,
+      ocrRawText: ocrResult.rawText?.substring(0, 500) || null,
+    });
+  }
+
+  let needsReview: boolean;
+
+  // If override provided, use it (highest priority)
+  if (woNumberOverride) {
+    workOrderNumber = woNumberOverride.trim();
+    console.log("[Signed Processor] Using work order number override:", workOrderNumber);
+  }
+
+  // Check if work order exists (DB first if enabled, then fallback to Sheets)
   let workOrderExists = false;
   let workOrderAlreadySigned = false;
+  let dbWorkOrderId: string | null = null;
+  let dbLookupUsed = false;
+  let fallbackUsed = false;
+
+  // Check if DB signed lookup is enabled
+  const dbLookupEnabled = isDbSignedLookupEnabled();
+  console.log("[Signed Processor] DB lookup enabled:", dbLookupEnabled);
+
   if (workOrderNumber) {
-    const jobId = generateJobId(null, workOrderNumber);
-    
-    // Check Work_Orders sheet
-    const existingWorkOrder = await findWorkOrderRecordByJobId(
-      accessToken,
-      spreadsheetId,
-      WORK_ORDERS_SHEET_NAME,
-      jobId
-    );
-    
-    if (existingWorkOrder) {
-      workOrderExists = true;
-      // Check if work order is already signed (high confidence extraction + already SIGNED status)
-      const isSigned = existingWorkOrder.status?.toUpperCase() === "SIGNED" || 
-                       (existingWorkOrder.signed_pdf_url && existingWorkOrder.signed_pdf_url.trim() !== "");
-      
-      // If we have high confidence extraction and work order is already signed, mark as already processed
-      if (isSigned && params.extractionResult && params.extractionResult.confidence >= 0.80) {
-        workOrderAlreadySigned = true;
+    // Try DB lookup first if enabled
+    if (dbLookupEnabled) {
+      try {
+        // Get workspace ID
+        const workspaceId = await getWorkspaceIdForUser();
+        if (workspaceId) {
+          // Try to find work order in DB
+          const dbWorkOrder = await findWorkOrderByWoNumber({
+            workspaceId,
+            workOrderNumber: workOrderNumber.trim(),
+            // Note: fmProfileId not available here, but we can still search by wo_number
+          });
+
+          if (dbWorkOrder) {
+            dbWorkOrderId = dbWorkOrder.work_order_id;
+            workOrderExists = true;
+            dbLookupUsed = true;
+            console.log("[Signed Processor] DB match found: yes", {
+              workOrderId: dbWorkOrderId,
+              status: dbWorkOrder.status,
+            });
+
+            // Check if work order already has a signed_match (1:1 constraint)
+            const [existingMatch] = await db
+              .select()
+              .from(signed_match)
+              .where(eq(signed_match.work_order_id, dbWorkOrderId))
+              .limit(1);
+
+            if (existingMatch) {
+              workOrderAlreadySigned = true;
+              console.log("[Signed Processor] Work order already has signed document attached (1:1 constraint)");
+            } else if (dbWorkOrder.status === "SIGNED") {
+              // Also check if status is SIGNED (legacy check)
+              workOrderAlreadySigned = true;
+            }
+          } else {
+            console.log("[Signed Processor] DB match found: no");
+            fallbackUsed = true;
+          }
+        }
+      } catch (dbError) {
+        // Non-fatal: fallback to Sheets lookup
+        console.warn("[Signed Processor] DB lookup failed, falling back to Sheets:", dbError);
+        fallbackUsed = true;
       }
     } else {
-      // Check Sheet1 by wo_number
-      try {
-        // Use a lightweight check: try to find the row by wo_number
-        const sheets = createSheetsClient(accessToken);
-        const allDataResponse = await sheets.spreadsheets.values.get({
-          spreadsheetId,
-          range: `${MAIN_SHEET_NAME}!A:Z`, // Get first 26 columns
-        });
+      fallbackUsed = true;
+    }
+
+    // Fallback to Sheets lookup if DB didn't find a match or DB lookup is disabled
+    if (!workOrderExists && fallbackUsed) {
+      console.log("[Signed Processor] Fallback used: yes (Sheets lookup)");
+      const jobId = generateJobId(null, workOrderNumber);
+      
+      // Check Work_Orders sheet
+      const existingWorkOrder = await findWorkOrderRecordByJobId(
+        accessToken,
+        spreadsheetId,
+        WORK_ORDERS_SHEET_NAME,
+        jobId
+      );
+      
+      if (existingWorkOrder) {
+        workOrderExists = true;
+        // Check if work order is already signed (high confidence extraction + already SIGNED status)
+        const isSigned = existingWorkOrder.status?.toUpperCase() === "SIGNED" || 
+                         (existingWorkOrder.signed_pdf_url && existingWorkOrder.signed_pdf_url.trim() !== "");
         
-        const rows = allDataResponse.data.values || [];
-        if (rows.length > 0) {
-          const headers = rows[0] as string[];
-          const headersLower = headers.map((h) => h.toLowerCase().trim());
-          const woColIndex = headersLower.indexOf("wo_number");
-          const statusColIndex = headersLower.indexOf("status");
-          const signedPdfColIndex = headersLower.indexOf("signed_pdf_url");
+        // If we have high confidence extraction and work order is already signed, mark as already processed
+        if (isSigned && params.extractionResult && params.extractionResult.confidence >= 0.80) {
+          workOrderAlreadySigned = true;
+        }
+      } else {
+        // Check Sheet1 by wo_number
+        try {
+          // Use a lightweight check: try to find the row by wo_number
+          const sheets = createSheetsClient(accessToken);
+          const allDataResponse = await sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range: `${MAIN_SHEET_NAME}!A:Z`, // Get first 26 columns
+          });
           
-          if (woColIndex !== -1) {
-            const normalizedTarget = workOrderNumber.trim();
-            for (let i = 1; i < rows.length; i++) {
-              const row = rows[i];
-              const cellValue = (row?.[woColIndex] || "").trim();
-              if (cellValue && cellValue === normalizedTarget) {
-                workOrderExists = true;
-                
-                // Check if already signed
-                const status = statusColIndex !== -1 ? (row[statusColIndex] || "").trim().toUpperCase() : "";
-                const signedPdfUrl = signedPdfColIndex !== -1 ? (row[signedPdfColIndex] || "").trim() : "";
-                const isSigned = status === "SIGNED" || signedPdfUrl !== "";
-                
-                if (isSigned && params.extractionResult && params.extractionResult.confidence >= 0.80) {
-                  workOrderAlreadySigned = true;
+          const rows = allDataResponse.data.values || [];
+          if (rows.length > 0) {
+            const headers = rows[0] as string[];
+            const headersLower = headers.map((h) => h.toLowerCase().trim());
+            const woColIndex = headersLower.indexOf("wo_number");
+            const statusColIndex = headersLower.indexOf("status");
+            const signedPdfColIndex = headersLower.indexOf("signed_pdf_url");
+            
+            if (woColIndex !== -1) {
+              const normalizedTarget = workOrderNumber.trim();
+              for (let i = 1; i < rows.length; i++) {
+                const row = rows[i];
+                const cellValue = (row?.[woColIndex] || "").trim();
+                if (cellValue && cellValue === normalizedTarget) {
+                  workOrderExists = true;
+                  
+                  // Check if already signed
+                  const status = statusColIndex !== -1 ? (row[statusColIndex] || "").trim().toUpperCase() : "";
+                  const signedPdfUrl = signedPdfColIndex !== -1 ? (row[signedPdfColIndex] || "").trim() : "";
+                  const isSigned = status === "SIGNED" || signedPdfUrl !== "";
+                  
+                  if (isSigned && params.extractionResult && params.extractionResult.confidence >= 0.80) {
+                    workOrderAlreadySigned = true;
+                  }
+                  break;
                 }
-                break;
               }
             }
           }
+        } catch (error) {
+          // Non-fatal: if we can't check Sheet1, assume it doesn't exist
+          console.warn("[Signed Processor] Could not check Sheet1 for work order existence:", error);
         }
-      } catch (error) {
-        // Non-fatal: if we can't check Sheet1, assume it doesn't exist
-        console.warn("[Signed Processor] Could not check Sheet1 for work order existence:", error);
       }
     }
   }
 
+  // Log instrumentation
+  console.log("[Signed Processor] Lookup summary:", {
+    dbLookupEnabled,
+    dbLookupUsed,
+    dbMatchFound: !!dbWorkOrderId,
+    fallbackUsed,
+    workOrderExists,
+    workOrderAlreadySigned,
+  });
+
   // Decide needsReview:
   // - If work order already signed with high confidence extraction → blocked (already processed)
+  // - If work order already has a signed_match (1:1 constraint) → needs review with SIGNED_ALREADY_ATTACHED
   // - If no work order number OR low confidence → needs review
   // - If work order number but work order doesn't exist in sheets → needs review (original work order not found)
   // - If work order exists and (high/medium confidence OR override) → no review needed
   if (workOrderAlreadySigned) {
+    // Check if it's because of 1:1 constraint (already has signed_match)
+    let needsReviewReason = "Work order already processed (already signed)";
+    let shouldNeedsReview = false;
+    
+    if (dbWorkOrderId) {
+      // Check if it's specifically because of signed_match constraint
+      const [existingMatch] = await db
+        .select()
+        .from(signed_match)
+        .where(eq(signed_match.work_order_id, dbWorkOrderId))
+        .limit(1);
+      
+      if (existingMatch) {
+        needsReviewReason = "SIGNED_ALREADY_ATTACHED";
+        shouldNeedsReview = true; // Route to NEEDS_REVIEW when 1:1 constraint prevents attachment
+        console.log("[Signed Processor] Work order already has signed document attached (1:1 constraint enforced)");
+      }
+    }
+    
     // Work order already processed - return early without updating
     return {
       workOrderNumber,
@@ -353,8 +487,8 @@ export async function processSignedPdfUnified(
       snippetUrl: null,
       signedPdfUrl: null,
       normalized: null,
-      needsReview: false, // Not needs review, but blocked
-      needsReviewReason: "Work order already processed (already signed)",
+      needsReview: shouldNeedsReview, // Needs review if 1:1 constraint blocked it
+      needsReviewReason: needsReviewReason as any,
       alreadyProcessed: true,
       sheetRowId: null,
       debug: {
@@ -544,6 +678,14 @@ export async function processSignedPdfUnified(
   // Step 6: Return standardized result
   // snippetUrl: prefer snippetDriveUrl (uploaded to Drive), fall back to snippetImageUrl (data URL from OCR)
   const snippetUrl = snippetDriveUrl || ocrResult.snippetImageUrl || null;
+
+  // Log snippet URLs prominently for visual verification
+  console.log("📸 [Signed Processor] FINAL SNIPPET URLs (what OCR captured):", {
+    snippetImageUrl: ocrResult.snippetImageUrl ? `${ocrResult.snippetImageUrl.substring(0, 100)}...` : null,
+    snippetDriveUrl: snippetDriveUrl || null,
+    snippetUrl: snippetUrl || null,
+    note: "Open snippetUrl in browser to see what region was cropped by OCR",
+  });
 
   return {
     workOrderNumber,

@@ -43,6 +43,8 @@ export default function WorkOrdersList() {
 
         const data = await response.json();
         setWorkOrders(data.workOrders || []);
+        setDataSource(data.dataSource || "LEGACY");
+        setFallbackUsed(data.fallbackUsed || false);
       } catch (err) {
         console.error("Error fetching work orders:", err);
         setError(err instanceof Error ? err.message : "Failed to load work orders");
@@ -135,10 +137,30 @@ export default function WorkOrdersList() {
         <div className="max-w-6xl mx-auto px-4 pb-8">
           {/* Header */}
           <div className="mb-6">
-            <h1 className="text-2xl font-semibold text-white mb-2">Work Orders</h1>
-            <p className="text-sm text-gray-400">
-              One row per work order. Data is synced from Google Sheets (Work_Orders tab).
-            </p>
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-2xl font-semibold text-white mb-2">Work Orders</h1>
+                <p className="text-sm text-gray-400">
+                  One row per work order. Data is synced from Google Sheets (Work_Orders tab).
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`px-3 py-1 rounded-full text-xs font-medium ${
+                    dataSource === "DB"
+                      ? "bg-green-900/30 text-green-300 border border-green-700"
+                      : "bg-gray-800 text-gray-300 border border-gray-700"
+                  }`}
+                >
+                  Data Source: {dataSource}
+                </span>
+                {fallbackUsed && (
+                  <span className="px-3 py-1 rounded-full text-xs font-medium bg-orange-900/30 text-orange-300 border border-orange-700">
+                    DB unavailable — showing Legacy
+                  </span>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* Filters and Search */}
