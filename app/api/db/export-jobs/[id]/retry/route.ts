@@ -1,6 +1,6 @@
 // app/api/db/export-jobs/[id]/retry/route.ts
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/auth";
+import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getWorkspaceIdForUser } from "@/lib/db/utils/getWorkspaceId";
 import { retryExportJob } from "@/lib/db/services/exportJobs";
 
@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 
 export async function POST(
   request: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const user = await getCurrentUser();
@@ -24,7 +24,8 @@ export async function POST(
       );
     }
 
-    const exportJobId = params.id;
+    const { id } = await params;
+    const exportJobId = id;
 
     try {
       await retryExportJob(workspaceId, exportJobId);

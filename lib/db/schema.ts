@@ -17,10 +17,19 @@ import {
 // ============================================
 export const workspaces = pgTable("workspaces", {
   id: text("id").primaryKey(),
-  spreadsheet_id: text("spreadsheet_id").notNull(),
-  drive_folder_id: text("drive_folder_id"),
+  spreadsheet_id: text("spreadsheet_id"), // Nullable - only set if export_enabled=true
+  drive_folder_id: text("drive_folder_id").notNull(), // Required - where PDFs are stored
   name: text("name"),
-  primary_read_source: text("primary_read_source").default("LEGACY"), // 'LEGACY' | 'DB'
+  primary_read_source: text("primary_read_source").default("DB"), // 'LEGACY' | 'DB' - default to DB for new workspaces
+  // Gmail labels
+  gmail_base_label_name: text("gmail_base_label_name"), // Base label name (e.g., "Work Orders")
+  gmail_base_label_id: text("gmail_base_label_id"), // Base label ID
+  gmail_queue_label_id: text("gmail_queue_label_id"), // Queue label ID (for work orders)
+  gmail_signed_label_id: text("gmail_signed_label_id"), // Signed label ID
+  gmail_processed_label_id: text("gmail_processed_label_id"), // Processed label ID (optional)
+  // Onboarding & export
+  onboarding_completed_at: timestamp("onboarding_completed_at", { withTimezone: true }),
+  export_enabled: boolean("export_enabled").default(false), // Whether Sheets export is enabled
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow(),
   updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });

@@ -9,31 +9,131 @@ type FmProfile = {
   fmKey: string;
   senderDomains: string;
   subjectKeywords: string;
+  hasCoordinates?: boolean; // Whether this profile has template coordinates set
+  isExisting?: boolean; // Whether this profile was loaded from DB (vs newly created)
 };
 
 export default function OnboardingFmProfilesPage() {
   const router = useRouter();
   const { status } = useSession();
   const [profiles, setProfiles] = useState<FmProfile[]>([
-    { fmKey: "", senderDomains: "", subjectKeywords: "" },
+    { fmKey: "", senderDomains: "", subjectKeywords: "", isExisting: false },
   ]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
 
-  // Gate all API calls on auth status
+  // Load existing profiles on mount
   useEffect(() => {
     if (status !== "authenticated") return;
-    // Any GET requests for loading data would go here
-    // Currently no GET requests, but this prevents future issues
+    loadExistingProfiles();
   }, [status]);
 
-  const addProfile = () => {
-    setProfiles([...profiles, { fmKey: "", senderDomains: "", subjectKeywords: "" }]);
+  const loadExistingProfiles = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch("/api/onboarding/fm-profiles");
+      if (response.ok) {
+        const data = await response.json();
+        const existingProfiles = (data.profiles || []).map((p: any) => ({
+          fmKey: p.fmKey || "",
+          senderDomains: Array.isArray(p.senderDomains) ? p.senderDomains.join(", ") : "",
+          subjectKeywords: "", // Not stored in DB yet
+          hasCoordinates: p.completeness?.hasWoNumberRegion || false,
+          isExisting: true, // Mark as existing profile from DB
+        }));
+        
+        if (existingProfiles.length > 0) {
+          setProfiles(existingProfiles);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load existing profiles:", err);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const removeProfile = (index: number) => {
-    if (profiles.length > 1) {
-      setProfiles(profiles.filter((_, i) => i !== index));
+  const addProfile = () => {
+    setProfiles([...profiles, { fmKey: "", senderDomains: "", subjectKeywords: "", isExisting: false }]);
+  };
+
+  const removeProfile = async (index: number) => {
+    const profile = profiles[index];
+    if (!profile.fmKey.trim()) {
+      // Just remove from local state if no fmKey
+      if (profiles.length > 1) {
+        setProfiles(profiles.filter((_, i) => i !== index));
+      }
+      return;
+    }
+
+    // Delete from server
+    try {
+      const response = await fetch(`/api/onboarding/fm-profiles?fmKey=${encodeURIComponent(profile.fmKey)}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to delete profile");
+      }
+
+      // Remove from local state
+      if (profiles.length > 1) {
+        setProfiles(profiles.filter((_, i) => i !== index));
+      } else {
+        // If it's the last one, reset to empty
+        setProfiles([{ fmKey: "", senderDomains: "", subjectKeywords: "", isExisting: false }]);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete profile");
+    }
+  };
+
+  const handleEdit = async (index: number) => {
+    const profile = profiles[index];
+    if (!profile.fmKey.trim()) {
+      setError("FM Key is required");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/onboarding/fm-profiles", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fmKey: profile.fmKey.trim(),
+          senderDomains: profile.senderDomains
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+          subjectKeywords: profile.subjectKeywords
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to update profile");
+      }
+
+      setEditingIndex(null);
+      // Mark as existing after successful save
+      const updated = [...profiles];
+      updated[index] = { ...updated[index], isExisting: true };
+      setProfiles(updated);
+      await loadExistingProfiles(); // Reload to get updated data
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update profile");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -90,6 +190,14 @@ export default function OnboardingFmProfilesPage() {
         throw new Error(data.error || "Failed to save FM profiles");
       }
 
+      // Mark all saved profiles as existing
+      const updated = profiles.map((p) => 
+        validProfiles.some(vp => vp.fmKey.trim() === p.fmKey.trim()) 
+          ? { ...p, isExisting: true }
+          : p
+      );
+      setProfiles(updated);
+
       setIsSubmitting(false);
       router.push(ROUTES.onboardingTemplates);
     } catch (err) {
@@ -98,8 +206,8 @@ export default function OnboardingFmProfilesPage() {
     }
   };
 
-  // Show loading state while checking auth
-  if (status === "loading") {
+  // Show loading state while checking auth or loading profiles
+  if (status === "loading" || isLoading) {
     return (
       <div className="min-h-screen bg-slate-900 text-slate-50 p-8">
         <div className="max-w-4xl mx-auto">
@@ -141,18 +249,65 @@ export default function OnboardingFmProfilesPage() {
               className="p-6 bg-slate-800/50 border border-slate-700 rounded-lg space-y-4"
             >
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-medium text-slate-200">
-                  Profile {index + 1}
-                </h2>
-                {profiles.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => removeProfile(index)}
-                    className="text-sm text-red-400 hover:text-red-300 transition-colors"
-                  >
-                    Remove
-                  </button>
-                )}
+                <div className="flex items-center gap-3">
+                  <h2 className="text-lg font-medium text-slate-200">
+                    Profile {index + 1}
+                  </h2>
+                  {profile.hasCoordinates && (
+                    <span className="px-2 py-1 text-xs bg-green-900/30 text-green-300 rounded border border-green-700">
+                      ✓ Coordinates Set
+                    </span>
+                  )}
+                  {!profile.hasCoordinates && profile.fmKey.trim() && (
+                    <span className="px-2 py-1 text-xs bg-yellow-900/30 text-yellow-300 rounded border border-yellow-700">
+                      ⚠ No Coordinates
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {profile.isExisting && editingIndex !== index && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setEditingIndex(index)}
+                        className="text-sm text-sky-400 hover:text-sky-300 transition-colors"
+                      >
+                        Edit
+                      </button>
+                    </>
+                  )}
+                  {profile.isExisting && editingIndex === index && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleEdit(index)}
+                        disabled={isSubmitting}
+                        className="text-sm text-green-400 hover:text-green-300 transition-colors disabled:opacity-50"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingIndex(null);
+                          loadExistingProfiles(); // Reload to reset changes
+                        }}
+                        className="text-sm text-slate-400 hover:text-slate-300 transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
+                  {(profiles.length > 1 || profile.fmKey.trim()) && (
+                    <button
+                      type="button"
+                      onClick={() => removeProfile(index)}
+                      className="text-sm text-red-400 hover:text-red-300 transition-colors"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div>
@@ -170,6 +325,7 @@ export default function OnboardingFmProfilesPage() {
                   placeholder="e.g., servicemaster, workorder"
                   className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-500"
                   required={index === 0}
+                  disabled={profile.isExisting && editingIndex !== index}
                 />
                 <p className="mt-2 text-sm text-slate-400">
                   Unique identifier for this FM platform (lowercase, no spaces)
@@ -191,7 +347,8 @@ export default function OnboardingFmProfilesPage() {
                     updateProfile(index, "senderDomains", e.target.value)
                   }
                   placeholder="e.g., servicemaster.com, workorder.com"
-                  className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-500 disabled:opacity-50"
+                  disabled={profile.isExisting && editingIndex !== index}
                 />
                 <p className="mt-2 text-sm text-slate-400">
                   Email domains that send work orders (optional)
@@ -213,7 +370,8 @@ export default function OnboardingFmProfilesPage() {
                     updateProfile(index, "subjectKeywords", e.target.value)
                   }
                   placeholder="e.g., work order, service request"
-                  className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-500 disabled:opacity-50"
+                  disabled={profile.isExisting && editingIndex !== index}
                 />
                 <p className="mt-2 text-sm text-slate-400">
                   Keywords to look for in email subjects (optional)

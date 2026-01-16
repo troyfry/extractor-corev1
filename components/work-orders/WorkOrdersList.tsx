@@ -13,48 +13,60 @@ export default function WorkOrdersList() {
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [filter, setFilter] = useState<FilterType>("all");
+  const [dataSource, setDataSource] = useState<"DB" | "LEGACY">("LEGACY");
+  const [fallbackUsed, setFallbackUsed] = useState(false);
   const router = useRouter();
 
-  useEffect(() => {
-    async function fetchWorkOrders() {
-      try {
-        setLoading(true);
-        const response = await fetch("/api/work-orders");
+  const fetchWorkOrders = React.useCallback(async () => {
+    try {
+      setLoading(true);
+      const response = await fetch("/api/work-orders");
+      
+      if (!response.ok) {
+        if (response.status === 401) {
+          setError("Please sign in to view work orders");
+          return;
+        }
         
-        if (!response.ok) {
-          if (response.status === 401) {
-            setError("Please sign in to view work orders");
+        // Check if workspace is not configured (needs onboarding)
+        if (response.status === 404) {
+          const data = await response.json().catch(() => ({}));
+          if (data.needsOnboarding) {
+            // Redirect to onboarding
+            router.push("/onboarding");
             return;
           }
-          
-          // Check if workspace is not configured (needs onboarding)
-          if (response.status === 404) {
-            const data = await response.json().catch(() => ({}));
-            if (data.needsOnboarding) {
-              // Redirect to onboarding
-              router.push("/onboarding");
-              return;
-            }
-          }
-          
-          const errorData = await response.json().catch(() => ({ error: "Failed to fetch work orders" }));
-          throw new Error(errorData.error || "Failed to fetch work orders");
         }
-
-        const data = await response.json();
-        setWorkOrders(data.workOrders || []);
-        setDataSource(data.dataSource || "LEGACY");
-        setFallbackUsed(data.fallbackUsed || false);
-      } catch (err) {
-        console.error("Error fetching work orders:", err);
-        setError(err instanceof Error ? err.message : "Failed to load work orders");
-      } finally {
-        setLoading(false);
+        
+        const errorData = await response.json().catch(() => ({ error: "Failed to fetch work orders" }));
+        throw new Error(errorData.error || "Failed to fetch work orders");
       }
-    }
 
-    fetchWorkOrders();
+      const data = await response.json();
+      
+      // Check if this is a DB error response
+      if (data.error && data.code === "DB_UNAVAILABLE") {
+        setError(`Database unavailable: ${data.error}`);
+        setWorkOrders([]);
+        setDataSource("DB");
+        setFallbackUsed(false);
+        return;
+      }
+      
+      setWorkOrders(data.workOrders || []);
+      setDataSource(data.dataSource || "LEGACY");
+      setFallbackUsed(data.fallbackUsed || false);
+    } catch (err) {
+      console.error("Error fetching work orders:", err);
+      setError(err instanceof Error ? err.message : "Failed to load work orders");
+    } finally {
+      setLoading(false);
+    }
   }, [router]);
+
+  useEffect(() => {
+    fetchWorkOrders();
+  }, [fetchWorkOrders]);
 
   // Filter and search work orders
   const filteredWorkOrders = useMemo(() => {
@@ -110,15 +122,33 @@ export default function WorkOrdersList() {
   }
 
   if (error) {
+    const isDbError = error.includes("Database unavailable") || error.includes("DB_UNAVAILABLE");
+    
     return (
       <>
         <MainNavigation currentMode="work-orders" />
         <div className="min-h-screen bg-gray-900 text-white pt-8">
           <div className="max-w-6xl mx-auto px-4">
             <div className="text-center py-12">
-              <p className="text-red-400 mb-4">{error}</p>
+              <div className="mb-4">
+                {isDbError ? (
+                  <>
+                    <div className="text-4xl mb-2">⚠️</div>
+                    <p className="text-red-400 text-lg font-semibold mb-2">Database Unavailable</p>
+                    <p className="text-gray-400 text-sm">
+                      The database is currently unavailable. Please try again in a moment.
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-red-400 mb-4">{error}</p>
+                )}
+              </div>
               <button
-                onClick={() => window.location.reload()}
+                onClick={() => {
+                  setError(null);
+                  setLoading(true);
+                  fetchWorkOrders();
+                }}
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
               >
                 Retry
@@ -154,7 +184,8 @@ export default function WorkOrdersList() {
                 >
                   Data Source: {dataSource}
                 </span>
-                {fallbackUsed && (
+                {/* Only show fallback warning in rollout mode (not strict mode) */}
+                {fallbackUsed && dataSource === "LEGACY" && (
                   <span className="px-3 py-1 rounded-full text-xs font-medium bg-orange-900/30 text-orange-300 border border-orange-700">
                     DB unavailable — showing Legacy
                   </span>

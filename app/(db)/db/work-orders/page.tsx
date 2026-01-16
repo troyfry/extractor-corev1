@@ -36,6 +36,22 @@ function ParityTool() {
     onlyInDb: Array<{ workOrderNumber: string; fmKey: string | null }>;
     onlyInLegacy: Array<{ workOrderNumber: string; fmKey: string | null }>;
     differences: number;
+    fieldDrifts?: {
+      counts: {
+        status: number;
+        signed_at_presence: number;
+        amount: number;
+        scheduled_date: number;
+      };
+      totalMismatches: number;
+      sample: Array<{
+        workOrderNumber: string;
+        fmKey: string | null;
+        field: string;
+        dbValue: string | null;
+        legacyValue: string | null;
+      }>;
+    };
   } | null>(null);
 
   const handleCompare = async () => {
@@ -301,7 +317,11 @@ export default function DbWorkOrdersPage() {
         </div>
         {primaryReadSource === "DB" && (
           <div className="mt-2 p-2 bg-blue-50 border border-blue-200 rounded text-sm text-blue-700">
-            ℹ️ DB reads are enabled. Legacy remains as fallback if DB is unavailable.
+            {process.env.NEXT_PUBLIC_DB_STRICT_MODE === "true" ? (
+              <>🔒 DB Native Mode: No legacy fallback. DB is the only source of truth.</>
+            ) : (
+              <>ℹ️ DB reads are enabled. Legacy remains as fallback if DB is unavailable.</>
+            )}
           </div>
         )}
       </div>

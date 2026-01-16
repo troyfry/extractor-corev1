@@ -313,7 +313,7 @@ export async function callSignedOcrService(
     confidenceType: typeof data.confidence,
     rawTextLength: data.rawText?.length || 0,
     rawText: data.rawText, // Show FULL raw text to see what OCR actually read
-    rawTextPreview: data.rawText?.substring(0, 200),
+    rawTextPreview: data.rawText ? data.rawText.substring(0, 200) : null,
     hasSnippetImageUrl: !!data.snippetImageUrl,
     hasCropDebug: !!data.cropDebug,
     cropDebug: data.cropDebug, // Show normalization info

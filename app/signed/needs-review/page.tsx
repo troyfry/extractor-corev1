@@ -13,6 +13,7 @@ type NeedsReviewItem = {
   fmKey: string | null;
   signed_pdf_url: string | null;
   preview_image_url: string | null;
+  snippet_url?: string | null; // Snippet image URL
   raw_text: string | null;
   confidence: string | null;
   reason: string | null;
@@ -66,7 +67,11 @@ export default function NeedsReviewPage() {
       setError(null);
       const response = await fetch("/api/signed/needs-review");
       if (!response.ok) {
-        throw new Error("Failed to load verification items");
+        const errorData = await response.json().catch(() => ({ error: "Failed to load verification items" }));
+        if (errorData.code === "DB_UNAVAILABLE") {
+          throw new Error(`Database unavailable: ${errorData.error || "Service temporarily unavailable"}`);
+        }
+        throw new Error(errorData.error || "Failed to load verification items");
       }
       const data = await response.json();
       const items = data.items || [];
@@ -121,6 +126,9 @@ export default function NeedsReviewPage() {
 
       if (!response.ok) {
         const data = await response.json();
+        if (response.status === 410 && data.code === "LEGACY_DISABLED") {
+          throw new Error("Legacy write endpoint disabled. This workspace is using DB Native Mode. Please contact support.");
+        }
         throw new Error(data.error || "Failed to resolve");
       }
 
@@ -166,6 +174,55 @@ export default function NeedsReviewPage() {
     );
   }
 
+  if (error) {
+    const isDbError = error.includes("Database unavailable") || error.includes("DB_UNAVAILABLE");
+    
+    return (
+      <AppShell>
+        <MainNavigation currentMode="signed" />
+        <div className="min-h-screen bg-gray-900 text-white pt-8">
+          <div className="max-w-6xl mx-auto px-4">
+            <div className="text-center py-12">
+              {isDbError ? (
+                <>
+                  <div className="text-4xl mb-2">⚠️</div>
+                  <p className="text-red-400 text-lg font-semibold mb-2">Database Unavailable</p>
+                  <p className="text-gray-400 text-sm mb-4">
+                    The database is currently unavailable. Please try again in a moment.
+                  </p>
+                  <button
+                    onClick={() => {
+                      setError(null);
+                      setLoading(true);
+                      loadItems();
+                    }}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+                  >
+                    Retry
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="text-red-400 mb-4">{error}</p>
+                  <button
+                    onClick={() => {
+                      setError(null);
+                      setLoading(true);
+                      loadItems();
+                    }}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+                  >
+                    Retry
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </AppShell>
+    );
+  }
+
   const filteredItems = items.filter((i) => {
     if (filterFmKey && i.fmKey !== filterFmKey) return false;
     if (filterReason && i.reason !== filterReason) return false;
@@ -203,12 +260,6 @@ export default function NeedsReviewPage() {
               </div>
             </div>
           </div>
-
-          {error && (
-            <div className="mb-4 p-4 bg-red-900/30 border border-red-700 rounded text-red-300">
-              {error}
-            </div>
-          )}
 
           {items.length === 0 ? (
             <div className="p-8 bg-gray-800 rounded border border-gray-700 text-center">
@@ -305,6 +356,25 @@ export default function NeedsReviewPage() {
                                   {item.extraction_rationale && (
                                     <div className="text-gray-500 mt-1 italic">
                                       {item.extraction_rationale}
+                                    </div>
+                                  )}
+                                  {/* Snippet Preview */}
+                                  {(item.snippet_url || item.preview_image_url) && (
+                                    <div className="mt-3 pt-2 border-t border-gray-700">
+                                      <div className="text-xs font-semibold text-gray-400 mb-2">Snippet Preview:</div>
+                                      <img
+                                        src={item.snippet_url || item.preview_image_url || ""}
+                                        alt="Extraction snippet"
+                                        className="max-w-xs h-auto border border-gray-600 rounded object-contain bg-white"
+                                        style={{ maxHeight: "120px" }}
+                                        onError={(e) => {
+                                          e.currentTarget.style.display = "none";
+                                          const parent = e.currentTarget.parentElement;
+                                          if (parent) {
+                                            parent.innerHTML = '<span class="text-gray-500 text-xs">Snippet unavailable</span>';
+                                          }
+                                        }}
+                                      />
                                     </div>
                                   )}
                                 </div>

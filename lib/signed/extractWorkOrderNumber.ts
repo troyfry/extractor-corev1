@@ -124,9 +124,12 @@ export async function extractWorkOrderNumber(
           snippetImageUrl: ocrResult.snippetImageUrl, // Show snippet image URL to visually verify what was captured
         });
         
-        // Log snippet URL prominently for visual verification
+        // Log snippet URL (just URL, not content)
         if (ocrResult.snippetImageUrl) {
-          console.log("📸 [Extract WO] SNIPPET IMAGE URL (what OCR captured):", ocrResult.snippetImageUrl);
+          const urlDisplay = ocrResult.snippetImageUrl.startsWith("data:") 
+            ? "data:image/png;base64..." 
+            : ocrResult.snippetImageUrl;
+          console.log("📸 [Extract WO] OCR snippet URL:", urlDisplay);
         } else {
           console.warn("⚠️ [Extract WO] No snippet image URL returned from OCR service");
         }
@@ -154,11 +157,15 @@ export async function extractWorkOrderNumber(
     }
   }
 
-  // Prefer cropped OCR text over full PDF text (more accurate)
-  const textToUse = croppedOcrText || digitalText;
-
-  if (!textToUse && pdfBuffer && !croppedOcrText) {
-    // Only extract full PDF text if we don't have cropped OCR text
+  // CRITICAL: If OCR config is available (FM coordinates), ONLY use cropped OCR text
+  // Never extract from full PDF text when coordinates are available - this prevents PO box extraction
+  if (ocrConfig && !croppedOcrText) {
+    // OCR config exists but we don't have cropped text yet - this means OCR failed
+    // Don't fall back to full PDF text extraction - it will extract PO boxes and addresses
+    console.warn("[Extract WO] OCR config available but cropped text extraction failed - NOT using full PDF text to avoid PO box extraction");
+    digitalText = ""; // Clear digital text to prevent fallback
+  } else if (!ocrConfig && pdfBuffer && !digitalText) {
+    // Only extract full PDF text if NO OCR config is available (no FM coordinates)
     try {
       digitalText = await extractTextFromPdfBuffer(pdfBuffer);
     } catch (error) {
@@ -169,7 +176,8 @@ export async function extractWorkOrderNumber(
     }
   }
 
-  const finalText = croppedOcrText || digitalText;
+  // Prefer cropped OCR text - if OCR config exists, ONLY use cropped text
+  const finalText = croppedOcrText || (ocrConfig ? "" : digitalText); // If ocrConfig exists but no cropped text, use empty string
   
   // Log what text we're working with
   console.log("[Extract WO] Text available for extraction:", {

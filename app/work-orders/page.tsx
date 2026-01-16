@@ -23,12 +23,15 @@ export default async function WorkOrdersPage() {
     const cookieStore = await cookies();
     const wsCookies = readWorkspaceCookies(cookieStore);
     
-    // If no workspace found and no cookies indicate workspace was ready, redirect to onboarding
-    const isWorkspaceReady = wsCookies.workspaceReady === "true" && wsCookies.spreadsheetId;
+    // DB-native: Check for workspaceId cookie (doesn't require spreadsheetId)
+    // Legacy: Check for spreadsheetId cookie
+    const isWorkspaceReady = wsCookies.workspaceReady === "true" && 
+                            (wsCookies.workspaceId || wsCookies.spreadsheetId);
     
     if (!isWorkspaceReady) {
       console.log("[Work Orders Page] No workspace found - redirecting to onboarding", {
         workspaceReady: wsCookies.workspaceReady,
+        hasWorkspaceId: !!wsCookies.workspaceId,
         hasSpreadsheetId: !!wsCookies.spreadsheetId,
       });
       redirect(ROUTES.onboarding);

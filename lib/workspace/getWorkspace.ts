@@ -18,6 +18,7 @@ import { getUserRowById } from "@/lib/onboarding/usersSheet";
 import { getUserSpreadsheetId } from "@/lib/userSettings/repository";
 import { readWorkspaceCookies, validateWorkspaceVersion } from "./workspaceCookies";
 import type { UserWorkspace } from "./types";
+import { getWorkspaceById } from "@/lib/db/services/workspace";
 
 export type WorkspaceResult = {
   workspace: UserWorkspace;
@@ -43,11 +44,43 @@ export async function getWorkspace(): Promise<WorkspaceResult> {
   // 1️⃣ Fast path — cookies (zero API calls)
   const wsCookies = readWorkspaceCookies(cookieStore);
   
-  // Validate workspace version (if present)
-  if (!validateWorkspaceVersion(cookieStore)) {
-    console.log("[Workspace] Cookie version mismatch - will reload from Users Sheet");
-    // Fall through to Users Sheet load
-  } else if (wsCookies.spreadsheetId && wsCookies.onboardingCompleted === "true") {
+  // 1a. DB-native path: Check for workspaceId cookie first
+  if (wsCookies.workspaceId) {
+    try {
+      const dbWorkspace = await getWorkspaceById(wsCookies.workspaceId);
+      if (dbWorkspace) {
+        // Validate workspace version (if present)
+        if (!validateWorkspaceVersion(cookieStore)) {
+          console.log("[Workspace] Cookie version mismatch - will reload from DB");
+          // Still return DB workspace, but caller might want to refresh cookies
+        }
+        
+        // Construct UserWorkspace from DB workspace
+        return {
+          workspace: {
+            userId: user.userId,
+            email: user.email || "",
+            spreadsheetId: dbWorkspace.spreadsheet_id || "", // May be null if export disabled
+            mainSheetName: "Sheet1", // Default
+            workOrdersSheetName: "Work_Orders", // Default
+            templatesSheetName: "Templates", // Default
+            driveSignedFolderId: dbWorkspace.drive_folder_id,
+            driveSnippetsFolderId: dbWorkspace.drive_folder_id, // Default to same folder
+            onboardingCompleted: !!dbWorkspace.onboarding_completed_at,
+            createdAt: dbWorkspace.created_at?.toISOString() || new Date().toISOString(),
+            updatedAt: dbWorkspace.updated_at?.toISOString() || new Date().toISOString(),
+          },
+          source: "cookie", // Loaded from cookie (workspaceId), but data is from DB
+        };
+      }
+    } catch (error) {
+      console.error("[Workspace] Error loading workspace from DB:", error);
+      // Fall through to legacy path
+    }
+  }
+  
+  // 1b. Legacy cookie path: Check for spreadsheetId cookie
+  if (validateWorkspaceVersion(cookieStore) && wsCookies.spreadsheetId && wsCookies.onboardingCompleted === "true") {
     // We have valid cookies, construct workspace from cookies
     // Note: We don't have all fields in cookies, so we use defaults for missing ones
     return {

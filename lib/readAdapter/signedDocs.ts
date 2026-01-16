@@ -19,7 +19,7 @@ export interface UnifiedSignedDoc {
 }
 
 export interface ListSignedDocsUnifiedParams {
-  decision?: "MATCHED" | "UNMATCHED";
+  decision?: "MATCHED" | "UNMATCHED" | "NEEDS_REVIEW" | "ALREADY_ATTACHED";
   search?: string;
   limit?: number;
   cursor?: string;
@@ -33,103 +33,60 @@ export interface ListSignedDocsUnifiedResult {
   fallbackUsed: boolean;
 }
 
-/**
- * Check if DB primary reads are enabled via feature flag.
- */
-function isDbPrimaryReadsEnabled(): boolean {
-  return process.env.DB_PRIMARY_READS === "true" || process.env.DB_PRIMARY_READS === "1";
-}
+import { isDbStrictMode, isDbNativeMode } from "./guardrails";
 
 /**
  * Unified signed docs list adapter.
- * Routes to DB or legacy based on feature flag + workspace setting.
- * Falls back to legacy if DB read fails.
+ * DB-only reads - no fallback to Sheets.
+ * Sheets is export-only.
  */
 export async function listSignedDocsUnified(
   params: ListSignedDocsUnifiedParams = {}
 ): Promise<ListSignedDocsUnifiedResult> {
   const { decision, search, limit, cursor } = params;
 
-  // Check feature flag
-  const dbPrimaryReadsEnabled = isDbPrimaryReadsEnabled();
-  
-  if (!dbPrimaryReadsEnabled) {
-    // Feature flag OFF - use legacy
-    return await listSignedDocsLegacy(params);
+  // Get workspace ID (required for DB reads)
+  const workspaceId = await getWorkspaceIdForUser();
+  if (!workspaceId) {
+    throw new Error("No workspace found. Please complete onboarding.");
   }
 
-  // Feature flag ON - check workspace setting
-  try {
-    const workspaceId = await getWorkspaceIdForUser();
-    if (!workspaceId) {
-      // No workspace - fallback to legacy
-      console.log("[Read Adapter Signed] No workspace found, using legacy");
-      return await listSignedDocsLegacy(params);
+  // Read from DB only - no fallback
+  const dbResult = await listSignedDocs(
+    workspaceId,
+    {
+      decision,
+      search,
+    },
+    {
+      limit,
+      cursor,
     }
+  );
 
-    const primaryReadSource = await getPrimaryReadSource(workspaceId);
-    
-    if (primaryReadSource !== "DB") {
-      // Workspace setting is LEGACY - use legacy
-      console.log("[Read Adapter Signed] Workspace primary_read_source is LEGACY, using legacy");
-      return await listSignedDocsLegacy(params);
-    }
+  // Map DB result to unified format
+  const unifiedItems: UnifiedSignedDoc[] = dbResult.items.map((doc) => ({
+    id: doc.id,
+    extractedWorkOrderNumber: doc.extracted_work_order_number,
+    extractionMethod: doc.extraction_method,
+    extractionConfidence: doc.extraction_confidence,
+    extractionRationale: doc.extraction_rationale,
+    signedPdfUrl: doc.signed_pdf_url,
+    signedPreviewImageUrl: doc.signed_preview_image_url,
+    fmKey: doc.fm_key,
+    matchedWorkOrderId: doc.matched_work_order_id,
+    matchedWorkOrderNumber: doc.matched_work_order_number,
+    decision: doc.decision,
+    createdAt: doc.created_at.toISOString(),
+  }));
 
-    // Workspace setting is DB - try DB read
-    try {
-      const dbResult = await listSignedDocs(
-        workspaceId,
-        {
-          decision,
-          search,
-        },
-        {
-          limit,
-          cursor,
-        }
-      );
-
-      // Map DB result to unified format
-      const unifiedItems: UnifiedSignedDoc[] = dbResult.items.map((doc) => ({
-        id: doc.id,
-        extractedWorkOrderNumber: doc.extracted_work_order_number,
-        extractionMethod: doc.extraction_method,
-        extractionConfidence: doc.extraction_confidence,
-        extractionRationale: doc.extraction_rationale,
-        signedPdfUrl: doc.signed_pdf_url,
-        signedPreviewImageUrl: doc.signed_preview_image_url,
-        fmKey: doc.fm_key,
-        matchedWorkOrderId: doc.matched_work_order_id,
-        matchedWorkOrderNumber: doc.matched_work_order_number,
-        decision: doc.decision,
-        createdAt: doc.created_at.toISOString(),
-      }));
-
-      return {
-        items: unifiedItems,
-        nextCursor: dbResult.nextCursor,
-        hasMore: dbResult.hasMore,
-        dataSource: "DB",
-        fallbackUsed: false,
-      };
-    } catch (dbError) {
-      // DB read failed - fallback to legacy
-      console.error("[Read Adapter Signed] DB read failed, falling back to legacy:", dbError);
-      const legacyResult = await listSignedDocsLegacy(params);
-      return {
-        ...legacyResult,
-        fallbackUsed: true, // Indicate that fallback was used
-      };
-    }
-  } catch (error) {
-    // Workspace lookup failed - fallback to legacy
-    console.error("[Read Adapter Signed] Workspace lookup failed, falling back to legacy:", error);
-    const legacyResult = await listSignedDocsLegacy(params);
-    return {
-      ...legacyResult,
-      fallbackUsed: true,
-    };
-  }
+  return {
+    items: unifiedItems,
+    nextCursor: dbResult.nextCursor,
+    hasMore: dbResult.hasMore,
+    dataSource: "DB",
+    fallbackUsed: false,
+  };
 }
 
 /**
@@ -140,7 +97,7 @@ async function listSignedDocsLegacy(
   params: ListSignedDocsUnifiedParams
 ): Promise<ListSignedDocsUnifiedResult> {
   // Import legacy service functions
-  const { getCurrentUser } = await import("@/auth");
+  const { getCurrentUser } = await import("@/lib/auth/currentUser");
   const { workspaceRequired } = await import("@/lib/workspace/workspaceRequired");
   const { createSheetsClient, formatSheetRange } = await import("@/lib/google/sheets");
 

@@ -1,6 +1,6 @@
 // app/api/db/work-orders/route.ts
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/auth";
+import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getWorkspaceIdForUser } from "@/lib/db/utils/getWorkspaceId";
 import { listWorkOrders } from "@/lib/db/services/workOrders";
 

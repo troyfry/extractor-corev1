@@ -93,6 +93,22 @@ export async function POST(req: Request) {
       fmKey: null, // Not matched in this flow
     }));
 
+    // Check if legacy writes should be blocked
+    const { shouldBlockLegacyWrites } = await import("@/lib/readAdapter/guardrails");
+    const blockWrites = await shouldBlockLegacyWrites();
+    
+    if (blockWrites) {
+      // In DB Native Mode, legacy writes are blocked
+      // Work orders should be created via DB endpoints
+      return NextResponse.json(
+        {
+          error: "Legacy write endpoint disabled. Please use DB endpoints.",
+          code: "LEGACY_DISABLED",
+        },
+        { status: 410 } // 410 Gone - indicates resource is no longer available
+      );
+    }
+
     // Write directly to Google Sheets (no PDFs in this route, so no Drive upload)
     const accessToken = user?.googleAccessToken || null;
     if (accessToken) {
@@ -246,6 +262,18 @@ export async function GET(request: Request) {
   } catch (error) {
     console.error("Error fetching work orders:", error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    
+    // Check if this is a DB error in strict mode
+    if (errorMessage.includes("Database unavailable")) {
+      return NextResponse.json(
+        { 
+          error: errorMessage,
+          code: "DB_UNAVAILABLE",
+        },
+        { status: 503 } // 503 Service Unavailable
+      );
+    }
+    
     return NextResponse.json(
       { 
         error: "Internal server error",

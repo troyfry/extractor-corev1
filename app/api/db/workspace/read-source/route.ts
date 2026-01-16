@@ -1,6 +1,6 @@
 // app/api/db/workspace/read-source/route.ts
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/auth";
+import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getWorkspaceIdForUser } from "@/lib/db/utils/getWorkspaceId";
 import { getPrimaryReadSource, setPrimaryReadSource } from "@/lib/db/services/workspace";
 
@@ -22,7 +22,12 @@ export async function GET() {
     }
 
     const source = await getPrimaryReadSource(workspaceId);
-    return NextResponse.json({ primaryReadSource: source });
+    const strictMode = process.env.DB_STRICT_MODE === "true" || process.env.DB_STRICT_MODE === "1";
+    
+    return NextResponse.json({ 
+      primaryReadSource: source,
+      strictMode,
+    });
   } catch (error) {
     console.error("[DB Workspace Read Source API] Error:", error);
     return NextResponse.json(

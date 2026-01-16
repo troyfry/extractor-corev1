@@ -81,57 +81,34 @@ export interface GetWorkOrderDetailUnifiedResult {
   fallbackUsed: boolean;
 }
 
-/**
- * Check if DB primary reads are enabled via feature flag.
- */
-function isDbPrimaryReadsEnabled(): boolean {
-  return process.env.DB_PRIMARY_READS === "true" || process.env.DB_PRIMARY_READS === "1";
-}
+import { isDbStrictMode, isDbNativeMode } from "./guardrails";
 
 /**
  * Unified work order detail adapter.
- * Routes to DB or legacy based on feature flag + workspace setting.
- * Falls back to legacy if DB read fails.
+ * DB-only reads - no fallback to Sheets.
+ * Sheets is export-only.
  */
 export async function getWorkOrderDetailUnified(
   params: GetWorkOrderDetailUnifiedParams
 ): Promise<GetWorkOrderDetailUnifiedResult> {
   const { id } = params;
 
-  // Check feature flag
-  const dbPrimaryReadsEnabled = isDbPrimaryReadsEnabled();
-  
-  if (!dbPrimaryReadsEnabled) {
-    // Feature flag OFF - use legacy
-    return await getWorkOrderDetailLegacy(id);
+  // Get workspace ID (required for DB reads)
+  const workspaceId = await getWorkspaceIdForUser();
+  if (!workspaceId) {
+    throw new Error("No workspace found. Please complete onboarding.");
   }
 
-  // Feature flag ON - check workspace setting
-  try {
-    const workspaceId = await getWorkspaceIdForUser();
-    if (!workspaceId) {
-      // No workspace - fallback to legacy
-      console.log("[Read Adapter Detail] No workspace found, using legacy");
-      return await getWorkOrderDetailLegacy(id);
-    }
+  // Read from DB only - no fallback
+  const dbWorkOrder = await getWorkOrderDetail(workspaceId, id);
 
-    const primaryReadSource = await getPrimaryReadSource(workspaceId);
-    
-    if (primaryReadSource !== "DB") {
-      // Workspace setting is LEGACY - use legacy
-      console.log("[Read Adapter Detail] Workspace primary_read_source is LEGACY, using legacy");
-      return await getWorkOrderDetailLegacy(id);
-    }
-
-    // Workspace setting is DB - try DB read
-    try {
-      const dbWorkOrder = await getWorkOrderDetail(workspaceId, id);
-
-      if (!dbWorkOrder) {
-        // Not found in DB - try legacy as fallback
-        console.log("[Read Adapter Detail] Work order not found in DB, trying legacy");
-        return await getWorkOrderDetailLegacy(id);
-      }
+  if (!dbWorkOrder) {
+    return {
+      workOrder: null,
+      dataSource: "DB",
+      fallbackUsed: false,
+    };
+  }
 
       // Map DB result to unified format
       const unified: UnifiedWorkOrderDetail = {
@@ -151,8 +128,9 @@ export async function getWorkOrderDetailUnified(
         status: dbWorkOrder.status,
         notes: dbWorkOrder.notes,
         workOrderPdfLink: dbWorkOrder.work_order_pdf_link,
-        signedPdfUrl: dbWorkOrder.signed_pdf_url,
-        signedPreviewImageUrl: dbWorkOrder.signed_preview_image_url,
+        signedPdfUrl: dbWorkOrder.signed_pdf_url || dbWorkOrder.signed_document?.signed_pdf_url || null,
+        // Prefer snippet from signed_document, fall back to work_order
+        signedPreviewImageUrl: dbWorkOrder.signed_document?.signed_preview_image_url || dbWorkOrder.signed_preview_image_url || null,
         signedAt: dbWorkOrder.signed_at?.toISOString() || null,
         createdAt: dbWorkOrder.created_at.toISOString(),
         updatedAt: dbWorkOrder.updated_at?.toISOString() || null,
@@ -201,29 +179,11 @@ export async function getWorkOrderDetailUnified(
         })),
       };
 
-      return {
-        workOrder: unified,
-        dataSource: "DB",
-        fallbackUsed: false,
-      };
-    } catch (dbError) {
-      // DB read failed - fallback to legacy
-      console.error("[Read Adapter Detail] DB read failed, falling back to legacy:", dbError);
-      const legacyResult = await getWorkOrderDetailLegacy(id);
-      return {
-        ...legacyResult,
-        fallbackUsed: true, // Indicate that fallback was used
-      };
-    }
-  } catch (error) {
-    // Workspace lookup failed - fallback to legacy
-    console.error("[Read Adapter Detail] Workspace lookup failed, falling back to legacy:", error);
-    const legacyResult = await getWorkOrderDetailLegacy(id);
-    return {
-      ...legacyResult,
-      fallbackUsed: true,
-    };
-  }
+  return {
+    workOrder: unified,
+    dataSource: "DB",
+    fallbackUsed: false,
+  };
 }
 
 /**
@@ -234,7 +194,7 @@ async function getWorkOrderDetailLegacy(
   id: string
 ): Promise<GetWorkOrderDetailUnifiedResult> {
   // Import legacy service functions
-  const { getCurrentUser } = await import("@/auth");
+  const { getCurrentUser } = await import("@/lib/auth/currentUser");
   const { workspaceRequired } = await import("@/lib/workspace/workspaceRequired");
   const { findWorkOrderRecordByJobId } = await import("@/lib/google/sheets");
 

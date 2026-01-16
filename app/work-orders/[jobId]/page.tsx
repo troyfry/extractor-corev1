@@ -38,6 +38,8 @@ export default function WorkOrderDetailPage() {
   const [workOrder, setWorkOrder] = useState<WorkOrder & { signedAt?: string | null; lastUpdatedAt?: string | null } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [dataSource, setDataSource] = useState<"DB" | "LEGACY">("LEGACY");
+  const [fallbackUsed, setFallbackUsed] = useState(false);
 
   useEffect(() => {
     if (jobId) {
@@ -52,9 +54,27 @@ export default function WorkOrderDetailPage() {
       const response = await fetch(`/api/work-orders/${jobId}`);
       if (response.ok) {
         const data = await response.json();
+        
+        // Check if this is a DB error response
+        if (data.error && data.code === "DB_UNAVAILABLE") {
+          setError(`Database unavailable: ${data.error}`);
+          setWorkOrder(null);
+          setDataSource("DB");
+          setFallbackUsed(false);
+          return;
+        }
+        
         setWorkOrder(data.workOrder);
         setDataSource(data.dataSource || "LEGACY");
         setFallbackUsed(data.fallbackUsed || false);
+        
+        // Debug: Log snippet URL availability
+        if (data.workOrder) {
+          console.log("[Work Order Detail] Snippet URL:", {
+            signedPreviewImageUrl: data.workOrder.signedPreviewImageUrl,
+            scheduledDate: data.workOrder.scheduledDate,
+          });
+        }
       } else if (response.status === 404) {
         setError("Work order not found");
       } else {
@@ -100,14 +120,38 @@ export default function WorkOrderDetailPage() {
   }
 
   if (error || !workOrder) {
+    const isDbError = error?.includes("Database unavailable") || error?.includes("DB_UNAVAILABLE");
+    
     return (
       <>
         <MainNavigation currentMode="work-orders" />
         <div className="min-h-screen bg-gray-900 text-white pt-8">
           <div className="max-w-4xl mx-auto px-4">
             <div className="bg-red-900/20 border border-red-700 rounded-lg p-6 text-red-200">
-              <h1 className="text-xl font-semibold mb-2">Work Order Not Found</h1>
-              <p className="mb-4">{error || "The work order you're looking for doesn't exist."}</p>
+              {isDbError ? (
+                <>
+                  <div className="text-4xl mb-2">⚠️</div>
+                  <h1 className="text-xl font-semibold mb-2">Database Unavailable</h1>
+                  <p className="mb-4">
+                    The database is currently unavailable. Please try again in a moment.
+                  </p>
+                  <button
+                    onClick={() => {
+                      setError(null);
+                      setIsLoading(true);
+                      loadWorkOrder();
+                    }}
+                    className="inline-block px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors mb-4 mr-4"
+                  >
+                    Retry
+                  </button>
+                </>
+              ) : (
+                <>
+                  <h1 className="text-xl font-semibold mb-2">Work Order Not Found</h1>
+                  <p className="mb-4">{error || "The work order you're looking for doesn't exist."}</p>
+                </>
+              )}
               <Link
                 href={ROUTES.workOrders}
                 className="inline-block px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors"
@@ -164,7 +208,8 @@ export default function WorkOrderDetailPage() {
                 >
                   Data Source: {dataSource}
                 </span>
-                {fallbackUsed && (
+                {/* Only show fallback warning in rollout mode (not strict mode) */}
+                {fallbackUsed && dataSource === "LEGACY" && (
                   <span className="px-3 py-1 rounded-full text-xs font-medium bg-orange-900/30 text-orange-300 border border-orange-700">
                     DB unavailable — showing Legacy
                   </span>
@@ -209,7 +254,8 @@ export default function WorkOrderDetailPage() {
                   <CopyButton text={workOrder.signedPdfUrl} label="Copy Signed PDF link" />
                 </div>
               )}
-              {previewImageUrl && (
+              {/* Snippet Preview - show if signed document exists */}
+              {(previewImageUrl || workOrder.signedPreviewImageUrl) && (
                 <div>
                   <span className="text-sm text-gray-400 block mb-2">Snippet Preview:</span>
                   <a
@@ -219,9 +265,9 @@ export default function WorkOrderDetailPage() {
                     className="inline-block"
                   >
                     <img
-                      src={previewImageUrl}
-                      alt={`WO ${workOrder.workOrderNumber} preview`}
-                      className="max-w-sm h-auto border border-gray-600 rounded max-h-32 object-contain bg-white"
+                      src={previewImageUrl || workOrder.signedPreviewImageUrl || ""}
+                      alt={`WO ${workOrder.workOrderNumber} snippet`}
+                      className="h-20 w-auto border border-gray-600 rounded object-contain bg-white cursor-pointer hover:opacity-80 transition-opacity"
                       onError={(e) => {
                         const originalUrl = workOrder.signedPreviewImageUrl;
                         if (originalUrl && e.currentTarget.src !== originalUrl) {
@@ -257,7 +303,38 @@ export default function WorkOrderDetailPage() {
                 <div className="flex justify-between">
                   <span className="text-gray-400">Scheduled:</span>
                   <span className="text-white">
-                    {new Date(workOrder.scheduledDate).toLocaleDateString()}
+                    {(() => {
+                      const dateStr = workOrder.scheduledDate.trim();
+                      if (!dateStr) return "-";
+                      
+                      // Try parsing as ISO date first
+                      let date = new Date(dateStr);
+                      if (!isNaN(date.getTime())) {
+                        return date.toLocaleDateString();
+                      }
+                      
+                      // Try parsing common date formats
+                      // Format: MM/DD/YYYY or M/D/YYYY
+                      const mmddyyyy = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+                      if (mmddyyyy) {
+                        date = new Date(parseInt(mmddyyyy[3]), parseInt(mmddyyyy[1]) - 1, parseInt(mmddyyyy[2]));
+                        if (!isNaN(date.getTime())) {
+                          return date.toLocaleDateString();
+                        }
+                      }
+                      
+                      // Format: YYYY-MM-DD
+                      const yyyymmdd = dateStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+                      if (yyyymmdd) {
+                        date = new Date(parseInt(yyyymmdd[1]), parseInt(yyyymmdd[2]) - 1, parseInt(yyyymmdd[3]));
+                        if (!isNaN(date.getTime())) {
+                          return date.toLocaleDateString();
+                        }
+                      }
+                      
+                      // If all parsing fails, return as-is
+                      return dateStr;
+                    })()}
                   </span>
                 </div>
               )}

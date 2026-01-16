@@ -1,6 +1,6 @@
 // app/api/db/export-jobs/route.ts
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/auth";
+import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getWorkspaceIdForUser } from "@/lib/db/utils/getWorkspaceId";
 import { listExportJobs } from "@/lib/db/services/exportJobs";
 

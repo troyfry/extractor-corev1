@@ -34,103 +34,60 @@ export interface ListWorkOrdersUnifiedResult {
   fallbackUsed: boolean; // true if DB failed and fell back to legacy
 }
 
-/**
- * Check if DB primary reads are enabled via feature flag.
- */
-function isDbPrimaryReadsEnabled(): boolean {
-  return process.env.DB_PRIMARY_READS === "true" || process.env.DB_PRIMARY_READS === "1";
-}
+import { isDbStrictMode, isDbNativeMode } from "./guardrails";
 
 /**
  * Unified work orders list adapter.
- * Routes to DB or legacy based on feature flag + workspace setting.
- * Falls back to legacy if DB read fails.
+ * DB-only reads - no fallback to Sheets.
+ * Sheets is export-only.
  */
 export async function listWorkOrdersUnified(
   params: ListWorkOrdersUnifiedParams = {}
 ): Promise<ListWorkOrdersUnifiedResult> {
   const { status, q, limit, cursor } = params;
 
-  // Check feature flag
-  const dbPrimaryReadsEnabled = isDbPrimaryReadsEnabled();
-  
-  if (!dbPrimaryReadsEnabled) {
-    // Feature flag OFF - use legacy
-    return await listWorkOrdersLegacy(params);
+  // Get workspace ID (required for DB reads)
+  const workspaceId = await getWorkspaceIdForUser();
+  if (!workspaceId) {
+    throw new Error("No workspace found. Please complete onboarding.");
   }
 
-  // Feature flag ON - check workspace setting
-  try {
-    const workspaceId = await getWorkspaceIdForUser();
-    if (!workspaceId) {
-      // No workspace - fallback to legacy
-      console.log("[Read Adapter] No workspace found, using legacy");
-      return await listWorkOrdersLegacy(params);
+  // Read from DB only - no fallback
+  const dbResult = await listWorkOrders(
+    workspaceId,
+    {
+      status,
+      search: q,
+    },
+    {
+      limit,
+      cursor,
     }
+  );
 
-    const primaryReadSource = await getPrimaryReadSource(workspaceId);
-    
-    if (primaryReadSource !== "DB") {
-      // Workspace setting is LEGACY - use legacy
-      console.log("[Read Adapter] Workspace primary_read_source is LEGACY, using legacy");
-      return await listWorkOrdersLegacy(params);
-    }
+  // Map DB result to unified format
+  const unifiedWorkOrders: UnifiedWorkOrder[] = dbResult.items.map((wo) => ({
+    id: wo.id,
+    workOrderNumber: wo.work_order_number,
+    customerName: wo.customer_name,
+    serviceAddress: wo.service_address,
+    scheduledDate: wo.scheduled_date,
+    amount: wo.amount,
+    currency: wo.currency,
+    status: wo.status,
+    signedAt: wo.signed_at?.toISOString() || null,
+    signedPdfUrl: wo.signed_pdf_url,
+    fmDisplayName: wo.fm_profile_display_name,
+    exportStatus: wo.export_status,
+  }));
 
-    // Workspace setting is DB - try DB read
-    try {
-      const dbResult = await listWorkOrders(
-        workspaceId,
-        {
-          status,
-          search: q,
-        },
-        {
-          limit,
-          cursor,
-        }
-      );
-
-      // Map DB result to unified format
-      const unifiedWorkOrders: UnifiedWorkOrder[] = dbResult.items.map((wo) => ({
-        id: wo.id,
-        workOrderNumber: wo.work_order_number,
-        customerName: wo.customer_name,
-        serviceAddress: wo.service_address,
-        scheduledDate: wo.scheduled_date,
-        amount: wo.amount,
-        currency: wo.currency,
-        status: wo.status,
-        signedAt: wo.signed_at?.toISOString() || null,
-        signedPdfUrl: wo.signed_pdf_url,
-        fmDisplayName: wo.fm_profile_display_name,
-        exportStatus: wo.export_status,
-      }));
-
-      return {
-        workOrders: unifiedWorkOrders,
-        nextCursor: dbResult.nextCursor,
-        hasMore: dbResult.hasMore,
-        dataSource: "DB",
-        fallbackUsed: false,
-      };
-    } catch (dbError) {
-      // DB read failed - fallback to legacy
-      console.error("[Read Adapter] DB read failed, falling back to legacy:", dbError);
-      const legacyResult = await listWorkOrdersLegacy(params);
-      return {
-        ...legacyResult,
-        fallbackUsed: true, // Indicate that fallback was used
-      };
-    }
-  } catch (error) {
-    // Workspace lookup failed - fallback to legacy
-    console.error("[Read Adapter] Workspace lookup failed, falling back to legacy:", error);
-    const legacyResult = await listWorkOrdersLegacy(params);
-    return {
-      ...legacyResult,
-      fallbackUsed: true,
-    };
-  }
+  return {
+    workOrders: unifiedWorkOrders,
+    nextCursor: dbResult.nextCursor,
+    hasMore: dbResult.hasMore,
+    dataSource: "DB",
+    fallbackUsed: false,
+  };
 }
 
 /**
@@ -141,7 +98,7 @@ async function listWorkOrdersLegacy(
   params: ListWorkOrdersUnifiedParams
 ): Promise<ListWorkOrdersUnifiedResult> {
   // Import legacy service functions
-  const { getCurrentUser } = await import("@/auth");
+  const { getCurrentUser } = await import("@/lib/auth/currentUser");
   const { getWorkspace } = await import("@/lib/workspace/getWorkspace");
   const { createSheetsClient, formatSheetRange, WORK_ORDER_REQUIRED_COLUMNS } = await import("@/lib/google/sheets");
   const { getColumnRange } = await import("@/lib/google/sheetsCache");
@@ -172,14 +129,45 @@ async function listWorkOrdersLegacy(
     }
 
     const spreadsheetId = workspaceResult.workspace.spreadsheetId;
+    
+    // If no spreadsheet ID (DB-native mode without export), return empty results
+    // Data should come from DB, not Sheets
+    if (!spreadsheetId) {
+      console.log("[Read Adapter] Legacy fallback: No spreadsheet ID, returning empty results (DB-native mode)");
+      return {
+        workOrders: [],
+        nextCursor: null,
+        hasMore: false,
+        dataSource: "LEGACY",
+        fallbackUsed: false,
+      };
+    }
+    
     const sheets = createSheetsClient(user.googleAccessToken);
     const WORK_ORDERS_SHEET_NAME = process.env.GOOGLE_SHEETS_WORK_ORDERS_SHEET_NAME || "Work_Orders";
 
     // Read from Work_Orders sheet (same logic as legacy API)
-    const allDataResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: formatSheetRange(WORK_ORDERS_SHEET_NAME, getColumnRange(WORK_ORDER_REQUIRED_COLUMNS.length)),
-    });
+    let allDataResponse;
+    try {
+      allDataResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: formatSheetRange(WORK_ORDERS_SHEET_NAME, getColumnRange(WORK_ORDER_REQUIRED_COLUMNS.length)),
+      });
+    } catch (error: any) {
+      // Handle 404 (spreadsheet doesn't exist) or other errors gracefully
+      if (error?.code === 404 || error?.status === 404) {
+        console.log("[Read Adapter] Legacy fallback: Spreadsheet not found (404), returning empty results");
+        return {
+          workOrders: [],
+          nextCursor: null,
+          hasMore: false,
+          dataSource: "LEGACY",
+          fallbackUsed: false,
+        };
+      }
+      // Re-throw other errors
+      throw error;
+    }
 
     const rows = allDataResponse.data.values || [];
     if (rows.length === 0) {

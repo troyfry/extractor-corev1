@@ -19,6 +19,8 @@ import { getPlanFromRequest } from "@/lib/_deprecated/api/getPlanFromRequest";
 import { hasFeature } from "@/lib/plan";
 // import { Plan } from "@/lib/plan"; // Unused for now
 import { extractTextFromPdfBuffer as extractTextFromPdfBufferAiParser } from "@/lib/workOrders/aiParser";
+import { extractFromEmailSubject } from "@/lib/workOrders/extractFromEmailSubject";
+import { extractFromEmailSubjectRegex } from "@/lib/workOrders/extractFromEmailSubjectRegex";
 import OpenAI from "openai";
 import type { ParsedWorkOrder, ManualProcessResponse } from "@/lib/workOrders/parsedTypes";
 import type { WorkOrderRecord } from "@/lib/google/sheets";
@@ -376,6 +378,49 @@ export async function POST(request: Request) {
     const aiEnabled = request.headers.get("x-ai-enabled") === "true";
     const apiKey = request.headers.get("x-openai-key")?.trim() || null;
 
+    // Extract fields from email subject first (scheduled date, NTE, location)
+    // Try AI first, fall back to regex if AI is not available
+    let emailSubjectExtraction: Awaited<ReturnType<typeof extractFromEmailSubject>> | Awaited<ReturnType<typeof extractFromEmailSubjectRegex>> | null = null;
+    
+    if (email.subject) {
+      if (aiEnabled && apiKey) {
+        // Try AI extraction first
+        try {
+          console.log(`[Gmail Process] Extracting fields from email subject using AI: "${email.subject}"`);
+          emailSubjectExtraction = await extractFromEmailSubject(email.subject, aiEnabled, apiKey);
+          if (emailSubjectExtraction) {
+            console.log(`[Gmail Process] ✅ Extracted from email subject (AI):`, {
+              scheduledDate: emailSubjectExtraction.scheduledDate,
+              nteAmount: emailSubjectExtraction.nteAmount,
+              serviceAddress: emailSubjectExtraction.serviceAddress,
+              location: emailSubjectExtraction.location,
+            });
+          }
+        } catch (error) {
+          console.warn(`[Gmail Process] AI extraction from email subject failed (non-fatal):`, error);
+          // Fall through to regex extraction
+        }
+      }
+      
+      // Fall back to regex extraction if AI didn't work or isn't available
+      if (!emailSubjectExtraction) {
+        try {
+          console.log(`[Gmail Process] Extracting fields from email subject using regex: "${email.subject}"`);
+          emailSubjectExtraction = extractFromEmailSubjectRegex(email.subject);
+          if (emailSubjectExtraction) {
+            console.log(`[Gmail Process] ✅ Extracted from email subject (Regex):`, {
+              scheduledDate: emailSubjectExtraction.scheduledDate,
+              nteAmount: emailSubjectExtraction.nteAmount,
+              serviceAddress: emailSubjectExtraction.serviceAddress,
+              location: emailSubjectExtraction.location,
+            });
+          }
+        } catch (error) {
+          console.warn(`[Gmail Process] Regex extraction from email subject failed (non-fatal):`, error);
+        }
+      }
+    }
+
     // Process the selected PDF(s)
     console.log(`[Gmail Process] Processing ${pdfsToProcess.length} PDF attachment(s) for message ${messageId}`);
     for (const pdfAttachment of pdfsToProcess) {
@@ -516,7 +561,46 @@ ${pdfText}`;
             const aiResult = parseAiResponse(responseText, pdfAttachment.filename);
             console.log(`[Gmail Process] Parsed AI response: ${aiResult ? aiResult.length : 0} work order(s)`);
             if (aiResult && aiResult.length > 0) {
-              parsedWorkOrders = aiResult;
+              // Merge email subject extraction results with PDF extraction results
+              // Email subject takes precedence for scheduled date, NTE, and location
+              parsedWorkOrders = aiResult.map((wo) => {
+                const merged: ParsedWorkOrder = { ...wo };
+                
+                // Merge email subject extraction (takes precedence if present)
+                if (emailSubjectExtraction) {
+                  // Scheduled date from email subject takes precedence
+                  if (emailSubjectExtraction.scheduledDate) {
+                    merged.scheduledDate = emailSubjectExtraction.scheduledDate;
+                  }
+                  
+                  // Service address from email subject takes precedence
+                  if (emailSubjectExtraction.serviceAddress) {
+                    merged.serviceAddress = emailSubjectExtraction.serviceAddress;
+                  }
+                  
+                  // NTE amount - add to notes if present
+                  if (emailSubjectExtraction.nteAmount) {
+                    const nteNote = `NTE: $${emailSubjectExtraction.nteAmount}`;
+                    merged.notes = merged.notes 
+                      ? `${merged.notes} | ${nteNote}` 
+                      : nteNote;
+                  }
+                  
+                  // Location - add to customer name or notes if present
+                  if (emailSubjectExtraction.location) {
+                    if (!merged.customerName) {
+                      merged.customerName = emailSubjectExtraction.location;
+                    } else if (!merged.customerName.includes(emailSubjectExtraction.location)) {
+                      merged.notes = merged.notes 
+                        ? `${merged.notes} | Location: ${emailSubjectExtraction.location}` 
+                        : `Location: ${emailSubjectExtraction.location}`;
+                    }
+                  }
+                }
+                
+                return merged;
+              });
+              
               aiModelUsed = model;
               console.log(`[Gmail Process] AI parser produced ${aiResult.length} work order(s) from PDF: ${pdfAttachment.filename}`);
             } else {
@@ -549,18 +633,35 @@ ${pdfText}`;
         
         const now = new Date().toISOString();
         
+        // Use email subject extraction if available, otherwise use defaults
+        const scheduledDate = emailSubjectExtraction?.scheduledDate || now;
+        const serviceAddress = emailSubjectExtraction?.serviceAddress || null;
+        let notes = emailText.trim() || null;
+        
+        // Add NTE and location from email subject if present
+        if (emailSubjectExtraction) {
+          if (emailSubjectExtraction.nteAmount) {
+            const nteNote = `NTE: $${emailSubjectExtraction.nteAmount}`;
+            notes = notes ? `${notes} | ${nteNote}` : nteNote;
+          }
+          if (emailSubjectExtraction.location) {
+            const locationNote = `Location: ${emailSubjectExtraction.location}`;
+            notes = notes ? `${notes} | ${locationNote}` : locationNote;
+          }
+        }
+        
         parsedWorkOrders = [{
           workOrderNumber, // Can be null - will route to "Verification"
           timestampExtracted: now,
-          scheduledDate: now,
-          serviceAddress: null,
+          scheduledDate,
+          serviceAddress,
           jobType: null,
-          customerName: null,
+          customerName: emailSubjectExtraction?.location || null,
           vendorName: null,
           jobDescription: email.snippet ? email.snippet.trim().slice(0, 500) : null,
           amount: null,
           currency: "USD",
-          notes: emailText.trim() || null,
+          notes,
           priority: null,
           fmKey: null, // Will be matched later
         }];
@@ -600,8 +701,10 @@ ${pdfText}`;
     let labelRemoved = false;
     let processingError: Error | null = null;
     let skipSheets = false; // Track if Sheets writes were skipped (for warning message)
+    const skippedWorkOrders: string[] = []; // Track work orders that were skipped because they're already signed
     let workspaceResult: Awaited<ReturnType<typeof import("@/lib/workspace/getWorkspace").getWorkspace>> | null = null;
     let missingFmKeyWarning: string | null = null; // Warning for missing FM profile when issuer has been processed before
+    let workspaceId: string | null = null; // Declare outside try block so it's accessible in catch block
 
     try {
       // Validate required configuration
@@ -609,30 +712,68 @@ ${pdfText}`;
         throw new Error("No Google access token available. Cannot process email.");
       }
 
-      // Get workspace (uses cookie module internally)
-      const { getWorkspace } = await import("@/lib/workspace/getWorkspace");
-      workspaceResult = await getWorkspace();
+      // Get workspace ID (DB-native) - required for DB writes
+      const { getWorkspaceIdForUser } = await import("@/lib/db/utils/getWorkspaceId");
+      workspaceId = await getWorkspaceIdForUser();
       
-      if (!workspaceResult) {
+      if (!workspaceId) {
         throw new Error("Workspace not found. Please complete onboarding.");
       }
       
-      const spreadsheetId = workspaceResult.workspace.spreadsheetId;
-      console.log(`[Gmail Process] Using spreadsheet ID: ${spreadsheetId.substring(0, 10)}... (source: ${workspaceResult.source})`);
+      // Get spreadsheet ID for optional export (if enabled)
+      const { getWorkspace } = await import("@/lib/workspace/getWorkspace");
+      workspaceResult = await getWorkspace();
+      const spreadsheetId = workspaceResult?.workspace.spreadsheetId || null;
 
-      // Load FM Profiles from Sheets
-      const { getAllFmProfiles } = await import("@/lib/templates/fmProfilesSheets");
+      // Load FM Profiles from DB (DB-native)
       let fmProfiles: Array<{ fmKey: string; fmLabel: string; senderDomains?: string; subjectKeywords?: string; page: number; xPct: number; yPct: number; wPct: number; hPct: number }> = [];
-      if (spreadsheetId) {
+      
+      if (workspaceId) {
         try {
+          const { listFmProfiles } = await import("@/lib/db/services/fmProfiles");
+          const dbProfiles = await listFmProfiles(workspaceId);
+          
+          // Map DB profiles to expected format
+          fmProfiles = dbProfiles.map((p) => ({
+            fmKey: p.fm_key,
+            fmLabel: p.display_name || p.fm_key,
+            senderDomains: Array.isArray(p.sender_domains) ? p.sender_domains.join(",") : undefined,
+            // subjectKeywords not in schema yet - will be added in future migration
+            subjectKeywords: undefined,
+            page: 1, // Default page (not used for matching)
+            xPct: 0, // Not used for matching
+            yPct: 0,
+            wPct: 0,
+            hPct: 0,
+          }));
+          console.log(`[Gmail Process] Loaded ${fmProfiles.length} FM profile(s) from DB`);
+        } catch (error) {
+          console.warn(`[Gmail Process] Failed to load FM profiles from DB:`, error);
+          // Fallback to Sheets if DB fails
+          if (spreadsheetId) {
+            try {
+              const { getAllFmProfiles } = await import("@/lib/templates/fmProfilesSheets");
+              fmProfiles = await getAllFmProfiles({
+                spreadsheetId,
+                accessToken,
+              });
+              console.log(`[Gmail Process] Loaded ${fmProfiles.length} FM profile(s) from Sheets (fallback)`);
+            } catch (sheetsError) {
+              console.warn(`[Gmail Process] Failed to load FM profiles from Sheets (fallback):`, sheetsError);
+            }
+          }
+        }
+      } else if (spreadsheetId) {
+        // Fallback to Sheets if no workspace ID
+        try {
+          const { getAllFmProfiles } = await import("@/lib/templates/fmProfilesSheets");
           fmProfiles = await getAllFmProfiles({
             spreadsheetId,
             accessToken,
           });
-          console.log(`[Gmail Process] Loaded ${fmProfiles.length} FM profile(s) from Sheets`);
+          console.log(`[Gmail Process] Loaded ${fmProfiles.length} FM profile(s) from Sheets (no workspace ID)`);
         } catch (error) {
-          console.warn(`[Gmail Process] Failed to load FM profiles (non-fatal):`, error);
-          // Continue without FM profiles - jobs will have fmKey = null
+          console.warn(`[Gmail Process] Failed to load FM profiles from Sheets:`, error);
         }
       }
 
@@ -670,7 +811,7 @@ ${pdfText}`;
       }
       
       // Log all work orders with their fmKeys before writing
-      console.log(`[Gmail Process] 📋 Work orders with fmKeys before writing to Sheet1:`, 
+      console.log(`[Gmail Process] 📋 Work orders with fmKeys before writing to DB:`, 
         allParsedWorkOrders.map(wo => ({ 
           woNumber: wo.workOrderNumber, 
           fmKey: wo.fmKey,
@@ -678,245 +819,145 @@ ${pdfText}`;
           hasFmKey: wo.fmKey !== null && wo.fmKey !== undefined,
         }))
       );
+
+      // Collect PDF buffers for upload
+      const pdfBuffers: Buffer[] = [];
+      const pdfFilenames: string[] = [];
       
-      // Check for warning: if no FM profile matched but we've processed this issuer before
-      const workOrdersWithoutFmKey = allParsedWorkOrders.filter(wo => !wo.fmKey);
-      if (workOrdersWithoutFmKey.length > 0 && spreadsheetId && accessToken) {
-        try {
-          // Extract issuer domain from email sender
-          const emailMatch = email.from.match(/@([^\s>]+)/);
-          const senderDomain = emailMatch ? emailMatch[1].toLowerCase().trim() : null;
-          
-          if (senderDomain) {
-            // Check if there are existing work orders for this issuer in Sheet1
-            const { getSheetHeadersCached, createSheetsClient, formatSheetRange } = await import("@/lib/google/sheets");
-            const MAIN_SHEET_NAME = "Sheet1";
-            
-            const headerMeta = await getSheetHeadersCached(accessToken, spreadsheetId, MAIN_SHEET_NAME);
-            const issuerLetter = headerMeta.colLetterByLower["issuer"];
-            
-            if (issuerLetter) {
-              // Read the issuer column to check for existing entries
-              const sheets = createSheetsClient(accessToken);
-              const issuerColResp = await sheets.spreadsheets.values.get({
-                spreadsheetId,
-                range: formatSheetRange(MAIN_SHEET_NAME, `${issuerLetter}:${issuerLetter}`),
-              });
-              
-              const issuerValues = issuerColResp.data.values || [];
-              // Check if any row (skip header) contains this issuer domain
-              let foundExistingIssuer = false;
-              for (let i = 1; i < issuerValues.length; i++) {
-                const cellValue = (issuerValues[i]?.[0] || "").toLowerCase().trim();
-                if (cellValue && (cellValue === senderDomain || cellValue.includes(senderDomain) || senderDomain.includes(cellValue))) {
-                  foundExistingIssuer = true;
-                  break;
-                }
-              }
-              
-              if (foundExistingIssuer) {
-                missingFmKeyWarning = `⚠️ Warning: No FM profile configured for "${senderDomain}", but work orders from this issuer have been processed before. Please configure an FM profile to ensure proper processing.`;
-                console.warn(`[Gmail Process] ${missingFmKeyWarning}`);
-              }
-            }
-          }
-        } catch (warningError) {
-          // Non-fatal: if we can't check, just log and continue
-          console.warn(`[Gmail Process] Could not check for existing issuer in Sheets:`, warningError);
-        }
-      }
-      
-      // In dev mode, allow processing without Sheets (for testing parsing logic)
-      const isDevMode = process.env.NODE_ENV !== "production";
-      skipSheets = !spreadsheetId && isDevMode;
-      
-      if (!spreadsheetId && !skipSheets) {
-        throw new Error("No Google Sheets spreadsheet ID configured. Please configure in Settings.");
+      for (const pdfAttachment of pdfsToProcess) {
+        pdfBuffers.push(pdfAttachment.data);
+        pdfFilenames.push(pdfAttachment.filename);
       }
 
-      if (skipSheets) {
-        console.warn("[Gmail Process] ⚠️  No spreadsheet ID configured. Skipping Sheets/Drive writes (dev mode).");
-        console.warn("[Gmail Process] Parsed work orders will be returned but not persisted.");
-      } else {
-        console.log("[Gmail Process] Writing work orders to Sheets + Drive:", {
-          spreadsheetId: `${spreadsheetId!.substring(0, 10)}...`,
-          workOrdersCount: allParsedWorkOrders.length,
-          pdfCount: pdfsToProcess.length,
-          messageId,
-        });
+      // PRIMARY: Write to DB (required)
+      if (!workspaceId) {
+        throw new Error("No workspace ID found. Please complete onboarding.");
+      }
 
-        // Collect PDF buffers for upload
-        const pdfBuffers: Buffer[] = [];
-        const pdfFilenames: string[] = [];
-        
-        for (const pdfAttachment of pdfsToProcess) {
-          pdfBuffers.push(pdfAttachment.data);
-          pdfFilenames.push(pdfAttachment.filename);
-        }
+      console.log("[Gmail Process] Writing work orders to DB:", {
+        workspaceId: workspaceId.substring(0, 8) + "...",
+        workOrdersCount: allParsedWorkOrders.length,
+        pdfCount: pdfsToProcess.length,
+        messageId,
+      });
 
-        // Write to Sheets with PDF upload to Drive
-        // This will throw if ANY step fails (Drive upload OR Sheets write)
-        // Extract full work order details from PDFs BEFORE uploading (one-time extraction)
-        const { writeWorkOrdersToSheets } = await import("@/lib/workOrders/sheetsIngestion");
-        await writeWorkOrdersToSheets(
-          allParsedWorkOrders,
-          accessToken,
-          spreadsheetId!,
-          issuerKey, // Use issuerKey from email sender domain (stable)
-          pdfBuffers.length > 0 ? pdfBuffers : undefined,
-          pdfFilenames.length > 0 ? pdfFilenames : undefined,
-          "email", // Source: Gmail processing
-          aiEnabled, // Pass AI enabled flag
-          apiKey, // Pass OpenAI key for extraction
-          email.subject // Pass email subject for context
-        );
-        
-        console.log("[Gmail Process] Successfully wrote work orders to Sheets + Drive");
+      const { ingestWorkOrderAuthoritative } = await import("@/lib/db/services/ingestWorkOrder");
+      const { isWorkOrderSigned } = await import("@/lib/db/services/workOrders");
+      
+      // Ingest each work order to DB
+      for (let i = 0; i < allParsedWorkOrders.length; i++) {
+        const parsedWO = allParsedWorkOrders[i];
+        const pdfBuffer = pdfBuffers[i];
+        const pdfFilename = pdfFilenames[i];
 
-        // Shadow write to DB (non-blocking - don't fail if DB write fails)
-        try {
-          const { ingestWorkOrderAuthoritative } = await import("@/lib/db/services/ingestWorkOrder");
-          const { getOrCreateWorkspace } = await import("@/lib/db/services/workspace");
-          
-          // Get or create workspace in DB
-          const workspaceId = await getOrCreateWorkspace(
-            spreadsheetId!,
-            user.id,
-            undefined // driveFolderId not available here
-          );
-
-          // Ingest each work order to DB
-          // Note: PDF links are uploaded to Drive by writeWorkOrdersToSheets, but we don't have them here
-          // They'll be synced via export jobs later
-          for (let i = 0; i < allParsedWorkOrders.length; i++) {
-            const parsedWO = allParsedWorkOrders[i];
-            const pdfBuffer = pdfBuffers[i];
-            const pdfFilename = pdfFilenames[i];
-
-            try {
-              await ingestWorkOrderAuthoritative({
-                workspaceId,
-                userId: user.id,
-                spreadsheetId: spreadsheetId!,
-                parsedWorkOrder: parsedWO,
-                pdfBuffer,
-                sourceType: "GMAIL",
-                workOrderPdfLink: null, // Will be synced from Sheets via export job
-                sourceMetadata: {
-                  messageId: email.id,
-                  filename: pdfFilename,
-                  emailSubject: email.subject,
-                  emailFrom: email.from,
-                },
-              });
-              console.log(`[Gmail Process] ✅ Shadow wrote work order to DB: ${parsedWO.workOrderNumber}`);
-            } catch (dbError) {
-              // Log but don't fail - DB is shadow write
-              console.warn(`[Gmail Process] ⚠️ Failed to shadow write work order to DB:`, dbError);
-            }
+        // Check if work order is already signed - skip if so
+        if (parsedWO.workOrderNumber) {
+          const alreadySigned = await isWorkOrderSigned(workspaceId, parsedWO.workOrderNumber);
+          if (alreadySigned) {
+            console.log(`[Gmail Process] ⚠️ Work order "${parsedWO.workOrderNumber}" is already signed - skipping reprocessing`);
+            skippedWorkOrders.push(parsedWO.workOrderNumber);
+            // Remove from allParsedWorkOrders so it's not included in the response
+            allParsedWorkOrders.splice(i, 1);
+            pdfBuffers.splice(i, 1);
+            pdfFilenames.splice(i, 1);
+            i--; // Adjust index after removal
+            continue;
           }
-        } catch (dbError) {
-          // Log but don't fail - DB is shadow write
-          console.warn("[Gmail Process] ⚠️ Failed to shadow write work orders to DB (non-fatal):", dbError);
         }
 
-        // Also write to Work_Orders sheet (master ledger, no duplicates)
-        const { writeWorkOrderRecord, findWorkOrderRecordByJobId } = await import("@/lib/google/sheets");
-        const { generateJobId } = await import("@/lib/workOrders/sheetsIngestion");
-        const WORK_ORDERS_SHEET_NAME = process.env.GOOGLE_SHEETS_WORK_ORDERS_SHEET_NAME || "Work_Orders";
-        const nowIso = new Date().toISOString();
-
-        // Get PDF URLs from the writeWorkOrdersToSheets result
-        // Note: writeWorkOrdersToSheets uploads PDFs but doesn't return URLs
-        // We'll need to get them from the main sheet or upload separately
-        // For now, we'll set work_order_pdf_link to null and it can be updated later
-        
-        for (const parsedWO of allParsedWorkOrders) {
-          const jobId = generateJobId(issuerKey, parsedWO.workOrderNumber);
-          
-          console.log(`[Gmail Process] Writing to Work_Orders for work order "${parsedWO.workOrderNumber}":`, {
-            jobId,
-            parsedWOFmKey: parsedWO.fmKey,
-            parsedWOFmKeyType: typeof parsedWO.fmKey,
-            workOrderNumber: parsedWO.workOrderNumber,
+        try {
+          await ingestWorkOrderAuthoritative({
+            workspaceId,
+            userId: user.id,
+            spreadsheetId: spreadsheetId || null, // Optional for DB-native
+            parsedWorkOrder: parsedWO,
+            pdfBuffer,
+            sourceType: "GMAIL",
+            workOrderPdfLink: null, // PDFs will be uploaded to Drive and synced via export jobs
+            sourceMetadata: {
+              messageId: email.id,
+              filename: pdfFilename,
+              emailSubject: email.subject,
+              emailFrom: email.from,
+            },
           });
-          
-          const workOrderRecord: WorkOrderRecord = {
-            jobId,
-            fmKey: parsedWO.fmKey ?? null,
-            wo_number: parsedWO.workOrderNumber || "MISSING",
-            status: "OPEN",
-            scheduled_date: parsedWO.scheduledDate ?? null,
-            created_at: parsedWO.timestampExtracted || nowIso,
-            timestamp_extracted: nowIso,
-            customer_name: parsedWO.customerName ?? null,
-            vendor_name: parsedWO.vendorName ?? null,
-            service_address: parsedWO.serviceAddress ?? null,
-            job_type: parsedWO.jobType ?? null,
-            job_description: parsedWO.jobDescription ?? null,
-            amount: parsedWO.amount != null ? String(parsedWO.amount) : null,
-            currency: parsedWO.currency ?? null,
-            notes: parsedWO.notes ?? null,
-            priority: parsedWO.priority ?? null,
-            calendar_event_link: null,
-            work_order_pdf_link: null, // Will be updated from main sheet if needed
-            signed_pdf_url: null,
-            signed_preview_image_url: null,
-            signed_at: null,
-            source: "email",
-            last_updated_at: nowIso,
-            file_hash: null, // Gmail processing: multiple PDFs may map to multiple work orders, hash not directly mappable
-          };
-
-          try {
-            console.log(`[Gmail Process] Writing to Work_Orders sheet:`, {
-              jobId,
-              fmKey: parsedWO.fmKey,
-              woNumber: parsedWO.workOrderNumber,
-              spreadsheetId: `${spreadsheetId!.substring(0, 10)}...`,
-              sheetName: WORK_ORDERS_SHEET_NAME,
-              envSheetName: process.env.GOOGLE_SHEETS_WORK_ORDERS_SHEET_NAME,
-            });
-            
-            await writeWorkOrderRecord(
-              accessToken,
-              spreadsheetId!,
-              WORK_ORDERS_SHEET_NAME,
-              workOrderRecord
-            );
-            
-            // Don't verify immediately - saves a read request and avoids quota issues
-            // The write operation itself will succeed or fail, and we log that
-            console.log(`[Gmail Process] ✅ Work_Orders sheet updated:`, {
-              jobId,
-              fmKey: workOrderRecord.fmKey,
-              woNumber: workOrderRecord.wo_number,
-              status: workOrderRecord.status,
-            });
-          } catch (woError) {
-            // Log but don't fail the request
-            console.error(`[Gmail Process] Error writing to Work_Orders sheet for ${jobId}:`, {
-              error: woError,
-              message: woError instanceof Error ? woError.message : String(woError),
-              stack: woError instanceof Error ? woError.stack : undefined,
-              jobId,
-              spreadsheetId: `${spreadsheetId!.substring(0, 10)}...`,
-              sheetName: WORK_ORDERS_SHEET_NAME,
-            });
-          }
+          console.log(`[Gmail Process] ✅ Wrote work order to DB: ${parsedWO.workOrderNumber}`);
+        } catch (dbError) {
+          // DB write is primary - fail if it fails
+          console.error(`[Gmail Process] ❌ Failed to write work order to DB:`, dbError);
+          throw new Error(`Failed to save work order to database: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
         }
       }
+
+      console.log("[Gmail Process] Successfully wrote all work orders to DB");
+
+      // OPTIONAL: Export to Sheets (if enabled)
+      if (spreadsheetId && accessToken) {
+        try {
+          console.log("[Gmail Process] Exporting work orders to Sheets (optional):", {
+            spreadsheetId: `${spreadsheetId.substring(0, 10)}...`,
+          });
+
+          const { writeWorkOrdersToSheets } = await import("@/lib/workOrders/sheetsIngestion");
+          await writeWorkOrdersToSheets(
+            allParsedWorkOrders,
+            accessToken,
+            spreadsheetId,
+            issuerKey,
+            pdfBuffers.length > 0 ? pdfBuffers : undefined,
+            pdfFilenames.length > 0 ? pdfFilenames : undefined,
+            "email",
+            aiEnabled,
+            apiKey,
+            email.subject
+          );
+          
+          console.log("[Gmail Process] Successfully exported work orders to Sheets");
+        } catch (sheetsError) {
+          // Sheets export is optional - log but don't fail
+          console.warn("[Gmail Process] ⚠️ Failed to export to Sheets (non-fatal):", sheetsError);
+          skipSheets = true;
+        }
+      } else {
+        skipSheets = true;
+        // Sheets export not configured - this is OK in DB-native mode
+        // Export jobs will handle Sheets sync if export_enabled=true
+      }
+
+      // Work orders are now stored in DB - Sheets export is handled via export jobs if enabled
 
       // ALL steps succeeded - now handle labels (if requested)
       // Note: In dev mode without Sheets, we still handle labels since parsing succeeded
       if (autoRemoveLabel) {
         try {
-          // Load workspace to get label configuration
-          const workspace = await loadWorkspace();
+          // Load labels from DB (DB-native)
+          const { getWorkspaceById } = await import("@/lib/db/services/workspace");
+          const dbWorkspace = workspaceId ? await getWorkspaceById(workspaceId) : null;
           
-          if (workspace?.labels) {
+          if (dbWorkspace && (dbWorkspace.gmail_queue_label_id || dbWorkspace.gmail_processed_label_id)) {
+            // Construct labels object from DB
+            const labels = {
+              base: {
+                id: dbWorkspace.gmail_base_label_id || "",
+                name: dbWorkspace.gmail_base_label_name || "",
+              },
+              queue: {
+                id: dbWorkspace.gmail_queue_label_id || "",
+                name: dbWorkspace.gmail_base_label_name || "",
+              },
+              signed: {
+                id: dbWorkspace.gmail_signed_label_id || "",
+                name: dbWorkspace.gmail_base_label_name ? `${dbWorkspace.gmail_base_label_name}/Signed` : "",
+              },
+              processed: {
+                id: dbWorkspace.gmail_processed_label_id || "",
+                name: dbWorkspace.gmail_base_label_name ? `${dbWorkspace.gmail_base_label_name}/Processed` : "",
+              },
+              needsReview: null, // Optional label - not stored in DB yet
+            };
+            
             // Transition to processed state (idempotent)
-            const success = await transitionToProcessed(accessToken, messageId, workspace.labels);
+            const success = await transitionToProcessed(accessToken, messageId, labels);
             if (success) {
               labelRemoved = true;
               console.log(`[Gmail Process] Transitioned message ${messageId} to processed state`);
@@ -924,7 +965,8 @@ ${pdfText}`;
               console.warn(`[Gmail Process] Failed to transition message ${messageId} to processed state`);
             }
           } else {
-            console.warn(`[Gmail Process] Workspace labels not found, skipping label operations`);
+            // Labels not configured in DB - this is OK, just skip label operations
+            console.log(`[Gmail Process] Gmail labels not configured in workspace, skipping label operations`);
           }
         } catch (labelError) {
           // Label operations failed - log but don't fail the request since processing succeeded
@@ -939,10 +981,36 @@ ${pdfText}`;
       
       // Try to transition to needs review state (idempotent, only if configured)
       try {
-        const workspace = await loadWorkspace();
-        if (workspace?.labels) {
-          await transitionToNeedsReview(accessToken, messageId, workspace.labels);
+        // Load labels from DB (DB-native)
+        const { getWorkspaceById } = await import("@/lib/db/services/workspace");
+        const dbWorkspace = workspaceId ? await getWorkspaceById(workspaceId) : null;
+        
+        if (dbWorkspace && (dbWorkspace.gmail_queue_label_id || dbWorkspace.gmail_signed_label_id)) {
+          // Construct labels object from DB
+          const labels = {
+            base: {
+              id: dbWorkspace.gmail_base_label_id || "",
+              name: dbWorkspace.gmail_base_label_name || "",
+            },
+            queue: {
+              id: dbWorkspace.gmail_queue_label_id || "",
+              name: dbWorkspace.gmail_base_label_name || "",
+            },
+            signed: {
+              id: dbWorkspace.gmail_signed_label_id || "",
+              name: dbWorkspace.gmail_base_label_name ? `${dbWorkspace.gmail_base_label_name}/Signed` : "",
+            },
+            processed: {
+              id: dbWorkspace.gmail_processed_label_id || "",
+              name: dbWorkspace.gmail_base_label_name ? `${dbWorkspace.gmail_base_label_name}/Processed` : "",
+            },
+            needsReview: null, // Optional label - not stored in DB yet
+          };
+          
+          await transitionToNeedsReview(accessToken, messageId, labels);
           console.log(`[Gmail Process] Transitioned message ${messageId} to needs review state`);
+        } else {
+          console.log(`[Gmail Process] Gmail labels not configured in workspace, skipping needs review label transition`);
         }
       } catch (labelError) {
         // Label transition failed - log but don't fail the request
@@ -977,6 +1045,12 @@ ${pdfText}`;
           warning: "No Google Sheets spreadsheet ID configured. Work orders were parsed but not saved to Sheets/Drive. Please configure in Settings." 
         } : missingFmKeyWarning ? {
           warning: missingFmKeyWarning
+        } : {}),
+        ...(skippedWorkOrders.length > 0 ? {
+          skippedWorkOrders: skippedWorkOrders,
+          warning: skippedWorkOrders.length === 1 
+            ? `Work order ${skippedWorkOrders[0]} is already signed and was skipped.`
+            : `${skippedWorkOrders.length} work orders are already signed and were skipped: ${skippedWorkOrders.join(", ")}`
         } : {}),
         ...(aiModelUsed ? { aiModel: aiModelUsed } : {}),
         ...(totalTokens > 0 ? {

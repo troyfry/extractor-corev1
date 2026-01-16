@@ -26,11 +26,13 @@ export default function InboxPage() {
   } | null>(null);
   const [autoRemoveLabel, setAutoRemoveLabel] = useState(true);
   const [gmailLabel, setGmailLabel] = useState<string>("");
-  const [currentLabelName, setCurrentLabelName] = useState<string>("Gmail Inbox");
+  const [currentLabelName, setCurrentLabelName] = useState<string>("Work Orders Queue");
   const [selectedEmails, setSelectedEmails] = useState<Set<string>>(new Set());
   const [expandedEmails, setExpandedEmails] = useState<Set<string>>(new Set());
   const [hasFmProfiles, setHasFmProfiles] = useState<boolean | null>(null);
+  const [hasFmProfilesWithCoords, setHasFmProfilesWithCoords] = useState<boolean | null>(null);
   const [isCheckingFmProfiles, setIsCheckingFmProfiles] = useState(true);
+  const [fmProfilesWithoutCoords, setFmProfilesWithoutCoords] = useState<string[]>([]);
   const selectAllCheckboxRef = useRef<HTMLInputElement>(null);
 
   // Helper function to sort emails by date (oldest first)
@@ -65,19 +67,45 @@ export default function InboxPage() {
         const data = await response.json();
         const profiles = data.profiles || [];
         setHasFmProfiles(profiles.length > 0);
+        
+        // Check if any profiles have coordinates set (wo_number_region with xPt, yPt, wPt, hPt)
+        const profilesWithCoords = profiles.filter((p: any) => {
+          const completeness = p.completeness;
+          return completeness?.hasWoNumberRegion === true;
+        });
+        
+        setHasFmProfilesWithCoords(profilesWithCoords.length > 0);
+        
+        // Track which profiles are missing coordinates
+        const withoutCoords = profiles
+          .filter((p: any) => !p.completeness?.hasWoNumberRegion)
+          .map((p: any) => p.displayName || p.fmKey);
+        setFmProfilesWithoutCoords(withoutCoords);
       } else {
         // If endpoint fails, assume no profiles (conservative approach)
         setHasFmProfiles(false);
+        setHasFmProfilesWithCoords(false);
+        setFmProfilesWithoutCoords([]);
       }
     } catch (err) {
       console.error("Failed to check FM profiles:", err);
       setHasFmProfiles(false);
+      setHasFmProfilesWithCoords(false);
+      setFmProfilesWithoutCoords([]);
     } finally {
       setIsCheckingFmProfiles(false);
     }
   };
 
-  const loadEmails = async (pageToken?: string) => {
+  const loadEmails = async (pageToken?: string, reset: boolean = false) => {
+    if (reset) {
+      // Reset state for refresh
+      setEmails([]);
+      setNextPageToken(null);
+      setSelectedEmails(new Set());
+      setExpandedEmails(new Set());
+    }
+
     if (pageToken) {
       setIsLoadingMore(true);
     } else {
@@ -89,7 +117,7 @@ export default function InboxPage() {
       const params = new URLSearchParams();
       if (pageToken) params.set("pageToken", pageToken);
       if (gmailLabel) params.set("label", gmailLabel);
-      params.set("maxResults", "20"); // Show 20 emails per page
+      params.set("maxResults", "20"); // Load 20 emails per page
 
       const response = await fetch(`/api/gmail/list?${params.toString()}`);
       if (!response.ok) {
@@ -98,12 +126,22 @@ export default function InboxPage() {
       }
 
       const data = await response.json();
+      
+      // Check for error message (e.g., no label configured)
+      if (data.error && !data.emails) {
+        setError(data.error);
+        setEmails([]);
+        setNextPageToken(null);
+        setCurrentLabelName("No Label Configured");
+        return;
+      }
+      
       if (pageToken) {
-        // When loading more, combine and sort the entire list to ensure proper chronological order
+        // When loading more, combine with existing emails and sort entire list
         // This ensures the oldest email from ALL loaded pages appears first
-        setEmails((prev) => sortEmailsByDate([...prev, ...data.emails]));
+        setEmails((prev) => sortEmailsByDate([...prev, ...(data.emails || [])]));
       } else {
-        // Initial load - sort to ensure oldest email is first
+        // Initial load or refresh - sort to ensure oldest email is first
         setEmails(sortEmailsByDate(data.emails || []));
         setSelectedEmails(new Set()); // Clear selection when loading new page
       }
@@ -111,6 +149,9 @@ export default function InboxPage() {
       // Update label name from API response
       if (data.labelName) {
         setCurrentLabelName(data.labelName);
+      } else if (data.emails && data.emails.length === 0) {
+        // If no label name but we have empty results, keep current name or set default
+        setCurrentLabelName(currentLabelName || "Work Orders Queue");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load emails");
@@ -120,10 +161,20 @@ export default function InboxPage() {
     }
   };
 
+  const handleRefresh = () => {
+    loadEmails(undefined, true);
+  };
+
   const processEmail = async (messageId: string) => {
     // Check if FM profiles are configured
     if (hasFmProfiles === false) {
       setError("Please configure at least one FM Profile before processing work orders. Go to Settings or Onboarding to add an FM Profile.");
+      return;
+    }
+
+    // Check if FM profiles have coordinates set (required for work order number extraction)
+    if (hasFmProfilesWithCoords === false) {
+      setError("Set work order number coordinates in Templates first.");
       return;
     }
 
@@ -155,13 +206,27 @@ export default function InboxPage() {
       // Extract work order numbers
       const workOrderNumbers = (data.workOrders || []).map((wo: any) => wo.workOrderNumber).filter(Boolean);
       
-      // Show success message with details
-      setSuccessMessage({
-        workOrders: data.workOrders?.length || 0,
-        workOrderNumbers,
-        labelRemoved: data.meta?.labelRemoved || false,
-        messageId,
-      });
+      // Check if any work orders were skipped (already signed)
+      const skippedWorkOrders = data.meta?.skippedWorkOrders || [];
+      if (skippedWorkOrders.length > 0) {
+        const skippedMessage = skippedWorkOrders.length === 1
+          ? `Work order ${skippedWorkOrders[0]} is already signed and was skipped.`
+          : `${skippedWorkOrders.length} work orders are already signed and were skipped: ${skippedWorkOrders.join(", ")}`;
+        setError(skippedMessage);
+      }
+      
+      // Show success message with details (only if work orders were processed)
+      if (data.workOrders?.length > 0) {
+        setSuccessMessage({
+          workOrders: data.workOrders.length,
+          workOrderNumbers,
+          labelRemoved: data.meta?.labelRemoved || false,
+          messageId,
+        });
+      } else if (skippedWorkOrders.length === 0) {
+        // No work orders found and none were skipped
+        setError("No work orders were extracted from this email.");
+      }
 
       // Remove processed email from list
       setEmails((prev) => prev.filter((e) => e.id !== messageId));
@@ -183,6 +248,12 @@ export default function InboxPage() {
     // Check if FM profiles are configured
     if (hasFmProfiles === false) {
       setError("Please configure at least one FM Profile before processing work orders. Go to Settings or Onboarding to add an FM Profile.");
+      return;
+    }
+
+    // Check if FM profiles have coordinates set (required for work order number extraction)
+    if (hasFmProfilesWithCoords === false) {
+      setError("Set work order number coordinates in Templates first.");
       return;
     }
 
@@ -314,6 +385,17 @@ export default function InboxPage() {
         <div className="flex items-center justify-between">
           <h1 className="text-3xl font-bold text-slate-50">{currentLabelName}</h1>
           <div className="flex items-center gap-4">
+            <button
+              onClick={handleRefresh}
+              disabled={isLoadingEmails}
+              className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              title="Refresh and show oldest 20 emails"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              {isLoadingEmails ? "Refreshing..." : "Refresh"}
+            </button>
             <label className="flex items-center gap-2 text-slate-300">
               <input
                 type="checkbox"
@@ -326,8 +408,15 @@ export default function InboxPage() {
             {selectedEmails.size > 0 && (
               <button
                 onClick={processBatch}
-                disabled={isBatchProcessing || hasFmProfiles === false}
+                disabled={isBatchProcessing || hasFmProfiles === false || hasFmProfilesWithCoords === false}
                 className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title={
+                  hasFmProfiles === false 
+                    ? "FM Profile required to process work orders" 
+                    : hasFmProfilesWithCoords === false
+                    ? "Work order number coordinates required - set crop zone in Templates"
+                    : undefined
+                }
               >
                 {isBatchProcessing 
                   ? (batchProgress ? `Processing ${batchProgress.current} of ${batchProgress.total}` : "Processing...")
@@ -370,6 +459,35 @@ export default function InboxPage() {
                     go to Settings
                   </Link>
                   .
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* FM Profile Coordinates Warning */}
+        {hasFmProfiles === true && hasFmProfilesWithCoords === false && !isCheckingFmProfiles && (
+          <div className="p-4 bg-red-900/20 border border-red-700 rounded-lg text-red-200">
+            <div className="flex items-start gap-3">
+              <svg className="w-5 h-5 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <div className="flex-1">
+                <p className="font-medium mb-1">Work Order Number Coordinates Required</p>
+                <p className="text-sm text-red-300 mb-2">
+                  Cannot process emails: FM Profiles are missing work order number crop zone coordinates (x, y, width, height points).
+                </p>
+                {fmProfilesWithoutCoords.length > 0 && (
+                  <p className="text-sm text-red-300 mb-2">
+                    Profiles missing coordinates: <span className="font-medium">{fmProfilesWithoutCoords.join(", ")}</span>
+                  </p>
+                )}
+                <p className="text-sm text-red-300">
+                  Please set the work order number crop zone rectangle for at least one FM Profile in{" "}
+                  <Link href={ROUTES.onboardingTemplates} className="underline hover:text-red-100 font-medium">
+                    Templates
+                  </Link>
+                  {" before processing emails."}
                 </p>
               </div>
             </div>
@@ -429,11 +547,41 @@ export default function InboxPage() {
         )}
 
         <div className="space-y-4">
+          {/* Load More Button - Above email list */}
+          {nextPageToken && !isLoadingEmails && emails.length > 0 && (
+            <div className="text-center py-4">
+              <button
+                onClick={() => loadEmails(nextPageToken)}
+                disabled={isLoadingMore}
+                className="px-6 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isLoadingMore ? "Loading..." : `Load More (${emails.length} shown, more available)`}
+              </button>
+              <p className="text-sm text-slate-400 mt-2">
+                Showing {emails.length} email{emails.length !== 1 ? 's' : ''} (oldest first)
+              </p>
+            </div>
+          )}
+
           {isLoadingEmails ? (
             <div className="text-center text-slate-400 py-8">Loading emails...</div>
           ) : emails.length === 0 ? (
             <div className="text-center text-slate-400 py-8">
-              No emails found with label "{WORK_ORDER_LABEL_NAME}"
+              {currentLabelName && currentLabelName !== "Gmail Inbox" ? (
+                <>
+                  No emails found with label "{currentLabelName}"
+                  <p className="text-sm text-slate-500 mt-2">
+                    Make sure emails are labeled with "{currentLabelName}" and contain PDF attachments.
+                  </p>
+                </>
+              ) : (
+                <>
+                  No work order queue label configured
+                  <p className="text-sm text-slate-500 mt-2">
+                    Please complete onboarding or configure Gmail labels in Settings.
+                  </p>
+                </>
+              )}
             </div>
           ) : (
             <>
@@ -482,9 +630,15 @@ export default function InboxPage() {
                         </button>
                         <button
                           onClick={() => processEmail(email.id)}
-                          disabled={isProcessing === email.id || hasFmProfiles === false}
+                          disabled={isProcessing === email.id || hasFmProfiles === false || hasFmProfilesWithCoords === false}
                           className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                          title={hasFmProfiles === false ? "FM Profile required to process work orders" : undefined}
+                          title={
+                            hasFmProfiles === false 
+                              ? "FM Profile required to process work orders" 
+                              : hasFmProfilesWithCoords === false
+                              ? "Work order number coordinates required - set crop zone in Templates"
+                              : undefined
+                          }
                         >
                           {isProcessing === email.id ? "Processing..." : "Process"}
                         </button>
@@ -508,19 +662,16 @@ export default function InboxPage() {
               ))}
             </>
           )}
+          
+          {/* Show "all emails" message when no more pages */}
+          {!nextPageToken && emails.length > 0 && !isLoadingEmails && (
+            <div className="text-center py-4">
+              <p className="text-sm text-slate-400">
+                Showing all {emails.length} email{emails.length !== 1 ? 's' : ''} (oldest first)
+              </p>
+            </div>
+          )}
         </div>
-
-        {nextPageToken && (
-          <div className="text-center">
-            <button
-              onClick={() => loadEmails(nextPageToken)}
-              disabled={isLoadingMore}
-              className="px-6 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
-            >
-              {isLoadingMore ? "Loading..." : "Load More"}
-            </button>
-          </div>
-        )}
       </div>
     </AppShell>
   );

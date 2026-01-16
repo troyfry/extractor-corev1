@@ -1,5 +1,5 @@
 export const ROUTES = {
-    home: "/work-orders",
+    home: "/",
 
     workOrders: "/work-orders",
     inbox: "/inbox",
@@ -28,5 +28,6 @@ export const ROUTES = {
   pro: "/pro",
   free: "/free",
   dashboard: "/dashboard",
+  settingsFmProfiles: "/settings/fm-profiles",
   } as const;
   

@@ -1,10 +1,11 @@
 /**
- * Workspace Resolution Order Tests
+ * Workspace Resolution Order Tests (DB-First Architecture)
  * 
  * Ensures workspace resolution follows correct priority:
- * 1. Cookies (fast, zero API calls)
- * 2. Users Sheet (source of truth, rehydrates cookies)
- * 3. Typed error (not silent undefined)
+ * 1. Cookies with workspaceId (fast, zero API calls) - loads from DB
+ * 2. Legacy cookies with spreadsheetId (backward compatibility)
+ * 3. Users Sheet (legacy fallback)
+ * 4. Typed error (not silent undefined)
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -26,7 +27,31 @@ vi.mock("@/lib/auth/currentUser", () => ({
   getCurrentUser: vi.fn(),
 }));
 
-// Mock Users Sheet
+// Mock DB workspace service
+vi.mock("@/lib/db/services/workspace", () => ({
+  getWorkspaceById: vi.fn(),
+}));
+
+// Mock workspace cookies validation
+vi.mock("@/lib/workspace/workspaceCookies", () => ({
+  readWorkspaceCookies: vi.fn((cookieStore: any) => {
+    const workspaceId = mockCookies.get("workspaceId");
+    const spreadsheetId = mockCookies.get("googleSheetsSpreadsheetId");
+    const folderId = mockCookies.get("googleDriveFolderId");
+    const onboardingCompleted = mockCookies.get("onboardingCompleted");
+    const onboardingCompletedAt = mockCookies.get("onboardingCompletedAt");
+    return {
+      workspaceId: workspaceId || undefined,
+      spreadsheetId: spreadsheetId || undefined,
+      folderId: folderId || undefined,
+      onboardingCompleted: onboardingCompleted || undefined,
+      onboardingCompletedAt: onboardingCompletedAt || undefined,
+    };
+  }),
+  validateWorkspaceVersion: vi.fn(() => true),
+}));
+
+// Mock Users Sheet (legacy fallback)
 vi.mock("@/lib/onboarding/usersSheet", () => ({
   getUserRowById: vi.fn(),
 }));
@@ -36,7 +61,7 @@ vi.mock("@/lib/userSettings/repository", () => ({
   getUserSpreadsheetId: vi.fn(),
 }));
 
-describe("workspace resolution order", () => {
+describe("workspace resolution order (DB-first)", () => {
   beforeEach(() => {
     mockCookies.clear();
     vi.clearAllMocks();
@@ -52,11 +77,42 @@ describe("workspace resolution order", () => {
     expect(result).toBeNull();
   });
 
-  it("prefers cookie spreadsheetId over Users sheet when cookie exists", async () => {
+  it("prefers DB workspace when workspaceId cookie exists", async () => {
+    const { getWorkspace } = await import("@/lib/workspace/getWorkspace");
+    const { getCurrentUser } = await import("@/lib/auth/currentUser");
+    const { getWorkspaceById } = await import("@/lib/db/services/workspace");
+
+    // Setup: Cookie has workspaceId (DB-first)
+    mockCookies.set("workspaceId", "workspace-123");
+
+    vi.mocked(getCurrentUser).mockResolvedValue({
+      userId: "user-123",
+      email: "test@example.com",
+    } as any);
+
+    vi.mocked(getWorkspaceById).mockResolvedValue({
+      id: "workspace-123",
+      spreadsheet_id: "db-spreadsheet-id",
+      drive_folder_id: "db-folder-id",
+      onboarding_completed_at: new Date(),
+      created_at: new Date(),
+      updated_at: new Date(),
+    } as any);
+
+    const result = await getWorkspace();
+
+    expect(result).not.toBeNull();
+    expect(result?.source).toBe("cookie");
+    expect(result?.workspace.spreadsheetId).toBe("db-spreadsheet-id");
+    expect(result?.workspace.driveSignedFolderId).toBe("db-folder-id");
+    expect(getWorkspaceById).toHaveBeenCalledWith("workspace-123");
+  });
+
+  it("falls back to legacy cookie spreadsheetId when workspaceId cookie doesn't exist", async () => {
     const { getWorkspace } = await import("@/lib/workspace/getWorkspace");
     const { getCurrentUser } = await import("@/lib/auth/currentUser");
 
-    // Setup: Cookie has spreadsheetId
+    // Setup: Legacy cookie has spreadsheetId (no workspaceId)
     mockCookies.set("googleSheetsSpreadsheetId", "cookie-spreadsheet-id");
     mockCookies.set("onboardingCompleted", "true");
     mockCookies.set("googleDriveFolderId", "cookie-folder-id");

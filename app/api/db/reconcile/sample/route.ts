@@ -1,6 +1,6 @@
 // app/api/db/reconcile/sample/route.ts
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/auth";
+import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getWorkspaceIdForUser } from "@/lib/db/utils/getWorkspaceId";
 import { listWorkOrders } from "@/lib/db/services/workOrders";
 import { getWorkspace } from "@/lib/workspace/getWorkspace";
@@ -12,6 +12,14 @@ export const runtime = "nodejs";
 interface WorkOrderKey {
   workOrderNumber: string;
   fmKey: string | null;
+}
+
+interface LegacyWorkOrder extends WorkOrderKey {
+  id: string;
+  status: string | null;
+  signedAt: string | null;
+  amount: string | null;
+  scheduledDate: string | null;
 }
 
 /**
@@ -61,7 +69,7 @@ export async function GET() {
     const headersLower = headers.map((h) => (h || "").toLowerCase().trim());
     const getIndex = (colName: string): number => headersLower.indexOf(colName.toLowerCase());
 
-    const legacyWorkOrders: Array<WorkOrderKey & { id: string }> = [];
+    const legacyWorkOrders: LegacyWorkOrder[] = [];
     for (let i = 1; i < Math.min(rows.length, 51); i++) {
       const row = rows[i];
       if (!row || row.length === 0) continue;
@@ -69,6 +77,10 @@ export async function GET() {
       const woNumberCol = getIndex("wo_number");
       const jobIdCol = getIndex("jobid");
       const fmKeyCol = getIndex("fmkey");
+      const statusCol = getIndex("status");
+      const signedAtCol = getIndex("signed_at");
+      const amountCol = getIndex("amount");
+      const scheduledDateCol = getIndex("scheduled_date");
 
       if (woNumberCol === -1 || !row[woNumberCol]) continue;
 
@@ -77,11 +89,19 @@ export async function GET() {
 
       const jobId = jobIdCol !== -1 && row[jobIdCol] ? String(row[jobIdCol]) : `legacy-${woNumber}-${i}`;
       const fmKey = fmKeyCol !== -1 && row[fmKeyCol] ? String(row[fmKeyCol]).trim() : null;
+      const status = statusCol !== -1 && row[statusCol] ? String(row[statusCol]).trim() : null;
+      const signedAt = signedAtCol !== -1 && row[signedAtCol] ? String(row[signedAtCol]).trim() : null;
+      const amount = amountCol !== -1 && row[amountCol] ? String(row[amountCol]).trim() : null;
+      const scheduledDate = scheduledDateCol !== -1 && row[scheduledDateCol] ? String(row[scheduledDateCol]).trim() : null;
 
       legacyWorkOrders.push({
         id: jobId,
         workOrderNumber: woNumber,
         fmKey,
+        status,
+        signedAt,
+        amount,
+        scheduledDate,
       });
     }
 

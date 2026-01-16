@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { ROUTES } from "@/lib/routes";
 import { 
   cssPixelsToPdfPoints, 
@@ -71,6 +72,7 @@ type CropZone = {
 export default function OnboardingTemplatesPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [returnPath, setReturnPath] = useState<string | null>(null);
   const [fmProfiles, setFmProfiles] = useState<FmProfile[]>([]);
   const [selectedFmKey, setSelectedFmKey] = useState<string>("");
   const [_pdfFile, setPdfFile] = useState<File | null>(null);
@@ -113,6 +115,17 @@ export default function OnboardingTemplatesPage() {
     snippetImageUrl?: string | null;
   } | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
+
+  // Check if we came from settings (via referrer or query param)
+  useEffect(() => {
+    const referrer = typeof window !== "undefined" ? document.referrer : "";
+    const fromSettings = referrer.includes("/settings/fm-profiles") || searchParams.get("from") === "settings";
+    if (fromSettings) {
+      setReturnPath(ROUTES.settingsFmProfiles);
+    } else {
+      setReturnPath(ROUTES.onboardingFmProfiles);
+    }
+  }, [searchParams]);
 
   // Auto-select fmKey from query parameter (will be validated after profiles load)
   useEffect(() => {
@@ -202,11 +215,16 @@ export default function OnboardingTemplatesPage() {
     setIsLoadingProfiles(true);
     setError(null);
     try {
-      const response = await fetch("/api/fm-profiles");
+      const response = await fetch("/api/onboarding/fm-profiles");
       if (response.ok) {
         const data = await response.json();
         const profiles = (data.profiles || []) as FmProfile[];
-        setFmProfiles(profiles);
+        // Map to the expected format (fmKey, fmLabel)
+        const mappedProfiles = profiles.map((p: any) => ({
+          fmKey: p.fmKey,
+          fmLabel: p.fmLabel || p.displayName || p.fmKey,
+        }));
+        setFmProfiles(mappedProfiles);
         
         // After profiles load, validate and auto-select fmKey from query param if valid
         const fmKeyFromQuery = searchParams.get("fmKey");
@@ -1147,13 +1165,19 @@ export default function OnboardingTemplatesPage() {
           const errorJson = JSON.parse(errorText);
           errorMessage = errorJson.error || errorJson.message || errorMessage;
         } catch {
-          errorMessage = errorText || errorMessage;
+          // If errorText is null or empty, use default message
+          errorMessage = (errorText && errorText.trim()) ? errorText.substring(0, 500) : errorMessage;
         }
         throw new Error(errorMessage);
       }
 
       const result = await response.json();
       console.log("[Test Extract] OCR result:", result);
+      
+      // Validate result structure
+      if (!result || typeof result !== 'object') {
+        throw new Error("Invalid response format from OCR service");
+      }
 
       // Normalize response format (handle different field names)
       setTestResult({
@@ -1212,8 +1236,16 @@ export default function OnboardingTemplatesPage() {
             {isLoadingProfiles ? (
               <div className="text-slate-400">Loading FM profiles...</div>
             ) : fmProfiles.length === 0 ? (
-              <div className="text-yellow-400">
-                No FM profiles found. Please complete the FM Profiles step first.
+              <div className="space-y-3">
+                <div className="text-yellow-400">
+                  No FM profiles found.
+                </div>
+                <Link
+                  href={returnPath || ROUTES.onboardingFmProfiles}
+                  className="inline-block px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg font-medium transition-colors"
+                >
+                  + Add FM Profile
+                </Link>
               </div>
             ) : (
               <select
@@ -1660,17 +1692,22 @@ export default function OnboardingTemplatesPage() {
             {savedTemplate && (
               <button
                 onClick={async () => {
-                  // Mark onboarding complete when user explicitly clicks to finish
-                  try {
-                    await fetch("/api/onboarding/complete", { method: "POST" });
-                  } catch (e) {
-                    console.error("Failed to mark onboarding complete:", e);
+                  // If we came from settings, go back there; otherwise complete onboarding
+                  if (returnPath === ROUTES.settingsFmProfiles) {
+                    router.push(ROUTES.settingsFmProfiles);
+                  } else {
+                    // Mark onboarding complete when user explicitly clicks to finish
+                    try {
+                      await fetch("/api/onboarding/complete", { method: "POST" });
+                    } catch (e) {
+                      console.error("Failed to mark onboarding complete:", e);
+                    }
+                    router.push(ROUTES.pro);
                   }
-                  router.push(ROUTES.pro);
                 }}
                 className="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-medium transition-colors"
               >
-                Go to Dashboard →
+                {returnPath === ROUTES.settingsFmProfiles ? "Back to FM Profiles →" : "Go to Dashboard →"}
               </button>
             )}
           </div>

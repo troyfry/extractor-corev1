@@ -255,12 +255,17 @@ export async function getWorkOrderDetail(
     .limit(1);
 
   // Get export job history (last 10)
+  // entity_id stores work_order_id for WORK_ORDER and SIGNED_MATCH job types
   const exportJobs = await db
     .select()
     .from(export_jobs)
     .where(and(
-      eq(export_jobs.work_order_id, workOrderId),
-      eq(export_jobs.workspace_id, workspaceId)
+      eq(export_jobs.entity_id, workOrderId),
+      eq(export_jobs.workspace_id, workspaceId),
+      or(
+        eq(export_jobs.job_type, "WORK_ORDER"),
+        eq(export_jobs.job_type, "SIGNED_MATCH")
+      )
     ))
     .orderBy(desc(export_jobs.created_at))
     .limit(10);
@@ -273,4 +278,54 @@ export async function getWorkOrderDetail(
     latest_extraction_run: latestExtractionRun || null,
     export_jobs: exportJobs,
   };
+}
+
+/**
+ * Check if a work order is already signed.
+ * Returns true if work order exists and has status SIGNED or has a signed_match.
+ * 
+ * @param workspaceId - Workspace ID
+ * @param workOrderNumber - Work order number to check
+ * @returns True if work order is signed, false otherwise
+ */
+export async function isWorkOrderSigned(
+  workspaceId: string,
+  workOrderNumber: string
+): Promise<boolean> {
+  if (!workOrderNumber || !workOrderNumber.trim()) {
+    return false;
+  }
+
+  // Find work order by workspace + work_order_number
+  const [workOrder] = await db
+    .select({
+      id: work_orders.id,
+      status: work_orders.status,
+    })
+    .from(work_orders)
+    .where(
+      and(
+        eq(work_orders.workspace_id, workspaceId),
+        eq(work_orders.work_order_number, workOrderNumber.trim())
+      )
+    )
+    .limit(1);
+
+  if (!workOrder) {
+    return false;
+  }
+
+  // Check if status is SIGNED
+  if (workOrder.status?.toUpperCase() === "SIGNED") {
+    return true;
+  }
+
+  // Check if work order has a signed_match (more reliable check)
+  const [signedMatch] = await db
+    .select()
+    .from(signed_match)
+    .where(eq(signed_match.work_order_id, workOrder.id))
+    .limit(1);
+
+  return signedMatch !== undefined;
 }

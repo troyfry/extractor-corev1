@@ -204,47 +204,49 @@ export async function POST(req: Request) {
     // Shadow write to DB (non-blocking - don't fail if DB write fails)
     try {
       const { ingestSignedAuthoritative } = await import("@/lib/db/services/ingestSigned");
-      const { getOrCreateWorkspace } = await import("@/lib/db/services/workspace");
+      const { getWorkspaceIdForUser } = await import("@/lib/db/utils/getWorkspaceId");
       
-      // Get or create workspace in DB
-      const workspaceId = await getOrCreateWorkspace(
-        spreadsheetId,
-        user.id,
-        undefined // driveFolderId not available here
-      );
-
-      await ingestSignedAuthoritative({
-        workspaceId,
-        pdfBuffer: normalizedPdfBuffer,
-        signedPdfUrl: result.signedPdfUrl || null, // Don't pass empty string, pass null
-        signedPreviewImageUrl: result.snippetDriveUrl || result.snippetImageUrl || null,
-        fmKey: rawFmKey || null,
-        extractionResult: extractionResult ? {
-          workOrderNumber: extractionResult.workOrderNumber,
-          method: extractionResult.method,
-          confidence: extractionResult.confidence,
-          rationale: extractionResult.rationale || undefined,
-          candidates: extractionResult.candidates || undefined,
-        } : null,
-        workOrderNumber: woNumberOverride || extractionResult?.workOrderNumber || null,
-        sourceMetadata: {
-          filename: originalFilename,
-          source: "UPLOAD",
-        },
-      });
-      console.log("[Signed Process] ✅ Shadow wrote signed document to DB");
+      // Get workspace ID (DB-native: from cookies or user lookup)
+      const workspaceId = await getWorkspaceIdForUser();
+      
+      if (!workspaceId) {
+        console.warn("[Signed Process] No workspace ID found - skipping DB shadow write");
+        // Continue without DB write (non-blocking)
+      } else {
+        await ingestSignedAuthoritative({
+          workspaceId,
+          pdfBuffer: normalizedPdfBuffer,
+          signedPdfUrl: result.signedPdfUrl || null, // Don't pass empty string, pass null
+          signedPreviewImageUrl: result.snippetDriveUrl || result.snippetImageUrl || null,
+          fmKey: rawFmKey || null,
+          extractionResult: extractionResult ? {
+            workOrderNumber: extractionResult.workOrderNumber,
+            method: extractionResult.method,
+            confidence: extractionResult.confidence,
+            rationale: extractionResult.rationale || undefined,
+            candidates: extractionResult.candidates || undefined,
+          } : null,
+          workOrderNumber: woNumberOverride || extractionResult?.workOrderNumber || null,
+          sourceMetadata: {
+            filename: originalFilename,
+            source: "UPLOAD",
+          },
+        });
+        console.log("[Signed Process] ✅ Shadow wrote signed document to DB");
+      }
     } catch (dbError) {
       // Log but don't fail - DB is shadow write
       console.warn("[Signed Process] ⚠️ Failed to shadow write signed document to DB (non-fatal):", dbError);
     }
 
-    // Log snippet URLs prominently for visual verification
-    console.log("📸 [Signed Process] FINAL SNIPPET URLs (what OCR captured):", {
-      snippetImageUrl: result.snippetImageUrl || null,
-      snippetDriveUrl: result.snippetDriveUrl || null,
-      snippetUrl: result.snippetUrl || null,
-      note: "Open snippetUrl in browser to see what region was cropped",
-    });
+    // Log snippet URLs (just URLs, not content)
+    if (result.snippetUrl || result.snippetDriveUrl || result.snippetImageUrl) {
+      console.log("📸 [Signed Process] Snippet URLs:", {
+        snippetImageUrl: result.snippetImageUrl ? (result.snippetImageUrl.startsWith("data:") ? "data:image/png;base64..." : result.snippetImageUrl) : null,
+        snippetDriveUrl: result.snippetDriveUrl || null,
+        snippetUrl: result.snippetUrl || null,
+      });
+    }
 
     // Map unified result to existing response format for compatibility
     // Use standardized fields from processSignedPdfUnified

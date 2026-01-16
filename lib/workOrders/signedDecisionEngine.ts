@@ -151,15 +151,29 @@ export function extractCandidatesFromText(
   }
 
   // Pattern 2: Standalone digit sequences of expected length
+  // IMPORTANT: Filter out common PO box patterns and address numbers
   const digitPattern = /\b(\d{4,})\b/g;
   // Reset regex lastIndex (digitPattern, not woPattern)
   digitPattern.lastIndex = 0;
   while ((match = digitPattern.exec(text)) !== null) {
     const digits = match[1];
     if (digits.length >= minLength && digits.length <= maxLength) {
-      // Avoid duplicates from pattern 1
-      if (!candidates.some(c => c.includes(digits))) {
-        candidates.push(digits);
+      // Filter out common PO box patterns (e.g., "PO Box 551802", "P.O. Box 551802")
+      const beforeMatch = text.substring(Math.max(0, match.index - 20), match.index).toLowerCase();
+      const afterMatch = text.substring(match.index + match[0].length, Math.min(text.length, match.index + match[0].length + 20)).toLowerCase();
+      const context = beforeMatch + afterMatch;
+      
+      // Skip if it looks like a PO box, address, or phone number
+      const isPoBox = /p\.?\s*o\.?\s*box/i.test(beforeMatch) || /^box\s+/i.test(beforeMatch);
+      const isAddress = /\b(street|st|avenue|ave|road|rd|drive|dr|lane|ln|way|blvd|boulevard)\b/i.test(context);
+      const isPhone = /[\d\-\(\)]{10,}/.test(context) && (/\d{3}[\-\.]\d{3}[\-\.]\d{4}/.test(context) || /\(\d{3}\)/.test(context));
+      const isZipCode = /\b\d{5}(-\d{4})?\b/.test(context) && digits.length === 5;
+      
+      if (!isPoBox && !isAddress && !isPhone && !isZipCode) {
+        // Avoid duplicates from pattern 1
+        if (!candidates.some(c => c.includes(digits))) {
+          candidates.push(digits);
+        }
       }
     }
   }

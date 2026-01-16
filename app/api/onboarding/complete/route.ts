@@ -7,56 +7,66 @@
 
 import { NextResponse } from "next/server";
 import { ROUTES } from "@/lib/routes";
-import { completeOnboarding } from "@/lib/onboarding/status";
-import { resetApiCallCount, getApiCallCount } from "@/lib/onboarding/usersSheet";
 import { getCurrentUser } from "@/lib/auth/currentUser";
-import { saveWorkspaceConfig } from "@/lib/workspace/saveWorkspace";
 import { getAllFmProfiles } from "@/lib/templates/fmProfilesSheets";
 import { listTemplatesForUser } from "@/lib/templates/templatesSheets";
 import { normalizeFmKey } from "@/lib/templates/fmProfiles";
 import { cookies } from "next/headers";
 import { createLabelHierarchy } from "@/lib/google/gmailLabels";
 import { validateLabelName } from "@/lib/google/gmailValidation";
+import { getWorkspaceIdForUser } from "@/lib/db/utils/getWorkspaceId";
+import { updateWorkspaceConfig } from "@/lib/db/services/workspace";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  resetApiCallCount();
   try {
     const user = await getCurrentUser();
     if (!user || !user.userId || !user.googleAccessToken) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Get spreadsheet ID and folder ID from cookies (set during Google step)
+    // Get workspace ID from cookies (set during Google step)
     const cookieStore = await cookies();
-    const spreadsheetId = cookieStore.get("googleSheetsSpreadsheetId")?.value;
+    const workspaceId = cookieStore.get("workspaceId")?.value;
     const folderId = cookieStore.get("googleDriveFolderId")?.value;
 
-    if (!spreadsheetId || !folderId) {
+    if (!workspaceId || !folderId) {
       return NextResponse.json(
-        { error: "Spreadsheet ID or folder ID not found. Please complete Google Sheets setup first." },
+        { error: "Workspace ID or folder ID not found. Please complete Google Drive setup first." },
         { status: 400 }
       );
     }
 
-    // Complete onboarding (validates prerequisites)
-    await completeOnboarding(spreadsheetId);
+    // Get workspace from DB to verify it exists
+    const { getWorkspaceById } = await import("@/lib/db/services/workspace");
+    const workspace = await getWorkspaceById(workspaceId);
+    if (!workspace) {
+      return NextResponse.json(
+        { error: "Workspace not found. Please complete Google Drive setup first." },
+        { status: 400 }
+      );
+    }
 
-    // Gather FM profiles (normalized fmKeys)
-    const fmProfiles = await getAllFmProfiles({
-      spreadsheetId,
-      accessToken: user.googleAccessToken,
-    });
-    const normalizedFmKeys = fmProfiles.map(p => normalizeFmKey(p.fmKey));
+    // Gather FM profiles (normalized fmKeys) - only if export is enabled
+    let normalizedFmKeys: string[] = [];
+    let templatesConfigured = false;
+    
+    if (workspace.export_enabled && workspace.spreadsheet_id) {
+      const fmProfiles = await getAllFmProfiles({
+        spreadsheetId: workspace.spreadsheet_id,
+        accessToken: user.googleAccessToken,
+      });
+      normalizedFmKeys = fmProfiles.map(p => normalizeFmKey(p.fmKey));
 
-    // Check if templates are configured
-    const templates = await listTemplatesForUser(
-      user.googleAccessToken,
-      spreadsheetId,
-      user.userId
-    );
-    const templatesConfigured = templates.length > 0;
+      // Check if templates are configured
+      const templates = await listTemplatesForUser(
+        user.googleAccessToken,
+        workspace.spreadsheet_id,
+        user.userId
+      );
+      templatesConfigured = templates.length > 0;
+    }
 
     // Get base label name from request body or use default
     const body = await request.json().catch(() => ({}));
@@ -79,21 +89,14 @@ export async function POST(request: Request) {
       includeNeedsReview
     );
 
-    // Save workspace config ONCE (source of truth)
-    await saveWorkspaceConfig(user.userId, {
-      spreadsheetId,
-      driveFolderId: folderId,
-      fmProfiles: normalizedFmKeys,
-      templatesConfigured,
-      onboardingCompletedAt: new Date().toISOString(),
-      labels,
-      // Legacy fields for backward compatibility
-      gmailWorkOrdersLabelName: labels.queue.name,
-      gmailWorkOrdersLabelId: labels.queue.id,
-      gmailSignedLabelName: labels.signed.name,
+    // Save workspace config to DB (source of truth)
+    await updateWorkspaceConfig(workspaceId, {
+      gmailBaseLabelName: labels.base.name,
+      gmailBaseLabelId: labels.base.id,
+      gmailQueueLabelId: labels.queue.id,
       gmailSignedLabelId: labels.signed.id,
-      gmailProcessedLabelName: labels.processed?.name || null,
       gmailProcessedLabelId: labels.processed?.id || null,
+      onboardingCompletedAt: new Date(),
     });
     
     // Set workspace cookies (fast path, hints only)
@@ -107,13 +110,23 @@ export async function POST(request: Request) {
       sameSite: "lax",
     });
 
-    // Optional cache cookies (safe hints)
-    response.cookies.set("workspaceSpreadsheetId", spreadsheetId, {
+    // Workspace ID cookie (DB-native)
+    response.cookies.set("workspaceId", workspaceId, {
       maxAge: 30 * 24 * 60 * 60,
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
     });
+
+    // Optional cache cookies (safe hints)
+    if (workspace.spreadsheet_id) {
+      response.cookies.set("workspaceSpreadsheetId", workspace.spreadsheet_id, {
+        maxAge: 30 * 24 * 60 * 60,
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+      });
+    }
 
     response.cookies.set("workspaceDriveFolderId", folderId, {
       maxAge: 30 * 24 * 60 * 60,
@@ -123,6 +136,14 @@ export async function POST(request: Request) {
     });
 
     response.cookies.set("onboardingCompletedAt", new Date().toISOString(), {
+      maxAge: 30 * 24 * 60 * 60,
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+    });
+
+    // Set onboarding completed cookie
+    response.cookies.set("onboardingCompleted", "true", {
       maxAge: 30 * 24 * 60 * 60,
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
@@ -169,8 +190,7 @@ export async function POST(request: Request) {
       });
     }
     
-    const apiCalls = getApiCallCount();
-    console.log(`[onboarding/complete] Workspace saved. Sheets API calls: ${apiCalls}`);
+    console.log(`[onboarding/complete] Workspace config saved to DB. Workspace ID: ${workspaceId}`);
     return response;
   } catch (error) {
     console.error("Error completing onboarding:", error);

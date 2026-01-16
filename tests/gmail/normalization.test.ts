@@ -7,6 +7,9 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// Set mock DATABASE_URL before any DB imports
+process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+
 // Mock Next.js dependencies
 vi.mock("next/server", () => ({}));
 vi.mock("next-auth", () => ({}));
@@ -24,7 +27,7 @@ vi.mock("@/lib/workspace/workspaceCookies", () => ({
   rehydrateWorkspaceCookies: vi.fn(),
 }));
 
-vi.mock("@/lib/process", () => ({
+vi.mock("@/lib/_deprecated/process", () => ({
   processSignedPdf: vi.fn(),
 }));
 
@@ -40,6 +43,32 @@ vi.mock("@/lib/google/gmailExtract", () => ({
   extractPdfAttachments: vi.fn(),
 }));
 
+// Mock DB dependencies (DB-first architecture)
+vi.mock("@/lib/db/drizzle", () => ({
+  db: {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => []),
+        })),
+      })),
+    })),
+  },
+}));
+
+vi.mock("@/lib/signed/dbLookup", () => ({
+  findWorkOrderByWoNumber: vi.fn(),
+  isDbSignedLookupEnabled: vi.fn(() => false), // Disable DB lookup for these tests
+}));
+
+vi.mock("@/lib/db/utils/getWorkspaceId", () => ({
+  getWorkspaceIdForUser: vi.fn(),
+}));
+
+vi.mock("@/lib/db/services/ingestSigned", () => ({
+  ingestSignedAuthoritative: vi.fn(),
+}));
+
 describe("Gmail Signed PDF Normalization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -53,6 +82,7 @@ describe("Gmail Signed PDF Normalization", () => {
     const normalizedBuffer = Buffer.from("normalized pdf content");
     
     vi.mocked(normalizePdfBuffer).mockResolvedValue(normalizedBuffer);
+    // processSignedPdf is already mocked in the vi.mock above, just reset and set return value
     vi.mocked(processSignedPdf).mockResolvedValue({
       woNumber: "WO123",
       needsReview: false,
@@ -103,6 +133,7 @@ describe("Gmail Signed PDF Normalization", () => {
     
     // Normalization returns same buffer (already normalized)
     vi.mocked(normalizePdfBuffer).mockResolvedValue(originalBuffer);
+    // processSignedPdf is already mocked in the vi.mock above, just reset and set return value
     vi.mocked(processSignedPdf).mockResolvedValue({
       woNumber: "WO123",
       needsReview: false,

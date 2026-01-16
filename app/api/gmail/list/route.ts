@@ -14,6 +14,8 @@ import { getCurrentUser } from "@/lib/auth/currentUser";
 import { listWorkOrderEmails, createGmailClient } from "@/lib/google/gmail";
 import { loadWorkspace } from "@/lib/workspace/loadWorkspace";
 import { isForbiddenLabel } from "@/lib/google/gmailValidation";
+import { getWorkspaceIdForUser } from "@/lib/db/utils/getWorkspaceId";
+import { getWorkspaceById } from "@/lib/db/services/workspace";
 
 export const runtime = "nodejs";
 
@@ -65,9 +67,6 @@ export async function GET(request: Request) {
       ? parseInt(searchParams.get("maxResults")!, 10) 
       : 50; // Increased default to match Step 2
 
-    // Load workspace to get default label IDs
-    const workspace = await loadWorkspace();
-    
     // Use workspace label ID by default, or resolve from query param
     let labelId: string | null = null;
     let labelName: string | undefined = undefined;
@@ -84,16 +83,48 @@ export async function GET(request: Request) {
       const gmail = createGmailClient(accessToken);
       labelId = await resolveLabelId(gmail, labelName);
       console.log(`[Gmail List API] Label name from query: "${labelName}", resolved labelId: ${labelId || "null"}`);
-    } else if (workspace?.labels?.queue.id) {
-      // Use workspace queue label (new structure)
-      labelId = workspace.labels.queue.id;
-      labelName = workspace.labels.queue.name;
-      console.log(`[Gmail List API] Using workspace queue label: "${labelName}" (ID: ${labelId})`);
-    } else if (workspace?.gmailWorkOrdersLabelId) {
-      // Fallback to legacy label (backward compatibility)
-      labelId = workspace.gmailWorkOrdersLabelId;
-      labelName = workspace.gmailWorkOrdersLabelName;
-      console.log(`[Gmail List API] Using workspace label (legacy): "${labelName}" (ID: ${labelId})`);
+    } else {
+      // Try DB first (DB-native)
+      const workspaceId = await getWorkspaceIdForUser();
+      if (workspaceId) {
+        const dbWorkspace = await getWorkspaceById(workspaceId);
+        if (dbWorkspace?.gmail_queue_label_id) {
+          labelId = dbWorkspace.gmail_queue_label_id;
+          // Get label name from Gmail API
+          const gmail = createGmailClient(accessToken);
+          const res = await gmail.users.labels.get({ userId: "me", id: labelId });
+          labelName = res.data.name || undefined;
+          console.log(`[Gmail List API] Using DB workspace queue label: "${labelName}" (ID: ${labelId})`);
+        }
+      }
+      
+      // Fallback to legacy workspace loader (Sheets-based)
+      if (!labelId) {
+        const workspace = await loadWorkspace();
+        if (workspace?.labels?.queue.id) {
+          // Use workspace queue label (new structure)
+          labelId = workspace.labels.queue.id;
+          labelName = workspace.labels.queue.name;
+          console.log(`[Gmail List API] Using workspace queue label (legacy): "${labelName}" (ID: ${labelId})`);
+        } else if (workspace?.gmailWorkOrdersLabelId) {
+          // Fallback to legacy label (backward compatibility)
+          labelId = workspace.gmailWorkOrdersLabelId;
+          labelName = workspace.gmailWorkOrdersLabelName;
+          console.log(`[Gmail List API] Using workspace label (legacy): "${labelName}" (ID: ${labelId})`);
+        }
+      }
+    }
+    
+    // If no label found, return error (do NOT use INBOX)
+    if (!labelId) {
+      return NextResponse.json(
+        { 
+          error: "No work order queue label configured. Please complete onboarding or configure Gmail labels in Settings.",
+          emails: [],
+          labelName: null,
+        },
+        { status: 200 } // Return 200 with empty list, not an error status
+      );
     }
 
     const result = await listWorkOrderEmails(accessToken, labelName, labelId, pageToken, maxResults);
@@ -106,7 +137,7 @@ export async function GET(request: Request) {
     // Gmail API returns messages in reverse chronological order (newest first), so we need
     // to combine all pages on the client and sort the entire combined list
     
-    console.log(`[Gmail List API] Summary for label "${labelName || 'INBOX'}":`);
+    console.log(`[Gmail List API] Summary for label "${labelName || 'unknown'}":`);
     console.log(`[Gmail List API]   - Emails with PDF attachments: ${result.emails.length}`);
     console.log(`[Gmail List API]   - Total PDF attachments: ${totalPdfAttachments}`);
     console.log(`[Gmail List API]   - Returning unsorted (client will sort entire list)`);
@@ -115,14 +146,14 @@ export async function GET(request: Request) {
       console.log(`[Gmail List API] More emails available (nextPageToken present)`);
     }
     if (result.emails.length === 0) {
-      console.warn(`[Gmail List API] No emails with PDF attachments found. Check if label "${labelName || 'INBOX'}" exists and contains emails with PDF attachments.`);
+      console.warn(`[Gmail List API] No emails with PDF attachments found. Check if label "${labelName || 'unknown'}" exists and contains emails with PDF attachments.`);
     }
 
     return NextResponse.json(
       { 
         emails: result.emails, // Return unsorted - client will sort entire combined list
         nextPageToken: result.nextPageToken,
-        labelName: labelName || "INBOX", // Return the label name being used
+        labelName: labelName || undefined, // Return the label name being used
       },
       { status: 200 }
     );

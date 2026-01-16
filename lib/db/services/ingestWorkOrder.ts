@@ -81,7 +81,7 @@ export async function ingestWorkOrderAuthoritative(
   const jobId = generateJobId(issuerKey, parsedWorkOrder.workOrderNumber);
 
   // Check if work order already exists (by workspace + job_id)
-  const existingWorkOrder = await db
+  let existingWorkOrder = await db
     .select()
     .from(work_orders)
     .where(
@@ -92,13 +92,43 @@ export async function ingestWorkOrderAuthoritative(
     )
     .limit(1);
 
+  // Fallback: If not found by job_id, check by work_order_number + fm_key to prevent duplicates
+  // This handles cases where issuerKey varies (different email subjects) but it's the same work order
+  if (existingWorkOrder.length === 0 && parsedWorkOrder.workOrderNumber && parsedWorkOrder.fmKey) {
+    const fallbackCheck = await db
+      .select()
+      .from(work_orders)
+      .where(
+        and(
+          eq(work_orders.workspace_id, workspaceId),
+          eq(work_orders.work_order_number, parsedWorkOrder.workOrderNumber),
+          eq(work_orders.fm_key, parsedWorkOrder.fmKey)
+        )
+      )
+      .limit(1);
+    
+    if (fallbackCheck.length > 0) {
+      // Found existing work order by work_order_number + fm_key
+      // Use its job_id to maintain consistency
+      existingWorkOrder = fallbackCheck;
+      // Update job_id to match the existing one (or keep the new one if they're different)
+      // Actually, let's keep the existing job_id to avoid breaking references
+    }
+  }
+
   let workOrderId: string;
   let isNew: boolean;
+  let shouldUpdateJobId = false;
 
   if (existingWorkOrder.length > 0) {
     // Update existing work order (idempotent - field authority merge policy)
     workOrderId = existingWorkOrder[0].id;
     isNew = false;
+    
+    // If job_id differs but it's the same work order, update job_id to the new one for consistency
+    if (existingWorkOrder[0].job_id !== jobId) {
+      shouldUpdateJobId = true;
+    }
 
     const existing = existingWorkOrder[0];
     const updates: Partial<typeof work_orders.$inferInsert> = {
@@ -125,8 +155,12 @@ export async function ingestWorkOrderAuthoritative(
     if (parsedWorkOrder.vendorName && !existing.vendor_name) {
       updates.vendor_name = parsedWorkOrder.vendorName;
     }
-    if (parsedWorkOrder.scheduledDate && !existing.scheduled_date) {
-      updates.scheduled_date = parsedWorkOrder.scheduledDate;
+    // Scheduled date: prefer new value if it's different from existing (field authority)
+    if (parsedWorkOrder.scheduledDate) {
+      // Only update if existing is null/empty or if new value is different
+      if (!existing.scheduled_date || existing.scheduled_date !== parsedWorkOrder.scheduledDate) {
+        updates.scheduled_date = parsedWorkOrder.scheduledDate;
+      }
     }
     if (parsedWorkOrder.priority && !existing.priority) {
       updates.priority = parsedWorkOrder.priority;
@@ -146,6 +180,11 @@ export async function ingestWorkOrderAuthoritative(
 
     // Never overwrite signed fields (signed_pdf_url, signed_preview_image_url, signed_at, status=SIGNED)
     // These are only set by signed document processing
+
+    // Update job_id if it changed (for consistency when same work order has different issuer keys)
+    if (shouldUpdateJobId) {
+      updates.job_id = jobId;
+    }
 
     if (Object.keys(updates).length > 1) {
       // More than just updated_at
@@ -174,9 +213,20 @@ export async function ingestWorkOrderAuthoritative(
       priority: parsedWorkOrder.priority || null,
       amount: parsedWorkOrder.amount || null,
       currency: parsedWorkOrder.currency || "USD",
-      nte_amount: parsedWorkOrder.notes?.includes("NTE")
-        ? parsedWorkOrder.amount || null
-        : null,
+      nte_amount: (() => {
+        // Extract NTE amount from notes if present (format: "NTE: $123.45" or "NTE: 123.45")
+        if (parsedWorkOrder.notes) {
+          const nteMatch = parsedWorkOrder.notes.match(/NTE:\s*\$?([0-9,]+\.?[0-9]*)/i);
+          if (nteMatch) {
+            const nteValue = nteMatch[1].replace(/,/g, "");
+            const nteNum = parseFloat(nteValue);
+            if (!isNaN(nteNum)) {
+              return nteNum.toFixed(2);
+            }
+          }
+        }
+        return null;
+      })(),
       notes: parsedWorkOrder.notes || null,
       work_order_pdf_link: workOrderPdfLink || null,
       status: "OPEN",

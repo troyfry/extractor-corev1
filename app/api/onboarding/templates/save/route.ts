@@ -10,8 +10,11 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { resetApiCallCount, getApiCallCount, ensureUsersSheet } from "@/lib/onboarding/usersSheet";
-import { upsertTemplate } from "@/lib/templates/templatesSheets";
+import { upsertTemplate as upsertTemplateSheets } from "@/lib/templates/templatesSheets";
 import { cookies } from "next/headers";
+import { getWorkspaceIdForUser } from "@/lib/db/utils/getWorkspaceId";
+import { getWorkspaceById } from "@/lib/db/services/workspace";
+import { upsertFmProfile } from "@/lib/db/services/fmProfiles";
 
 export const runtime = "nodejs";
 
@@ -88,19 +91,19 @@ export async function POST(request: Request) {
       }
     }
 
-    // Get the main spreadsheet ID from cookie (set during Google step)
-    const cookieStore = await cookies();
-    const mainSpreadsheetId = cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
-
-    if (!mainSpreadsheetId) {
+    // Get workspace ID (DB-native)
+    const workspaceId = await getWorkspaceIdForUser();
+    if (!workspaceId) {
       return NextResponse.json(
-        { error: "Spreadsheet ID not configured. Please complete the Google step first." },
+        { error: "Workspace not found. Please complete the Google step first." },
         { status: 400 }
       );
     }
 
-    // Ensure Users sheet exists (onboarding route - must ensure sheet exists)
-    await ensureUsersSheet(user.googleAccessToken, mainSpreadsheetId, { allowEnsure: true });
+    // Get workspace to check if export is enabled
+    const workspace = await getWorkspaceById(workspaceId);
+    const exportEnabled = workspace?.export_enabled === true;
+    const mainSpreadsheetId = workspace?.spreadsheet_id || null;
 
     // Note: Templates are shared per spreadsheet, not per user, so we don't require a user row
     // The userId is stored for audit purposes but templates work without it
@@ -114,6 +117,28 @@ export async function POST(request: Request) {
       rawFmKey: fmKey,
       normalizedFmKey,
     });
+
+    // Save to DB first (update FM profile with wo_number_region)
+    // POINTS-ONLY: Store only PDF points, not percentages
+    const woNumberRegion = {
+      page,
+      xPt,
+      yPt,
+      wPt,
+      hPt,
+      pageWidthPt,
+      pageHeightPt,
+      dpi: sanitizedDpi,
+      // Percentage fields omitted - points-only mode
+    };
+
+    await upsertFmProfile({
+      workspaceId,
+      fmKey: normalizedFmKey,
+      woNumberRegion,
+    });
+    
+    console.log(`[onboarding/templates/save] ✅ Saved template to DB for fmKey="${normalizedFmKey}"`);
     
     // ⚠️ SERVER-SIDE VALIDATION: Block signed/scan PDFs by filename (even if no buffer provided)
     // This prevents bypassing client-side checks
@@ -206,29 +231,48 @@ export async function POST(request: Request) {
       },
       dpi: templateData.dpi,
       pctFields: "set to empty string (points-only mode)",
-      spreadsheetId: mainSpreadsheetId.substring(0, 10) + "...",
+      spreadsheetId: mainSpreadsheetId ? mainSpreadsheetId.substring(0, 10) + "..." : "null",
     });
     
     // Get the exact rowData that will be written (for logging)
-    const { getTemplateRowDataForLogging } = await import("@/lib/templates/templatesSheets");
-    const rowDataLog = await getTemplateRowDataForLogging(
-      user.googleAccessToken,
-      mainSpreadsheetId,
-      templateData
-    );
+    // Only if export is enabled and spreadsheet ID exists
+    let rowDataLog = null;
+    if (exportEnabled && mainSpreadsheetId) {
+      try {
+        const { getTemplateRowDataForLogging } = await import("@/lib/templates/templatesSheets");
+        rowDataLog = await getTemplateRowDataForLogging(
+          user.googleAccessToken,
+          mainSpreadsheetId,
+          templateData
+        );
+      } catch (logError) {
+        console.warn("[onboarding/templates/save] Failed to get row data for logging:", logError);
+      }
+    }
     
-    await upsertTemplate(
-      user.googleAccessToken,
-      mainSpreadsheetId,
-      templateData
-    );
-    
-    console.log(`[onboarding/templates/save] Template saved successfully for normalizedFmKey="${normalizedFmKey}"`);
-    console.log(`[onboarding/templates/save] Exact rowData written to Sheets:`, rowDataLog);
+    // If export is enabled, also save to Sheets
+    if (exportEnabled && mainSpreadsheetId) {
+      try {
+        // Ensure Users sheet exists
+        await ensureUsersSheet(user.googleAccessToken, mainSpreadsheetId, { allowEnsure: true });
 
-    // Invalidate template cache for this spreadsheetId + fmKey
-    const { invalidateTemplateCache } = await import("@/lib/workOrders/templateConfig");
-    invalidateTemplateCache(mainSpreadsheetId, normalizedFmKey);
+        await upsertTemplateSheets(
+          user.googleAccessToken,
+          mainSpreadsheetId,
+          templateData
+        );
+        
+        console.log(`[onboarding/templates/save] ✅ Saved template to Sheets for fmKey="${normalizedFmKey}"`);
+        console.log(`[onboarding/templates/save] Exact rowData written to Sheets:`, rowDataLog);
+
+        // Invalidate template cache for this spreadsheetId + fmKey
+        const { invalidateTemplateCache } = await import("@/lib/workOrders/templateConfig");
+        invalidateTemplateCache(mainSpreadsheetId, normalizedFmKey);
+      } catch (sheetsError) {
+        // Log but don't fail - DB is the source of truth
+        console.warn(`[onboarding/templates/save] Failed to save template to Sheets (non-blocking):`, sheetsError);
+      }
+    }
 
     const apiCalls = getApiCallCount();
     console.log(`[onboarding/templates/save] Sheets API calls: ${apiCalls}`);

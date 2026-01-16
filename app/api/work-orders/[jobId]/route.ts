@@ -94,6 +94,18 @@ export async function GET(
   } catch (error) {
     console.error("[Work Order GET] Error:", error);
     const errorMessage = error instanceof Error ? error.message : "Failed to fetch work order";
+    
+    // Check if this is a DB error in strict mode
+    if (errorMessage.includes("Database unavailable")) {
+      return NextResponse.json(
+        { 
+          error: errorMessage,
+          code: "DB_UNAVAILABLE",
+        },
+        { status: 503 } // 503 Service Unavailable
+      );
+    }
+    
     return NextResponse.json(
       { error: errorMessage },
       { status: 500 }

@@ -75,6 +75,21 @@ export async function POST(req: Request) {
       );
     }
 
+    // Check if legacy writes should be blocked
+    const { shouldBlockLegacyWrites } = await import("@/lib/readAdapter/guardrails");
+    const blockWrites = await shouldBlockLegacyWrites();
+    
+    if (blockWrites) {
+      // In DB Native Mode, legacy writes are blocked
+      return NextResponse.json(
+        {
+          error: "Legacy write endpoint disabled. Please use DB endpoints.",
+          code: "LEGACY_DISABLED",
+        },
+        { status: 410 } // 410 Gone - indicates resource is no longer available
+      );
+    }
+    
     // Log warning if DB is primary (guardrail)
     await logLegacyUpdateWarning("/api/signed/override", {
       woNumber,

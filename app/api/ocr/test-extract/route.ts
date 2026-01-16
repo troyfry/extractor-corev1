@@ -130,15 +130,16 @@ export async function POST(request: NextRequest) {
     });
 
     // Return OCR result in format expected by client
+    // Ensure all string fields are never null (use empty string as fallback)
     return NextResponse.json({
-      workOrderNumber: result.workOrderNumber,
-      woNumber: result.workOrderNumber,
-      extractedText: result.rawText,
-      rawText: result.rawText,
-      confidence: result.confidence,
-      confidenceRaw: result.confidence,
-      confidenceLabel: result.confidence ? (result.confidence >= 0.9 ? "high" : result.confidence >= 0.6 ? "medium" : "low") : undefined,
-      snippetImageUrl: result.snippetImageUrl,
+      workOrderNumber: result.workOrderNumber || null,
+      woNumber: result.workOrderNumber || null,
+      extractedText: result.rawText || "",
+      rawText: result.rawText || "",
+      confidence: result.confidence ?? 0,
+      confidenceRaw: result.confidence ?? 0,
+      confidenceLabel: result.confidence != null ? (result.confidence >= 0.9 ? "high" : result.confidence >= 0.6 ? "medium" : "low") : undefined,
+      snippetImageUrl: result.snippetImageUrl || null,
     });
   } catch (error) {
     console.error("[Test Extract] Error:", error);

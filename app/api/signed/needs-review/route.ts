@@ -48,7 +48,7 @@ export async function GET() {
       created_at: doc.createdAt,
       fmKey: doc.fmKey,
       signed_pdf_url: doc.signedPdfUrl,
-      preview_image_url: doc.signedPreviewImageUrl,
+      preview_image_url: doc.signedPreviewImageUrl, // This is the snippet image
       raw_text: null, // Not in unified format
       confidence: doc.extractionConfidence,
       reason: doc.extractionRationale || "Needs review",
@@ -60,6 +60,7 @@ export async function GET() {
       extraction_confidence: doc.extractionConfidence,
       extraction_rationale: doc.extractionRationale,
       extracted_work_order_number: doc.extractedWorkOrderNumber,
+      snippet_url: doc.signedPreviewImageUrl, // Alias for snippet image
     }));
 
     // Rehydrate cookies if needed (for legacy compatibility)
@@ -79,6 +80,19 @@ export async function GET() {
     return response;
   } catch (error) {
     console.error("Error in GET /api/signed/needs-review", error);
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    
+    // Check if this is a DB error in strict mode
+    if (errorMessage.includes("Database unavailable")) {
+      return NextResponse.json(
+        { 
+          error: errorMessage,
+          code: "DB_UNAVAILABLE",
+        },
+        { status: 503 } // 503 Service Unavailable
+      );
+    }
+    
     return NextResponse.json(
       { error: "Failed to fetch verification items." },
       { status: 500 }

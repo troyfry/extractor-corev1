@@ -27,6 +27,7 @@ import { getWorkspaceIdForUser } from "@/lib/db/utils/getWorkspaceId";
 import { db } from "@/lib/db/drizzle";
 import { signed_match, work_orders } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
+import { ingestSignedAuthoritative } from "@/lib/db/services/ingestSigned";
 
 const WORK_ORDERS_SHEET_NAME = process.env.GOOGLE_SHEETS_WORK_ORDERS_SHEET_NAME || "Work_Orders";
 const MAIN_SHEET_NAME = process.env.GOOGLE_SHEETS_MAIN_SHEET_NAME || "Sheet1";
@@ -37,7 +38,7 @@ export interface ProcessSignedPdfParams {
   originalFilename?: string;
   page: number; // 1-based
   fmKey: string;
-  spreadsheetId: string;
+  spreadsheetId?: string | null; // Optional for DB-native mode
   accessToken: string;
   source: "UPLOAD" | "GMAIL";
   sourceMeta?: {
@@ -122,12 +123,10 @@ export async function processSignedPdfUnified(
   if (!fmKey || !fmKey.trim()) {
     throw new Error("fmKey is required");
   }
-  if (!spreadsheetId) {
-    throw new Error("spreadsheetId is required");
-  }
   if (!accessToken) {
     throw new Error("accessToken is required");
   }
+  // spreadsheetId is optional (DB-native mode doesn't require it)
   if (page < 1) {
     throw new Error("page must be >= 1 (1-based)");
   }
@@ -202,7 +201,42 @@ export async function processSignedPdfUnified(
       gmail_date: sourceMeta?.gmailDate || null,
     };
 
-    await appendSignedNeedsReviewRow(accessToken, spreadsheetId, reviewRecord);
+    // Write to DB first (authoritative)
+    try {
+      const workspaceId = await getWorkspaceIdForUser();
+      if (workspaceId) {
+        await ingestSignedAuthoritative({
+          workspaceId,
+          pdfBuffer,
+          signedPdfUrl: signedPdfUrl || null,
+          signedPreviewImageUrl: null,
+          fmKey: normalizedFmKey,
+          extractionResult: null,
+          sourceMetadata: {
+            messageId: sourceMeta?.gmailMessageId,
+            attachmentId: sourceMeta?.gmailAttachmentId,
+            gmailDate: sourceMeta?.gmailDate,
+            source: source,
+            gmailSubject: sourceMeta?.gmailSubject,
+            gmailFrom: sourceMeta?.gmailFrom,
+          },
+        });
+        console.log("[Signed Processor] ✅ Saved signed document to DB (needs review - no template)");
+      }
+    } catch (dbError) {
+      console.error("[Signed Processor] Failed to save signed document to DB:", dbError);
+      // Non-fatal - continue with Sheets write if available
+    }
+
+    // Write to Sheets only if spreadsheetId is provided (optional export)
+    if (spreadsheetId) {
+      try {
+        await appendSignedNeedsReviewRow(accessToken, spreadsheetId, reviewRecord);
+        console.log("[Signed Processor] ✅ Saved signed document to Sheets (needs review - no template)");
+      } catch (sheetsError) {
+        console.warn("[Signed Processor] Failed to save signed document to Sheets (non-fatal):", sheetsError);
+      }
+    }
 
     // Return NEEDS_REVIEW result
     return {
@@ -241,35 +275,65 @@ export async function processSignedPdfUnified(
     );
   }
 
-  // Step 3: Call Python OCR service
-  const ocrResult = await callSignedOcrService(pdfBuffer, originalFilename, {
-    templateId: templateConfig.templateId,
-    page,
-    region: templateConfig.region, // Required by SignedOcrConfig (legacy support, can be null)
-    xPt: templateConfig.xPt,
-    yPt: templateConfig.yPt,
-    wPt: templateConfig.wPt,
-    hPt: templateConfig.hPt,
-    pageWidthPt: templateConfig.pageWidthPt,
-    pageHeightPt: templateConfig.pageHeightPt,
-    dpi,
-  });
-
-  // Log after OCR
-  console.log("[Signed Processor] OCR complete:", {
-    workOrderNumber: ocrResult.woNumber,
-    confidenceLabel: ocrResult.confidenceLabel,
-    confidenceRaw: ocrResult.confidenceRaw,
-    rawTextLength: ocrResult.rawText?.length || 0,
-    rawTextPreview: ocrResult.rawText?.substring(0, 500) || null,
-    snippetImageUrl: ocrResult.snippetImageUrl, // Show snippet image URL
-  });
+  // Step 3: Call Python OCR service (with error handling for service unavailability)
+  let ocrResult: SignedOcrResult;
+  let ocrError: Error | null = null;
   
-  // Log snippet URL prominently for visual verification
-  if (ocrResult.snippetImageUrl) {
-    console.log("📸 [Signed Processor] OCR SNIPPET IMAGE URL (what was captured):", ocrResult.snippetImageUrl);
-  } else {
-    console.warn("⚠️ [Signed Processor] No snippet image URL from OCR service");
+  try {
+    ocrResult = await callSignedOcrService(pdfBuffer, originalFilename, {
+      templateId: templateConfig.templateId,
+      page,
+      region: templateConfig.region, // Required by SignedOcrConfig (legacy support, can be null)
+      xPt: templateConfig.xPt,
+      yPt: templateConfig.yPt,
+      wPt: templateConfig.wPt,
+      hPt: templateConfig.hPt,
+      pageWidthPt: templateConfig.pageWidthPt,
+      pageHeightPt: templateConfig.pageHeightPt,
+      dpi,
+    });
+
+    // Log after OCR
+    console.log("[Signed Processor] OCR complete:", {
+      workOrderNumber: ocrResult.woNumber,
+      confidenceLabel: ocrResult.confidenceLabel,
+      confidenceRaw: ocrResult.confidenceRaw,
+      rawTextLength: ocrResult.rawText?.length || 0,
+      rawTextPreview: ocrResult.rawText?.substring(0, 500) || null,
+      snippetImageUrl: ocrResult.snippetImageUrl, // Show snippet image URL
+    });
+    
+    // Log snippet URL (just URL, not content)
+    if (ocrResult.snippetImageUrl) {
+      const urlDisplay = ocrResult.snippetImageUrl.startsWith("data:") 
+        ? "data:image/png;base64..." 
+        : ocrResult.snippetImageUrl;
+      console.log("📸 [Signed Processor] OCR snippet URL:", urlDisplay);
+    } else {
+      console.warn("⚠️ [Signed Processor] No snippet image URL from OCR service");
+    }
+  } catch (error) {
+    // OCR service unavailable or failed - continue with fallback
+    ocrError = error instanceof Error ? error : new Error(String(error));
+    console.error("[Signed Processor] OCR service failed (continuing with fallback):", {
+      error: ocrError.message,
+      code: (error as any)?.cause?.code || (error as any)?.code || "UNKNOWN",
+    });
+    
+    // Create fallback OCR result (no work order number, needs review)
+    ocrResult = {
+      woNumber: null,
+      confidenceRaw: 0,
+      confidenceLabel: "low",
+      rawText: null,
+      snippetImageUrl: null,
+    };
+    
+    console.log("[Signed Processor] Using fallback OCR result (service unavailable):", {
+      workOrderNumber: null,
+      confidenceLabel: "low",
+      note: "OCR service unavailable - document will be marked for review",
+    });
   }
 
   // Step 4: Decide outcome
@@ -371,72 +435,84 @@ export async function processSignedPdfUnified(
     }
 
     // Fallback to Sheets lookup if DB didn't find a match or DB lookup is disabled
-    if (!workOrderExists && fallbackUsed) {
+    // Only if spreadsheetId is available (DB-native mode may not have Sheets)
+    if (!workOrderExists && fallbackUsed && spreadsheetId) {
       console.log("[Signed Processor] Fallback used: yes (Sheets lookup)");
       const jobId = generateJobId(null, workOrderNumber);
       
-      // Check Work_Orders sheet
-      const existingWorkOrder = await findWorkOrderRecordByJobId(
-        accessToken,
-        spreadsheetId,
-        WORK_ORDERS_SHEET_NAME,
-        jobId
-      );
-      
-      if (existingWorkOrder) {
-        workOrderExists = true;
-        // Check if work order is already signed (high confidence extraction + already SIGNED status)
-        const isSigned = existingWorkOrder.status?.toUpperCase() === "SIGNED" || 
-                         (existingWorkOrder.signed_pdf_url && existingWorkOrder.signed_pdf_url.trim() !== "");
+      try {
+        // Check Work_Orders sheet
+        const existingWorkOrder = await findWorkOrderRecordByJobId(
+          accessToken,
+          spreadsheetId,
+          WORK_ORDERS_SHEET_NAME,
+          jobId
+        );
         
-        // If we have high confidence extraction and work order is already signed, mark as already processed
-        if (isSigned && params.extractionResult && params.extractionResult.confidence >= 0.80) {
-          workOrderAlreadySigned = true;
-        }
-      } else {
-        // Check Sheet1 by wo_number
-        try {
-          // Use a lightweight check: try to find the row by wo_number
-          const sheets = createSheetsClient(accessToken);
-          const allDataResponse = await sheets.spreadsheets.values.get({
-            spreadsheetId,
-            range: `${MAIN_SHEET_NAME}!A:Z`, // Get first 26 columns
-          });
+        if (existingWorkOrder) {
+          workOrderExists = true;
+          // Check if work order is already signed (high confidence extraction + already SIGNED status)
+          const isSigned = existingWorkOrder.status?.toUpperCase() === "SIGNED" || 
+                           (existingWorkOrder.signed_pdf_url && existingWorkOrder.signed_pdf_url.trim() !== "");
           
-          const rows = allDataResponse.data.values || [];
-          if (rows.length > 0) {
-            const headers = rows[0] as string[];
-            const headersLower = headers.map((h) => h.toLowerCase().trim());
-            const woColIndex = headersLower.indexOf("wo_number");
-            const statusColIndex = headersLower.indexOf("status");
-            const signedPdfColIndex = headersLower.indexOf("signed_pdf_url");
+          // If we have high confidence extraction and work order is already signed, mark as already processed
+          if (isSigned && params.extractionResult && params.extractionResult.confidence >= 0.80) {
+            workOrderAlreadySigned = true;
+          }
+        } else {
+          // Check Sheet1 by wo_number
+          try {
+            // Use a lightweight check: try to find the row by wo_number
+            const sheets = createSheetsClient(accessToken);
+            const allDataResponse = await sheets.spreadsheets.values.get({
+              spreadsheetId,
+              range: `${MAIN_SHEET_NAME}!A:Z`, // Get first 26 columns
+            });
             
-            if (woColIndex !== -1) {
-              const normalizedTarget = workOrderNumber.trim();
-              for (let i = 1; i < rows.length; i++) {
-                const row = rows[i];
-                const cellValue = (row?.[woColIndex] || "").trim();
-                if (cellValue && cellValue === normalizedTarget) {
-                  workOrderExists = true;
-                  
-                  // Check if already signed
-                  const status = statusColIndex !== -1 ? (row[statusColIndex] || "").trim().toUpperCase() : "";
-                  const signedPdfUrl = signedPdfColIndex !== -1 ? (row[signedPdfColIndex] || "").trim() : "";
-                  const isSigned = status === "SIGNED" || signedPdfUrl !== "";
-                  
-                  if (isSigned && params.extractionResult && params.extractionResult.confidence >= 0.80) {
-                    workOrderAlreadySigned = true;
+            const rows = allDataResponse.data.values || [];
+            if (rows.length > 0) {
+              const headers = rows[0] as string[];
+              const headersLower = headers.map((h) => h.toLowerCase().trim());
+              const woColIndex = headersLower.indexOf("wo_number");
+              const statusColIndex = headersLower.indexOf("status");
+              const signedPdfColIndex = headersLower.indexOf("signed_pdf_url");
+              
+              if (woColIndex !== -1) {
+                const normalizedTarget = workOrderNumber.trim();
+                for (let i = 1; i < rows.length; i++) {
+                  const row = rows[i];
+                  const cellValue = (row?.[woColIndex] || "").trim();
+                  if (cellValue && cellValue === normalizedTarget) {
+                    workOrderExists = true;
+                    
+                    // Check if already signed
+                    const status = statusColIndex !== -1 ? (row[statusColIndex] || "").trim().toUpperCase() : "";
+                    const signedPdfUrl = signedPdfColIndex !== -1 ? (row[signedPdfColIndex] || "").trim() : "";
+                    const isSigned = status === "SIGNED" || signedPdfUrl !== "";
+                    
+                    if (isSigned && params.extractionResult && params.extractionResult.confidence >= 0.80) {
+                      workOrderAlreadySigned = true;
+                    }
+                    break;
                   }
-                  break;
                 }
               }
             }
+          } catch (error) {
+            // Non-fatal: if we can't check Sheet1, assume it doesn't exist
+            console.warn("[Signed Processor] Could not check Sheet1 for work order existence:", error);
           }
-        } catch (error) {
-          // Non-fatal: if we can't check Sheet1, assume it doesn't exist
-          console.warn("[Signed Processor] Could not check Sheet1 for work order existence:", error);
         }
+      } catch (sheetsError) {
+        // Non-fatal: Sheets lookup failed (spreadsheet may not exist in DB-native mode)
+        console.warn("[Signed Processor] Sheets lookup failed (non-fatal, continuing):", {
+          error: sheetsError instanceof Error ? sheetsError.message : String(sheetsError),
+          note: "In DB-native mode, Sheets may not exist - this is expected",
+        });
+        // Continue without workOrderExists being set
       }
+    } else if (!workOrderExists && fallbackUsed && !spreadsheetId) {
+      console.log("[Signed Processor] Fallback skipped: no spreadsheetId (DB-native mode)");
     }
   }
 
@@ -498,13 +574,21 @@ export async function processSignedPdfUnified(
     };
   }
   
+  // Compute needsReviewReason early (standardized field for return value)
+  let needsReviewReason: string | null = null;
+  
   if (!workOrderNumber || ocrResult.confidenceLabel === "low") {
     needsReview = true;
+    needsReviewReason = !workOrderNumber 
+      ? "No work order number extracted" 
+      : "Low confidence extraction";
   } else if (!workOrderExists) {
     needsReview = true; // Original work order not found
+    needsReviewReason = "Original work order not found";
   } else {
     // Work order exists and we have a valid work order number
     needsReview = false;
+    needsReviewReason = null;
   }
 
   // Log before sheets write
@@ -561,15 +645,10 @@ export async function processSignedPdfUnified(
 
   let sheetRowId: string | null = null;
 
-  // Compute needsReviewReason (standardized field for return value)
-  const needsReviewReason: string | null = needsReview ? (
-    manualReason || (
-      !workOrderNumber ? "No work order number extracted" :
-      !workOrderExists ? "Original work order not found in Sheet1 or Work_Orders" :
-      ocrResult.confidenceLabel === "low" ? "Low confidence" :
-      "Low confidence or no work order number extracted"
-    )
-  ) : null;
+  // needsReviewReason already computed above - use it or override with manualReason
+  if (needsReview && manualReason) {
+    needsReviewReason = manualReason;
+  }
 
   if (needsReview) {
     // Write to Needs Review sheet
@@ -622,55 +701,122 @@ export async function processSignedPdfUnified(
       chosen_candidate: params.extractionResult?.workOrderNumber || null,
     };
 
-    await appendSignedNeedsReviewRow(accessToken, spreadsheetId, reviewRecord);
+    // Write to DB first (authoritative)
+    try {
+      const workspaceId = await getWorkspaceIdForUser();
+      if (workspaceId) {
+        await ingestSignedAuthoritative({
+          workspaceId,
+          pdfBuffer,
+          signedPdfUrl: signedPdfUrl || null,
+          signedPreviewImageUrl: snippetDriveUrl || null,
+          fmKey: normalizedFmKey,
+          extractionResult: params.extractionResult || null,
+          sourceMetadata: {
+            messageId: sourceMeta?.gmailMessageId,
+            attachmentId: sourceMeta?.gmailAttachmentId,
+            gmailDate: sourceMeta?.gmailDate,
+            source: source,
+            gmailSubject: sourceMeta?.gmailSubject,
+            gmailFrom: sourceMeta?.gmailFrom,
+          },
+        });
+        console.log("[Signed Processor] ✅ Saved signed document to DB (needs review)");
+      }
+    } catch (dbError) {
+      console.error("[Signed Processor] Failed to save signed document to DB:", dbError);
+      // Non-fatal - continue with Sheets write if available
+    }
+
+    // Write to Sheets only if spreadsheetId is provided (optional export)
+    if (spreadsheetId) {
+      try {
+        await appendSignedNeedsReviewRow(accessToken, spreadsheetId, reviewRecord);
+        console.log("[Signed Processor] ✅ Saved signed document to Sheets (needs review)");
+      } catch (sheetsError) {
+        console.warn("[Signed Processor] Failed to save signed document to Sheets (non-fatal):", sheetsError);
+      }
+    }
     // Note: sheetRowId not available from appendSignedNeedsReviewRow
   } else {
-    // Update Work Orders sheet - ONLY update status and signed fields
-    // All other data was already extracted at upload time (one and done)
-    if (workOrderNumber) {
-      const jobId = generateJobId(null, workOrderNumber);
-      
-      const nowIso = new Date().toISOString();
-      
-      // Use partial update to only change status and signed fields
-      // This preserves all existing data that was extracted at upload time
-      const { updateWorkOrderRecordPartial } = await import("@/lib/google/sheets");
-      await updateWorkOrderRecordPartial(
-        accessToken,
-        spreadsheetId,
-        WORK_ORDERS_SHEET_NAME,
-        jobId,
-        workOrderNumber,
-        {
-          status: "SIGNED",
-          signed_pdf_url: signedPdfUrl,
-          signed_preview_image_url: snippetDriveUrl,
-          signed_at: nowIso,
-          last_updated_at: nowIso,
-        }
-      );
-      
-      console.log(`[Signed Processor] ✅ Updated work order status to SIGNED: ${jobId}`);
+    // Write to DB first (authoritative)
+    try {
+      const workspaceId = await getWorkspaceIdForUser();
+      if (workspaceId && workOrderNumber) {
+        await ingestSignedAuthoritative({
+          workspaceId,
+          pdfBuffer,
+          signedPdfUrl: signedPdfUrl || null,
+          signedPreviewImageUrl: snippetDriveUrl || null,
+          fmKey: normalizedFmKey,
+          extractionResult: params.extractionResult || null,
+          sourceMetadata: {
+            messageId: sourceMeta?.gmailMessageId,
+            attachmentId: sourceMeta?.gmailAttachmentId,
+            gmailDate: sourceMeta?.gmailDate,
+            source: source,
+            gmailSubject: sourceMeta?.gmailSubject,
+            gmailFrom: sourceMeta?.gmailFrom,
+          },
+          workOrderNumber: workOrderNumber, // This will match the work order
+        });
+        console.log("[Signed Processor] ✅ Saved signed document to DB (matched)");
+      }
+    } catch (dbError) {
+      console.error("[Signed Processor] Failed to save signed document to DB:", dbError);
+      // Non-fatal - continue with Sheets write if available
+    }
 
-      // Also update Sheet1 if work order exists there
+    // Update Work Orders sheet - ONLY update status and signed fields (optional export)
+    // All other data was already extracted at upload time (one and done)
+    if (workOrderNumber && spreadsheetId) {
       try {
-        await updateJobWithSignedInfoByWorkOrderNumber(
+        const jobId = generateJobId(null, workOrderNumber);
+        
+        const nowIso = new Date().toISOString();
+        
+        // Use partial update to only change status and signed fields
+        // This preserves all existing data that was extracted at upload time
+        const { updateWorkOrderRecordPartial } = await import("@/lib/google/sheets");
+        await updateWorkOrderRecordPartial(
           accessToken,
           spreadsheetId,
-          MAIN_SHEET_NAME,
+          WORK_ORDERS_SHEET_NAME,
+          jobId,
           workOrderNumber,
           {
-            signedPdfUrl,
-            signedPreviewImageUrl: snippetDriveUrl,
-            confidence: ocrResult.confidenceLabel,
-            signedAt: nowIso,
-            statusOverride: "SIGNED",
-            fmKey: normalizedFmKey,
+            status: "SIGNED",
+            signed_pdf_url: signedPdfUrl,
+            signed_preview_image_url: snippetDriveUrl,
+            signed_at: nowIso,
+            last_updated_at: nowIso,
           }
         );
-      } catch (error) {
-        // Non-fatal: Sheet1 update may fail if work order doesn't exist there
-        console.warn("[Signed Processor] Failed to update Sheet1 (non-fatal):", error);
+        
+        console.log(`[Signed Processor] ✅ Updated work order status to SIGNED in Sheets: ${jobId}`);
+
+        // Also update Sheet1 if work order exists there
+        try {
+          await updateJobWithSignedInfoByWorkOrderNumber(
+            accessToken,
+            spreadsheetId,
+            MAIN_SHEET_NAME,
+            workOrderNumber,
+            {
+              signedPdfUrl,
+              signedPreviewImageUrl: snippetDriveUrl,
+              confidence: ocrResult.confidenceLabel,
+              signedAt: nowIso,
+              statusOverride: "SIGNED",
+              fmKey: normalizedFmKey,
+            }
+          );
+        } catch (error) {
+          // Non-fatal: Sheet1 update may fail if work order doesn't exist there
+          console.warn("[Signed Processor] Failed to update Sheet1 (non-fatal):", error);
+        }
+      } catch (sheetsError) {
+        console.warn("[Signed Processor] Failed to update Sheets (non-fatal):", sheetsError);
       }
     }
   }
@@ -679,13 +825,14 @@ export async function processSignedPdfUnified(
   // snippetUrl: prefer snippetDriveUrl (uploaded to Drive), fall back to snippetImageUrl (data URL from OCR)
   const snippetUrl = snippetDriveUrl || ocrResult.snippetImageUrl || null;
 
-  // Log snippet URLs prominently for visual verification
-  console.log("📸 [Signed Processor] FINAL SNIPPET URLs (what OCR captured):", {
-    snippetImageUrl: ocrResult.snippetImageUrl ? `${ocrResult.snippetImageUrl.substring(0, 100)}...` : null,
-    snippetDriveUrl: snippetDriveUrl || null,
-    snippetUrl: snippetUrl || null,
-    note: "Open snippetUrl in browser to see what region was cropped by OCR",
-  });
+  // Log snippet URLs (just URLs, not content)
+  if (snippetUrl || snippetDriveUrl || ocrResult.snippetImageUrl) {
+    console.log("📸 [Signed Processor] Snippet URLs:", {
+      snippetImageUrl: ocrResult.snippetImageUrl ? (ocrResult.snippetImageUrl.startsWith("data:") ? "data:image/png;base64..." : ocrResult.snippetImageUrl) : null,
+      snippetDriveUrl: snippetDriveUrl || null,
+      snippetUrl: snippetUrl || null,
+    });
+  }
 
   return {
     workOrderNumber,

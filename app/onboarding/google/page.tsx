@@ -95,7 +95,7 @@ export default function OnboardingGooglePage() {
               required
             />
             <p className="mt-2 text-sm text-slate-400">
-              We&apos;ll create a new Google Sheets spreadsheet with this name. It will include tabs for Work Orders, Verification, Signatures, and Config.
+              Optional: Enable Google Sheets export for backup/export purposes.
             </p>
           </div>
 
@@ -108,28 +108,6 @@ export default function OnboardingGooglePage() {
           {success && (
             <div className="p-4 bg-green-900/20 border border-green-700 rounded-lg text-green-200">
               <p className="font-medium mb-2">✓ Workspace created successfully!</p>
-              <div className="space-y-2 text-sm">
-                <div>
-                  <a
-                    href={success.sheetUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-sky-400 hover:text-sky-300 underline"
-                  >
-                    Open Spreadsheet →
-                  </a>
-                </div>
-                <div>
-                  <a
-                    href={success.folderUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-sky-400 hover:text-sky-300 underline"
-                  >
-                    Open Folder →
-                  </a>
-                </div>
-              </div>
               <p className="mt-2 text-xs text-green-300">Continuing to next step...</p>
             </div>
           )}

@@ -1,6 +1,6 @@
 // app/api/db/work-orders/[id]/route.ts
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/auth";
+import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getWorkspaceIdForUser } from "@/lib/db/utils/getWorkspaceId";
 import { getWorkOrderDetail } from "@/lib/db/services/workOrders";
 
@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 
 export async function GET(
   request: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const user = await getCurrentUser();
@@ -24,7 +24,8 @@ export async function GET(
       );
     }
 
-    const workOrderId = params.id;
+    const { id } = await params;
+    const workOrderId = id;
     const workOrder = await getWorkOrderDetail(workspaceId, workOrderId);
 
     if (!workOrder) {

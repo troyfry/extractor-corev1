@@ -42,9 +42,20 @@ export async function POST(req: Request) {
       );
     }
 
-    // Get workspace (centralized resolution)
+    // Get workspace ID (DB-native) - spreadsheetId is optional for export only
+    const { getWorkspaceIdForUser } = await import("@/lib/db/utils/getWorkspaceId");
+    const workspaceId = await getWorkspaceIdForUser();
+    
+    if (!workspaceId) {
+      return NextResponse.json(
+        { error: "Workspace not found. Please complete onboarding." },
+        { status: 400 }
+      );
+    }
+
+    // Get spreadsheet ID for optional export (if enabled)
     const workspaceResult = await workspaceRequired();
-    const spreadsheetId = workspaceResult.workspace.spreadsheetId;
+    const spreadsheetId = workspaceResult?.workspace.spreadsheetId || null;
 
     const body = await req.json();
     const { messageId, attachmentId, fmKey, filename } = body;
@@ -255,40 +266,41 @@ export async function POST(req: Request) {
     // Shadow write to DB (non-blocking - don't fail if DB write fails)
     try {
       const { ingestSignedAuthoritative } = await import("@/lib/db/services/ingestSigned");
-      const { getOrCreateWorkspace } = await import("@/lib/db/services/workspace");
+      const { getWorkspaceIdForUser } = await import("@/lib/db/utils/getWorkspaceId");
       
-      // Get or create workspace in DB
-      const workspaceId = await getOrCreateWorkspace(
-        spreadsheetId,
-        user.id,
-        undefined // driveFolderId not available here
-      );
-
-      await ingestSignedAuthoritative({
-        workspaceId,
-        pdfBuffer: normalizedPdfBuffer,
-        signedPdfUrl: result.signedPdfUrl || null, // Don't pass empty string, pass null
-        signedPreviewImageUrl: result.snippetDriveUrl || result.snippetImageUrl || null,
-        fmKey: rawFmKey || null,
-        extractionResult: extractionResult ? {
-          workOrderNumber: extractionResult.workOrderNumber,
-          method: extractionResult.method,
-          confidence: extractionResult.confidence,
-          rationale: extractionResult.rationale || undefined,
-          candidates: extractionResult.candidates || undefined,
-        } : null,
-        workOrderNumber: extractionResult?.workOrderNumber || null,
-        sourceMetadata: {
-          messageId,
-          attachmentId,
-          filename: originalFilename,
-          gmailFrom: full.data.payload?.headers?.find((h: any) => h.name?.toLowerCase() === "from")?.value || null,
-          gmailSubject: full.data.payload?.headers?.find((h: any) => h.name?.toLowerCase() === "subject")?.value || null,
-          gmailDate: full.data.payload?.headers?.find((h: any) => h.name?.toLowerCase() === "date")?.value || null,
-          source: "GMAIL",
-        },
-      });
-      console.log("[Signed Process Gmail] ✅ Shadow wrote signed document to DB");
+      // Get workspace ID (DB-native: from cookies or user lookup)
+      const workspaceId = await getWorkspaceIdForUser();
+      
+      if (!workspaceId) {
+        console.warn("[Signed Process Gmail] No workspace ID found - skipping DB shadow write");
+        // Continue without DB write (non-blocking)
+      } else {
+        await ingestSignedAuthoritative({
+          workspaceId,
+          pdfBuffer: normalizedPdfBuffer,
+          signedPdfUrl: result.signedPdfUrl || null, // Don't pass empty string, pass null
+          signedPreviewImageUrl: result.snippetDriveUrl || result.snippetImageUrl || null,
+          fmKey: rawFmKey || null,
+          extractionResult: extractionResult ? {
+            workOrderNumber: extractionResult.workOrderNumber,
+            method: extractionResult.method,
+            confidence: extractionResult.confidence,
+            rationale: extractionResult.rationale || undefined,
+            candidates: extractionResult.candidates || undefined,
+          } : null,
+          workOrderNumber: extractionResult?.workOrderNumber || null,
+          sourceMetadata: {
+            messageId,
+            attachmentId,
+            filename: originalFilename,
+            gmailFrom: full.data.payload?.headers?.find((h: any) => h.name?.toLowerCase() === "from")?.value || null,
+            gmailSubject: full.data.payload?.headers?.find((h: any) => h.name?.toLowerCase() === "subject")?.value || null,
+            gmailDate: full.data.payload?.headers?.find((h: any) => h.name?.toLowerCase() === "date")?.value || null,
+            source: "GMAIL",
+          },
+        });
+        console.log("[Signed Process Gmail] ✅ Shadow wrote signed document to DB");
+      }
     } catch (dbError) {
       // Log but don't fail - DB is shadow write
       console.warn("[Signed Process Gmail] ⚠️ Failed to shadow write signed document to DB (non-fatal):", dbError);

@@ -11,11 +11,11 @@ import type { InferSelectModel } from "drizzle-orm";
 export type SignedDocListItem = InferSelectModel<typeof signed_documents> & {
   matched_work_order_id: string | null;
   matched_work_order_number: string | null;
-  decision: "MATCHED" | "UNMATCHED";
+  decision: "MATCHED" | "UNMATCHED" | "NEEDS_REVIEW" | "ALREADY_ATTACHED";
 };
 
 export interface ListSignedDocsFilters {
-  decision?: "MATCHED" | "UNMATCHED";
+  decision?: "MATCHED" | "UNMATCHED" | "NEEDS_REVIEW" | "ALREADY_ATTACHED";
   search?: string; // Search in extracted_work_order_number
 }
 
@@ -90,24 +90,44 @@ export async function listSignedDocs(
   const hasMore = results.length > limit;
   const items = hasMore ? results.slice(0, limit) : results;
 
+  // Compute decision for each item and filter if specified
+  const itemsWithDecision = items.map((row) => {
+    // Compute decision based on match status and extraction quality
+    let decision: "MATCHED" | "UNMATCHED" | "NEEDS_REVIEW" | "ALREADY_ATTACHED";
+    
+    if (row.matched_work_order_id) {
+      decision = "MATCHED";
+    } else {
+      // No match - determine if it needs review
+      const hasLowConfidence = row.extraction_confidence !== null && parseFloat(row.extraction_confidence) < 0.7;
+      const missingWoNumber = !row.extracted_work_order_number || row.extracted_work_order_number.trim() === "";
+      
+      if (hasLowConfidence || missingWoNumber) {
+        decision = "NEEDS_REVIEW";
+      } else {
+        decision = "UNMATCHED";
+      }
+    }
+    
+    return {
+      ...row,
+      matched_work_order_id: row.matched_work_order_id || null,
+      matched_work_order_number: row.matched_work_order_number || null,
+      decision,
+    };
+  });
+
   // Filter by decision if specified
-  let filteredItems = items;
-  if (filters.decision === "MATCHED") {
-    filteredItems = items.filter((item) => item.matched_work_order_id !== null);
-  } else if (filters.decision === "UNMATCHED") {
-    filteredItems = items.filter((item) => item.matched_work_order_id === null);
+  let filteredItems = itemsWithDecision;
+  if (filters.decision) {
+    filteredItems = itemsWithDecision.filter((item) => item.decision === filters.decision);
   }
 
   // Get next cursor (last item's id)
   const nextCursor = filteredItems.length > 0 ? filteredItems[filteredItems.length - 1].id : null;
 
   return {
-    items: filteredItems.map((row) => ({
-      ...row,
-      matched_work_order_id: row.matched_work_order_id || null,
-      matched_work_order_number: row.matched_work_order_number || null,
-      decision: row.matched_work_order_id ? "MATCHED" as const : "UNMATCHED" as const,
-    })),
+    items: filteredItems,
     nextCursor,
     hasMore,
   };

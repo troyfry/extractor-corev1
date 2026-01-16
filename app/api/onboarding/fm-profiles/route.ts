@@ -9,8 +9,11 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/currentUser";
 import { getUserRowById, resetApiCallCount, getApiCallCount, ensureUsersSheet } from "@/lib/onboarding/usersSheet";
-import { ensureFmProfileSheet, upsertFmProfile } from "@/lib/templates/fmProfilesSheets";
+import { ensureFmProfileSheet, upsertFmProfile as upsertFmProfileSheets, deleteFmProfile as deleteFmProfileSheets } from "@/lib/templates/fmProfilesSheets";
 import { cookies } from "next/headers";
+import { getWorkspaceIdForUser } from "@/lib/db/utils/getWorkspaceId";
+import { getWorkspaceById } from "@/lib/db/services/workspace";
+import { upsertFmProfile, deleteFmProfile } from "@/lib/db/services/fmProfiles";
 
 export const runtime = "nodejs";
 
@@ -26,76 +29,65 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    if (!user.googleAccessToken) {
-      return NextResponse.json(
-        { error: "Google OAuth token not available. Please sign in again." },
-        { status: 401 }
-      );
+    // Get workspace ID (DB-native)
+    const workspaceId = await getWorkspaceIdForUser();
+    if (!workspaceId) {
+      // Return empty list instead of error - user may not have completed onboarding yet
+      return NextResponse.json({ profiles: [] });
     }
 
-    // Get the main spreadsheet ID from cookie or session
-    const cookieStore = await cookies();
-    const mainSpreadsheetId = cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
-
-    if (!mainSpreadsheetId) {
-      // Try to get from workspace
-      const { getWorkspace } = await import("@/lib/workspace/getWorkspace");
-      const workspace = await getWorkspace();
-      if (workspace?.workspace.spreadsheetId) {
-        const { getAllFmProfiles } = await import("@/lib/templates/fmProfilesSheets");
-        const profiles = await getAllFmProfiles({
-          spreadsheetId: workspace.workspace.spreadsheetId,
-          accessToken: user.googleAccessToken,
-        });
-
-        // Map to response format
-        const mappedProfiles = profiles.map((p) => ({
-          fmKey: p.fmKey,
-          displayName: p.fmLabel || p.fmKey,
-          senderDomains: p.senderDomains
-            ? p.senderDomains.split(",").map((d) => d.trim()).filter(Boolean)
-            : [],
-          senderEmails: [], // Not stored in current schema, return empty array
-        }));
-
-        return NextResponse.json({ profiles: mappedProfiles });
-      }
-
-      return NextResponse.json(
-        { error: "Spreadsheet ID not configured. Please complete onboarding." },
-        { status: 400 }
-      );
-    }
-
-    // Get all profiles
-    const { getAllFmProfiles } = await import("@/lib/templates/fmProfilesSheets");
-    const profiles = await getAllFmProfiles({
-      spreadsheetId: mainSpreadsheetId,
-      accessToken: user.googleAccessToken,
-    });
+    // Get profiles from DB
+    const { listFmProfiles } = await import("@/lib/db/services/fmProfiles");
+    const dbProfiles = await listFmProfiles(workspaceId);
 
     // Calculate completeness for each profile
     const { calculateFmProfileCompleteness } = await import("@/lib/signed/fieldAuthorityPolicy");
 
     // Map to response format with completeness info
-    const mappedProfiles = profiles.map((p) => {
+    const mappedProfiles = dbProfiles.map((p) => {
+      const woNumberRegion = p.wo_number_region as {
+        page?: number;
+        xPct?: number;
+        yPct?: number;
+        wPct?: number;
+        hPct?: number;
+        xPt?: number;
+        yPt?: number;
+        wPt?: number;
+        hPt?: number;
+        pageWidthPt?: number;
+        pageHeightPt?: number;
+      } | null;
+
       const completeness = calculateFmProfileCompleteness({
-        // Use percentage values directly (from FM_Profiles sheet)
-        xPct: p.xPct,
-        yPct: p.yPct,
-        wPct: p.wPct,
-        hPct: p.hPct,
-        page: p.page,
-        senderDomains: p.senderDomains,
+        // Point-based coordinates (preferred - from template save)
+        xPt: woNumberRegion?.xPt,
+        yPt: woNumberRegion?.yPt,
+        wPt: woNumberRegion?.wPt,
+        hPt: woNumberRegion?.hPt,
+        pageWidthPt: woNumberRegion?.pageWidthPt,
+        pageHeightPt: woNumberRegion?.pageHeightPt,
+        // Percentage-based coordinates (fallback - from FM_Profiles sheet)
+        xPct: woNumberRegion?.xPct,
+        yPct: woNumberRegion?.yPct,
+        wPct: woNumberRegion?.wPct,
+        hPct: woNumberRegion?.hPct,
+        page: woNumberRegion?.page || 0,
+        senderDomains: Array.isArray(p.sender_domains)
+          ? p.sender_domains.join(",")
+          : null,
       });
 
       return {
-        fmKey: p.fmKey,
-        displayName: p.fmLabel || p.fmKey,
-        senderDomains: p.senderDomains
-          ? p.senderDomains.split(",").map((d) => d.trim()).filter(Boolean)
+        fmKey: p.fm_key,
+        displayName: p.display_name || p.fm_key,
+        fmLabel: p.display_name || p.fm_key, // For backward compatibility
+        senderDomains: Array.isArray(p.sender_domains)
+          ? p.sender_domains
           : [],
-        senderEmails: [], // Not stored in current schema, return empty array
+        senderEmails: Array.isArray(p.sender_emails)
+          ? p.sender_emails
+          : [],
         // Completeness info for UI badges
         completeness: {
           score: completeness.score,
@@ -182,85 +174,121 @@ export async function POST(request: Request) {
       }
     }
 
-    // Get the main spreadsheet ID from cookie (set during Google step)
-    const cookieStore = await cookies();
-    const mainSpreadsheetId = cookieStore.get("googleSheetsSpreadsheetId")?.value || null;
-    console.log(`[onboarding/fm-profiles] Spreadsheet ID from cookie: ${mainSpreadsheetId ? "found" : "missing"}`);
-
-    if (!mainSpreadsheetId) {
-      console.error(`[onboarding/fm-profiles] Spreadsheet ID not found in cookie`);
+    // Get workspace ID (DB-native)
+    const workspaceId = await getWorkspaceIdForUser();
+    if (!workspaceId) {
+      console.error(`[onboarding/fm-profiles] Workspace ID not found`);
       return NextResponse.json(
-        { error: "Spreadsheet ID not configured. Please complete the Google step first." },
+        { error: "Workspace not found. Please complete the Google step first." },
         { status: 400 }
       );
     }
 
-    // Ensure Users sheet exists (onboarding route - must ensure sheet exists)
-    await ensureUsersSheet(user.googleAccessToken, mainSpreadsheetId, { allowEnsure: true });
+    // Get workspace to check if export is enabled
+    const workspace = await getWorkspaceById(workspaceId);
+    const exportEnabled = workspace?.export_enabled === true;
+    const mainSpreadsheetId = workspace?.spreadsheet_id || null;
 
-    // Check if user row exists, create if missing
-    console.log(`[onboarding/fm-profiles] Checking for user row: userId=${user.userId}`);
-    let userRow = await getUserRowById(user.googleAccessToken, mainSpreadsheetId, user.userId);
-    if (!userRow) {
-      console.log(`[onboarding/fm-profiles] User row not found, creating it for userId=${user.userId}`);
-      // Create user row if it doesn't exist
-      const { upsertUserRow } = await import("@/lib/onboarding/usersSheet");
-      await upsertUserRow(
-        user.googleAccessToken,
-        mainSpreadsheetId,
-        {
-          userId: user.userId,
-          email: user.email || "",
-          spreadsheetId: mainSpreadsheetId,
-          onboardingCompleted: "FALSE",
-        },
-        { allowEnsure: true }
-      );
-      // Re-fetch to verify it was created
-      userRow = await getUserRowById(user.googleAccessToken, mainSpreadsheetId, user.userId);
-      if (!userRow) {
-        console.error(`[onboarding/fm-profiles] Failed to create user row for userId=${user.userId}`);
-        return NextResponse.json(
-          { error: "Failed to create user row. Please try again." },
-          { status: 500 }
-        );
-      }
-      console.log(`[onboarding/fm-profiles] ✅ User row created successfully`);
-    } else {
-      console.log(`[onboarding/fm-profiles] User row found`);
-    }
-
-    // Ensure FM_Profiles sheet exists (will add userId column if needed)
-    await ensureFmProfileSheet(mainSpreadsheetId, user.googleAccessToken);
-
-    // Save all profiles
-    console.log(`[onboarding/fm-profiles] Saving ${profilesToSave.length} profile(s) for userId: ${user.userId}`);
+    // Save all profiles to DB
+    console.log(`[onboarding/fm-profiles] Saving ${profilesToSave.length} profile(s) to DB for workspace: ${workspaceId}`);
     for (let i = 0; i < profilesToSave.length; i++) {
       const profileData = profilesToSave[i];
-      const profile = {
-        fmKey: profileData.fmKey.toLowerCase().trim(),
-        fmLabel: profileData.fmKey.trim(), // Use fmKey as label for now
-        page: 1,
-        xPct: 0,
-        yPct: 0,
-        wPct: 1,
-        hPct: 1,
+      
+      console.log(`[onboarding/fm-profiles] Saving profile ${i + 1}/${profilesToSave.length}: fmKey="${profileData.fmKey}"`);
+      
+      // Save to DB
+      // Check if profile already exists to preserve coordinates
+      const { listFmProfiles } = await import("@/lib/db/services/fmProfiles");
+      const existingProfiles = await listFmProfiles(workspaceId);
+      const existingProfile = existingProfiles.find(p => p.fm_key.toLowerCase() === profileData.fmKey.toLowerCase().trim());
+
+      const profileInput: {
+        workspaceId: string;
+        fmKey: string;
+        displayName?: string | null;
+        senderDomains?: string[] | null;
+        senderEmails?: string[] | null;
+        subjectKeywords?: string[] | null;
+        woNumberRegion?: any;
+      } = {
+        workspaceId,
+        fmKey: profileData.fmKey.trim(),
+        displayName: profileData.fmKey.trim(),
         senderDomains: Array.isArray(profileData.senderDomains)
-          ? profileData.senderDomains.join(",")
-          : (profileData.senderDomains || ""),
+          ? profileData.senderDomains
+          : profileData.senderDomains
+          ? [profileData.senderDomains]
+          : null,
+        senderEmails: null, // Not provided in onboarding
         subjectKeywords: Array.isArray(profileData.subjectKeywords)
-          ? profileData.subjectKeywords.join(",")
-          : (profileData.subjectKeywords || ""),
+          ? profileData.subjectKeywords
+          : profileData.subjectKeywords
+          ? [profileData.subjectKeywords]
+          : null,
+        // Only set woNumberRegion to null for new profiles, preserve for existing ones
+        ...(existingProfile ? {} : { woNumberRegion: null }), // Will be set in templates step for new profiles
       };
 
-      console.log(`[onboarding/fm-profiles] Saving profile ${i + 1}/${profilesToSave.length}: fmKey="${profile.fmKey}"`);
-      await upsertFmProfile({
-        spreadsheetId: mainSpreadsheetId,
-        accessToken: user.googleAccessToken,
-        profile,
-        userId: user.userId,
-      });
-      console.log(`[onboarding/fm-profiles] ✅ Saved profile ${i + 1}/${profilesToSave.length}: fmKey="${profile.fmKey}"`);
+      await upsertFmProfile(profileInput);
+      
+      console.log(`[onboarding/fm-profiles] ✅ Saved profile ${i + 1}/${profilesToSave.length} to DB: fmKey="${profileData.fmKey}"`);
+
+      // If export is enabled, also save to Sheets
+      if (exportEnabled && mainSpreadsheetId) {
+        try {
+          // Ensure Users sheet exists
+          await ensureUsersSheet(user.googleAccessToken, mainSpreadsheetId, { allowEnsure: true });
+
+          // Check if user row exists, create if missing
+          let userRow = await getUserRowById(user.googleAccessToken, mainSpreadsheetId, user.userId);
+          if (!userRow) {
+            console.log(`[onboarding/fm-profiles] Creating user row for Sheets export`);
+            const { upsertUserRow } = await import("@/lib/onboarding/usersSheet");
+            await upsertUserRow(
+              user.googleAccessToken,
+              mainSpreadsheetId,
+              {
+                userId: user.userId,
+                email: user.email || "",
+                spreadsheetId: mainSpreadsheetId,
+                onboardingCompleted: "FALSE",
+              },
+              { allowEnsure: true }
+            );
+          }
+
+          // Ensure FM_Profiles sheet exists
+          await ensureFmProfileSheet(mainSpreadsheetId, user.googleAccessToken);
+
+          // Save to Sheets
+          const profile = {
+            fmKey: profileData.fmKey.toLowerCase().trim(),
+            fmLabel: profileData.fmKey.trim(),
+            page: 1,
+            xPct: 0,
+            yPct: 0,
+            wPct: 1,
+            hPct: 1,
+            senderDomains: Array.isArray(profileData.senderDomains)
+              ? profileData.senderDomains.join(",")
+              : (profileData.senderDomains || ""),
+            subjectKeywords: Array.isArray(profileData.subjectKeywords)
+              ? profileData.subjectKeywords.join(",")
+              : (profileData.subjectKeywords || ""),
+          };
+
+          await upsertFmProfileSheets({
+            spreadsheetId: mainSpreadsheetId,
+            accessToken: user.googleAccessToken,
+            profile,
+            userId: user.userId,
+          });
+          console.log(`[onboarding/fm-profiles] ✅ Saved profile ${i + 1}/${profilesToSave.length} to Sheets: fmKey="${profile.fmKey}"`);
+        } catch (sheetsError) {
+          // Log but don't fail - DB is the source of truth
+          console.warn(`[onboarding/fm-profiles] Failed to save profile to Sheets (non-blocking):`, sheetsError);
+        }
+      }
     }
 
     const apiCalls = getApiCallCount();
@@ -290,3 +318,173 @@ export async function POST(request: Request) {
   }
 }
 
+/**
+ * PATCH /api/onboarding/fm-profiles
+ * Update a single FM profile.
+ */
+export async function PATCH(request: Request) {
+  try {
+    const user = await getCurrentUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { fmKey, senderDomains, subjectKeywords, displayName } = body;
+
+    if (!fmKey || typeof fmKey !== "string" || !fmKey.trim()) {
+      return NextResponse.json(
+        { error: "fmKey is required" },
+        { status: 400 }
+      );
+    }
+
+    // Get workspace ID
+    const workspaceId = await getWorkspaceIdForUser();
+    if (!workspaceId) {
+      return NextResponse.json(
+        { error: "Workspace not found. Please complete the Google step first." },
+        { status: 400 }
+      );
+    }
+
+    // Get existing profile to preserve wo_number_region
+    const { listFmProfiles } = await import("@/lib/db/services/fmProfiles");
+    const existingProfiles = await listFmProfiles(workspaceId);
+    const existing = existingProfiles.find(p => p.fm_key.toLowerCase() === fmKey.toLowerCase().trim());
+
+    // Update profile (preserve wo_number_region by not passing it - upsertFmProfile will preserve it)
+    const updateInput: {
+      workspaceId: string;
+      fmKey: string;
+      displayName?: string | null;
+      senderDomains?: string[] | null;
+      subjectKeywords?: string[] | null;
+      woNumberRegion?: any;
+    } = {
+      workspaceId,
+      fmKey: fmKey.trim(),
+      displayName: displayName || fmKey.trim(),
+      senderDomains: Array.isArray(senderDomains)
+        ? senderDomains
+        : senderDomains
+        ? [senderDomains]
+        : null,
+      subjectKeywords: Array.isArray(subjectKeywords)
+        ? subjectKeywords
+        : subjectKeywords
+        ? [subjectKeywords]
+        : null,
+      // Don't pass woNumberRegion at all - this tells upsertFmProfile to preserve existing coordinates
+    };
+
+    await upsertFmProfile(updateInput);
+
+    // If export is enabled, also update Sheets
+    const workspace = await getWorkspaceById(workspaceId);
+    if (workspace?.export_enabled && workspace?.spreadsheet_id && user.googleAccessToken) {
+      try {
+        await ensureUsersSheet(user.googleAccessToken, workspace.spreadsheet_id, { allowEnsure: true });
+        await ensureFmProfileSheet(workspace.spreadsheet_id, user.googleAccessToken);
+        
+        const profile = {
+          fmKey: fmKey.toLowerCase().trim(),
+          fmLabel: displayName || fmKey.trim(),
+          page: existing?.wo_number_region ? (existing.wo_number_region as any).page || 1 : 1,
+          xPct: existing?.wo_number_region ? (existing.wo_number_region as any).xPct || 0 : 0,
+          yPct: existing?.wo_number_region ? (existing.wo_number_region as any).yPct || 0 : 0,
+          wPct: existing?.wo_number_region ? (existing.wo_number_region as any).wPct || 0 : 0,
+          hPct: existing?.wo_number_region ? (existing.wo_number_region as any).hPct || 0 : 0,
+          senderDomains: Array.isArray(senderDomains)
+            ? senderDomains.join(",")
+            : senderDomains || "",
+          subjectKeywords: Array.isArray(subjectKeywords)
+            ? subjectKeywords.join(",")
+            : subjectKeywords || "",
+        };
+
+        await upsertFmProfileSheets({
+          spreadsheetId: workspace.spreadsheet_id,
+          accessToken: user.googleAccessToken,
+          profile,
+          userId: user.userId,
+        });
+      } catch (sheetsError) {
+        console.warn(`[onboarding/fm-profiles] Failed to update profile in Sheets (non-blocking):`, sheetsError);
+      }
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("Error updating FM profile:", error);
+    const message = error instanceof Error ? error.message : "Internal server error";
+    return NextResponse.json(
+      { error: message },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * DELETE /api/onboarding/fm-profiles?fmKey=...
+ * Delete an FM profile.
+ */
+export async function DELETE(request: Request) {
+  try {
+    const user = await getCurrentUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const fmKey = searchParams.get("fmKey");
+
+    if (!fmKey) {
+      return NextResponse.json(
+        { error: "fmKey query parameter is required" },
+        { status: 400 }
+      );
+    }
+
+    // Get workspace ID
+    const workspaceId = await getWorkspaceIdForUser();
+    if (!workspaceId) {
+      return NextResponse.json(
+        { error: "Workspace not found." },
+        { status: 400 }
+      );
+    }
+
+    // Delete from DB
+    const deleted = await deleteFmProfile(workspaceId, fmKey);
+    if (!deleted) {
+      return NextResponse.json(
+        { error: "FM profile not found" },
+        { status: 404 }
+      );
+    }
+
+    // If export is enabled, also delete from Sheets
+    const workspace = await getWorkspaceById(workspaceId);
+    if (workspace?.export_enabled && workspace?.spreadsheet_id && user.googleAccessToken) {
+      try {
+        await deleteFmProfileSheets({
+          spreadsheetId: workspace.spreadsheet_id,
+          accessToken: user.googleAccessToken,
+          fmKey,
+        });
+      } catch (sheetsError) {
+        console.warn(`[onboarding/fm-profiles] Failed to delete profile from Sheets (non-blocking):`, sheetsError);
+      }
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("Error deleting FM profile:", error);
+    const message = error instanceof Error ? error.message : "Internal server error";
+    return NextResponse.json(
+      { error: message },
+      { status: 500 }
+    );
+  }
+}
